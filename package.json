@@ -1,0 +1,20 @@
+{
+  "name": "@tunacad/simulation-bridge",
+  "version": "0.1.0",
+  "private": false,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types simulation-bridge/cli.mts"
+  },
+  "description": "",
+  "main": "index.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "zod": "4.4.3"
+  }
+}
