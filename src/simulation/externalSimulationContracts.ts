@@ -281,6 +281,23 @@ export interface NeutralSimulationResult {
 export interface SimulationProviderCapabilities {
   interfaceVersion: typeof SIMULATION_PROVIDER_INTERFACE_VERSION;
   analysisTypes: readonly NeutralAnalysisType[];
+  /** Exact study envelope accepted by this adapter. The neutral request schema
+   * can be broader; TunaCAD checks this profile before creating an approvable
+   * job so unsupported studies never reach geometry transfer. */
+  study: {
+    maximumParts: number;
+    maximumBodies: number;
+    maximumMaterials: number;
+    maximumReferenceBindings: number;
+    materialModels: ReadonlyArray<NeutralSimulationMaterial['model']>;
+    loadTypes: ReadonlyArray<NeutralSimulationLoad['type']>;
+    maximumLoads: number;
+    maximumReferencesPerLoad: number;
+    constraintTypes: ReadonlyArray<NeutralSimulationConstraint['type']>;
+    maximumConstraints: number;
+    maximumReferencesPerConstraint: number;
+    contactModes: ReadonlyArray<NeutralSimulationRequest['contacts']['mode']>;
+  };
   geometryFormats: ReadonlyArray<'step' | 'brep'>;
   asynchronous: true;
   cancellation: true;

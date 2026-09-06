@@ -7,7 +7,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "start": "node --experimental-strip-types simulation-bridge/cli.mts"
+    "start": "node --experimental-strip-types simulation-bridge/cli.mts",
+    "test:providers": "node --experimental-strip-types scripts/test-provider-readiness.mts"
   },
   "description": "",
   "main": "index.js",

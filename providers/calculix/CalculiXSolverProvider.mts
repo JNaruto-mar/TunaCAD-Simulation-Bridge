@@ -33,7 +33,7 @@ interface CalculiXOutput {
   maximumDisplacementNode: number;
   maximumVonMisesStressMPa: number;
   maximumStressPositionMm: NeutralVector3;
-  reactionForceN: NeutralVector3;
+  reactionForcesBySet: Record<string, NeutralVector3>;
 }
 
 /** Node-only adapter for a user-installed CalculiX executable. It accepts only
@@ -44,6 +44,20 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
   readonly capabilities = {
     interfaceVersion: SIMULATION_PROVIDER_INTERFACE_VERSION,
     analysisTypes: ['linear_static'] as const,
+    study: {
+      maximumParts: 1,
+      maximumBodies: 1,
+      maximumMaterials: 1,
+      maximumReferenceBindings: 128,
+      materialModels: ['isotropic_linear_elastic'] as const,
+      loadTypes: ['surface_force'] as const,
+      maximumLoads: 64,
+      maximumReferencesPerLoad: 32,
+      constraintTypes: ['fixed'] as const,
+      maximumConstraints: 64,
+      maximumReferencesPerConstraint: 32,
+      contactModes: ['none'] as const,
+    },
     geometryFormats: [] as const,
     asynchronous: true as const,
     cancellation: true as const,
@@ -121,7 +135,11 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       return;
     }
     try {
-      const output = parseCalculiXDat(await readFile(join(run.directory, 'tunacad.dat'), 'utf8'), run.mesh);
+      const output = parseCalculiXDat(
+        await readFile(join(run.directory, 'tunacad.dat'), 'utf8'),
+        run.mesh,
+        run.request.constraints.map((_constraint, index) => constraintSetName(index)),
+      );
       run.result = normalizeResult(run, output, this.id, this.version, this.runtimeVersion);
       run.status = { providerRunId: run.providerRunId, status: 'succeeded', progress: 1, phase: 'normalized', updatedAt: new Date().toISOString() };
     } catch (error) {
@@ -148,13 +166,31 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
 function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh): string {
   if (request.analysis.type !== 'linear_static' || request.material.model !== 'isotropic_linear_elastic') throw providerError('SIMULATION_ANALYSIS_UNSUPPORTED', 'The CalculiX POC supports isotropic linear-static analysis only.');
   if (mesh.element.geometryOrder !== 2 || mesh.element.solutionOrder !== 2 || mesh.volumeElements.connectivity.some(cell => cell.length !== 10)) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The CalculiX adapter requires complete second-order C3D10 tetrahedra.');
-  if (request.loads.length !== 1 || request.loads[0].type !== 'surface_force') throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX POC requires one surface-force load.');
-  if (request.constraints.length !== 1 || request.constraints[0].type !== 'fixed') throw providerError('SIMULATION_CONSTRAINT_INVALID', 'The CalculiX POC requires one fixed constraint.');
-  const fixedRegion = requireMeshRegion(mesh, request.constraints[0].semanticReferenceIds[0]);
-  const loadRegion = requireMeshRegion(mesh, request.loads[0].semanticReferenceIds[0]);
-  if (fixedRegion.regionId === loadRegion.regionId) throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'The fixed and loaded references map to the same neutral boundary region.');
-  const fixedNodes = uniqueNodes(mesh, fixedRegion.facetIndices);
-  const nodalLoads = consistentSurfaceLoads(mesh, loadRegion.facetIndices, request.loads[0].forceN);
+  const surfaceLoads = request.loads.filter((load): load is Extract<NeutralSimulationRequest['loads'][number], { type: 'surface_force' }> => load.type === 'surface_force');
+  const fixedConstraints = request.constraints.filter((constraint): constraint is Extract<NeutralSimulationRequest['constraints'][number], { type: 'fixed' }> => constraint.type === 'fixed');
+  if (!surfaceLoads.length || surfaceLoads.length !== request.loads.length) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter requires one or more surface-force loads.');
+  if (!fixedConstraints.length || fixedConstraints.length !== request.constraints.length) throw providerError('SIMULATION_CONSTRAINT_INVALID', 'The CalculiX adapter requires one or more fixed constraints.');
+  const fixedSets = fixedConstraints.map((constraint, index) => ({
+    name: constraintSetName(index),
+    constraint,
+    regions: requireMeshRegions(mesh, constraint.semanticReferenceIds),
+  })).map(item => ({ ...item, nodes: uniqueNodes(mesh, uniqueFacetIndices(item.regions)) }));
+  const claimedFixedNodes = new Set<number>();
+  for (const fixed of fixedSets) {
+    if (fixed.nodes.some(node => claimedFixedNodes.has(node))) {
+      throw providerError('SIMULATION_CONSTRAINT_INVALID', 'Fixed constraints overlap on neutral mesh nodes, so reactions cannot be attributed uniquely. Merge the overlapping constraints.');
+    }
+    fixed.nodes.forEach(node => claimedFixedNodes.add(node));
+  }
+  const fixedRegionIds = new Set(fixedSets.flatMap(item => item.regions.map(region => region.regionId)));
+  const nodalLoads = new Map<number, NeutralVector3>();
+  for (const load of surfaceLoads) {
+    const regions = requireMeshRegions(mesh, load.semanticReferenceIds);
+    if (regions.some(region => fixedRegionIds.has(region.regionId))) {
+      throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A surface-force region is also used by a fixed constraint.');
+    }
+    addNodalLoads(nodalLoads, consistentSurfaceLoads(mesh, uniqueFacetIndices(regions), load.forceN));
+  }
   const lines = [
     '*HEADING',
     `TunaCAD neutral linear-static study ${safeComment(request.studyId)}`,
@@ -162,8 +198,7 @@ function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh
     ...mesh.nodes.map((point, index) => `${index + 1},${point[0]},${point[1]},${point[2]}`),
     '*ELEMENT, TYPE=C3D10, ELSET=EALL',
     ...mesh.volumeElements.connectivity.map((cell, index) => `${index + 1},${neutralToCalculiXC3D10(cell).map(node => node + 1).join(',')}`),
-    '*NSET, NSET=FIXED',
-    ...wrapIds(fixedNodes.map(node => node + 1)),
+    ...fixedSets.flatMap(fixed => [`*NSET, NSET=${fixed.name}`, ...wrapIds(fixed.nodes.map(node => node + 1))]),
     '*MATERIAL, NAME=TUNACAD_MATERIAL',
     '*ELASTIC',
     `${request.material.youngsModulusMPa},${request.material.poissonRatio}`,
@@ -171,13 +206,12 @@ function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh
     '*STEP',
     '*STATIC',
     '*BOUNDARY',
-    'FIXED,1,3,0',
+    ...fixedSets.map(fixed => `${fixed.name},1,3,0`),
     '*CLOAD',
     ...[...nodalLoads.entries()].flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${value}`] : [])),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES',
     'U',
-    '*NODE PRINT, NSET=FIXED, TOTALS=ONLY, GLOBAL=YES',
-    'RF',
+    ...fixedSets.flatMap(fixed => [`*NODE PRINT, NSET=${fixed.name}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
     '*EL PRINT, ELSET=EALL',
     'S',
     '*END STEP',
@@ -192,6 +226,15 @@ function requireMeshRegion(mesh: NeutralFemMesh, semanticReferenceId: string | u
   return matches[0];
 }
 
+function requireMeshRegions(mesh: NeutralFemMesh, semanticReferenceIds: string[]): NeutralFemMesh['boundaryRegions'] {
+  if (!semanticReferenceIds.length) throw providerError('SIMULATION_REFERENCE_INVALID', 'At least one durable FACE reference is required.');
+  const regions = semanticReferenceIds.map(referenceId => requireMeshRegion(mesh, referenceId));
+  if (new Set(regions.map(region => region.regionId)).size !== regions.length) {
+    throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'Several durable FACE references map to the same neutral boundary region.');
+  }
+  return regions;
+}
+
 /** Neutral quadratic tetrahedra end with edges (2-3), (1-3); CalculiX C3D10
  * expects (1-3), (2-3). Vertex order and the first four edge nodes are equal. */
 function neutralToCalculiXC3D10(cell: number[]): number[] {
@@ -201,6 +244,17 @@ function neutralToCalculiXC3D10(cell: number[]): number[] {
 
 function uniqueNodes(mesh: NeutralFemMesh, facetIndices: number[]): number[] {
   return [...new Set(facetIndices.flatMap(index => mesh.boundaryFacets.connectivity[index]))].sort((a, b) => a - b);
+}
+
+function uniqueFacetIndices(regions: NeutralFemMesh['boundaryRegions']): number[] {
+  return [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+}
+
+function addNodalLoads(target: Map<number, NeutralVector3>, source: Map<number, NeutralVector3>): void {
+  for (const [node, force] of source) {
+    const prior = target.get(node) ?? [0, 0, 0];
+    target.set(node, [prior[0] + force[0], prior[1] + force[1], prior[2] + force[2]]);
+  }
 }
 
 function consistentSurfaceLoads(mesh: NeutralFemMesh, facetIndices: number[], totalForce: NeutralVector3): Map<number, NeutralVector3> {
@@ -220,15 +274,20 @@ function consistentSurfaceLoads(mesh: NeutralFemMesh, facetIndices: number[], to
   return result;
 }
 
-function parseCalculiXDat(text: string, mesh: NeutralFemMesh): CalculiXOutput {
+function parseCalculiXDat(text: string, mesh: NeutralFemMesh, expectedReactionSets: string[]): CalculiXOutput {
   let mode: 'displacement' | 'reaction' | 'stress' | null = null;
+  let reactionSet: string | null = null;
   let maximumDisplacementMm = -Infinity; let maximumDisplacementNode = -1;
   let maximumVonMisesStressMPa = -Infinity; let maximumStressElement = -1;
-  const reactionForceN: NeutralVector3 = [0, 0, 0];
+  const reactionForcesBySet: Record<string, NeutralVector3> = {};
   for (const rawLine of text.split(/\r?\n/)) {
     const lower = rawLine.toLowerCase();
     if (lower.includes('displacements') && lower.includes('for set')) { mode = 'displacement'; continue; }
-    if ((lower.includes('total force') || lower.includes('forces')) && lower.includes('for set')) { mode = 'reaction'; continue; }
+    if ((lower.includes('total force') || lower.includes('forces')) && lower.includes('for set')) {
+      mode = 'reaction';
+      reactionSet = /for set\s+([a-z0-9_-]+)/i.exec(rawLine)?.[1]?.toUpperCase() ?? null;
+      continue;
+    }
     if (lower.includes('stresses') && lower.includes('for set')) { mode = 'stress'; continue; }
     const values = rawLine.trim().split(/\s+/).map(value => Number(value.replace(/[dD]/g, 'E')));
     if (!values.length || values.some(value => !Number.isFinite(value))) continue;
@@ -237,8 +296,9 @@ function parseCalculiXDat(text: string, mesh: NeutralFemMesh): CalculiXOutput {
       if (node < 0 || node >= mesh.nodes.length) continue;
       const magnitude = Math.hypot(values[1], values[2], values[3]);
       if (magnitude > maximumDisplacementMm) { maximumDisplacementMm = magnitude; maximumDisplacementNode = node; }
-    } else if (mode === 'reaction' && values.length >= 3) {
-      const force = values.slice(-3); reactionForceN[0] += force[0]; reactionForceN[1] += force[1]; reactionForceN[2] += force[2];
+    } else if (mode === 'reaction' && reactionSet && values.length >= 3) {
+      const force = values.slice(-3); const total = reactionForcesBySet[reactionSet] ?? [0, 0, 0];
+      total[0] += force[0]; total[1] += force[1]; total[2] += force[2]; reactionForcesBySet[reactionSet] = total;
     } else if (mode === 'stress' && values.length >= 8) {
       const element = Math.trunc(values[0]) - 1;
       if (element < 0 || element >= mesh.volumeElements.connectivity.length) continue;
@@ -247,25 +307,37 @@ function parseCalculiXDat(text: string, mesh: NeutralFemMesh): CalculiXOutput {
       if (vonMises > maximumVonMisesStressMPa) { maximumVonMisesStressMPa = vonMises; maximumStressElement = element; }
     }
   }
-  if (!(maximumDisplacementMm > 0) || !(maximumVonMisesStressMPa > 0) || maximumDisplacementNode < 0 || maximumStressElement < 0 || reactionForceN.some(value => !Number.isFinite(value))) {
+  if (!(maximumDisplacementMm > 0) || !(maximumVonMisesStressMPa > 0) || maximumDisplacementNode < 0 || maximumStressElement < 0
+    || expectedReactionSets.some(setName => !reactionForcesBySet[setName] || reactionForcesBySet[setName].some(value => !Number.isFinite(value)))) {
     throw new Error('CalculiX did not produce complete finite displacement, stress and reaction-force output.');
   }
   const stressNodes = mesh.volumeElements.connectivity[maximumStressElement].slice(0, 4).map(node => mesh.nodes[node]);
   const maximumStressPositionMm = [0, 1, 2].map(axis => stressNodes.reduce((sum, point) => sum + point[axis], 0) / stressNodes.length) as NeutralVector3;
-  return { maximumDisplacementMm, maximumDisplacementPositionMm: mesh.nodes[maximumDisplacementNode], maximumDisplacementNode, maximumVonMisesStressMPa, maximumStressPositionMm, reactionForceN };
+  return { maximumDisplacementMm, maximumDisplacementPositionMm: mesh.nodes[maximumDisplacementNode], maximumDisplacementNode, maximumVonMisesStressMPa, maximumStressPositionMm, reactionForcesBySet };
 }
 
 function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: string, adapterVersion: string, runtimeVersion: string): NeutralSimulationResult {
   const request = run.request;
-  const fixed = request.geometry.references.find(item => item.role === 'constraint')!;
   const displacementBinding = bindingForNode(run.mesh, output.maximumDisplacementNode, request);
   const completedAt = new Date().toISOString();
   const factorOfSafety = request.material.yieldStrengthMPa ? request.material.yieldStrengthMPa / output.maximumVonMisesStressMPa : null;
+  const reactions = request.constraints.map((constraint, index) => ({
+    constraintId: constraint.id,
+    forceN: output.reactionForcesBySet[constraintSetName(index)],
+    semanticReferenceIds: [...constraint.semanticReferenceIds],
+  }));
+  const appliedForce = request.loads.reduce<NeutralVector3>((sum, load) => load.type === 'surface_force'
+    ? [sum[0] + load.forceN[0], sum[1] + load.forceN[1], sum[2] + load.forceN[2]]
+    : sum, [0, 0, 0]);
+  const reactionForce = reactions.reduce<NeutralVector3>((sum, reaction) => [sum[0] + reaction.forceN[0], sum[1] + reaction.forceN[1], sum[2] + reaction.forceN[2]], [0, 0, 0]);
+  const equilibriumResidual = Math.hypot(appliedForce[0] + reactionForce[0], appliedForce[1] + reactionForce[1], appliedForce[2] + reactionForce[2]);
+  const equilibriumTolerance = Math.max(1e-6, Math.hypot(...appliedForce) * 1e-4);
+  if (equilibriumResidual > equilibriumTolerance) throw new Error(`CalculiX reaction/load equilibrium residual ${equilibriumResidual} N exceeds ${equilibriumTolerance} N.`);
   return {
     schema: NEUTRAL_SIMULATION_RESULT_SCHEMA, studyId: request.studyId, jobId: '', requestDigest: request.requestDigest,
     projectRevision: request.geometry.projectRevision, analysisType: request.analysis.type, status: 'succeeded', authority: 'engineering',
     metrics: { maximumVonMisesStressMPa: output.maximumVonMisesStressMPa, maximumDisplacementMm: output.maximumDisplacementMm, minimumFactorOfSafety: factorOfSafety },
-    reactions: [{ constraintId: request.constraints[0].id, forceN: output.reactionForceN, semanticReferenceIds: [fixed.semanticReferenceId] }],
+    reactions,
     criticalRegions: [
       hotspot('calculix-stress-maximum', 'stress', output.maximumVonMisesStressMPa, 'MPa', output.maximumStressPositionMm, null, 'Maximum CalculiX integration-point von Mises stress.'),
       hotspot('calculix-displacement-maximum', 'displacement', output.maximumDisplacementMm, 'mm', output.maximumDisplacementPositionMm, displacementBinding, 'Maximum CalculiX nodal displacement.'),
@@ -278,6 +350,10 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
     review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `External CalculiX ${runtimeVersion} proof-of-concept result. Not certified; qualified-engineer review is mandatory.` },
     mutation: { occurred: false, projectRevisionBefore: request.geometry.projectRevision, projectRevisionAfter: request.geometry.projectRevision },
   };
+}
+
+function constraintSetName(index: number): string {
+  return `FIXED_${String(index + 1).padStart(3, '0')}`;
 }
 
 function bindingForNode(mesh: NeutralFemMesh, node: number, request: NeutralSimulationRequest): NeutralSimulationReferenceBinding | null {
