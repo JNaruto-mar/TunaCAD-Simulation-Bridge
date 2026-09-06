@@ -10,6 +10,8 @@ const vector = z.tuple([number, number, number]);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const box = z.object({ min: vector, max: vector }).strict();
 const references = z.array(text).min(1).max(32);
+const pressureMPa = number.refine(value => value !== 0 && Math.abs(value) <= 1_000_000);
+const acceleration = vector.refine(value => Math.hypot(...value) > 1e-9 && Math.hypot(...value) <= 1_000_000_000);
 const face = z.object({
   centroidPartLocalMm: vector, areaMm2: positive, outwardDirection: vector.nullable(), geometryType: text.nullable(),
   boundingBoxMm: box.optional(), edgeCount: z.number().int().positive().optional(),
@@ -24,14 +26,18 @@ const schema = z.object({
     projectRevision: text, partId: text, bodyId: text, geometryDigest: hash, coordinateSpace: z.literal('part_definition_local'),
     shape: z.object({ valid: z.literal(true), connectedSolidCount: z.literal(1), faceCount: z.number().int().positive().max(10000), edgeCount: z.number().int().positive().max(50000), volumeMm3: positive, surfaceAreaMm2: positive,
       boundingBoxMm: box.extend({ size: vector }).strict() }).strict(),
-    references: z.array(z.object({ semanticReferenceId: text, ownerPartId: text, geometryKind: z.literal('FACE'), role: z.enum(['load', 'constraint']), sourceFeatureId: text.nullable(), resolutionState: z.literal('valid'), resolvedAtProjectRevision: text, face }).strict()).min(2).max(128),
+    references: z.array(z.object({ semanticReferenceId: text, ownerPartId: text, geometryKind: z.literal('FACE'), role: z.enum(['load', 'constraint']), sourceFeatureId: text.nullable(), resolutionState: z.literal('valid'), resolvedAtProjectRevision: text, face }).strict()).min(1).max(128),
   }).strict(),
   units: z.object({ geometry: z.literal('mm'), force: z.literal('N'), stress: z.literal('MPa'), displacement: z.literal('mm'), density: z.literal('kg/m^3'), acceleration: z.literal('mm/s^2') }).strict(),
   material: z.object({ id: text, name: text, model: z.literal('isotropic_linear_elastic'), densityKgM3: positive.max(100000).optional(), youngsModulusMPa: positive.max(100000000), poissonRatio: number.min(0).lt(0.5), yieldStrengthMPa: positive.optional(), source: z.object({ kind: z.enum(['library', 'custom']), reference: text, revision: text.optional() }).strict() }).strict(),
-  loads: z.array(z.object({ id: text, name: text, type: z.literal('surface_force'), semanticReferenceIds: references, forceN: vector }).strict()).min(1).max(64),
+  loads: z.array(z.discriminatedUnion('type', [
+    z.object({ id: text, name: text, type: z.literal('surface_force'), semanticReferenceIds: references, forceN: vector }).strict(),
+    z.object({ id: text, name: text, type: z.literal('pressure'), semanticReferenceIds: references, pressureMPa }).strict(),
+    z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: acceleration }).strict(),
+  ])).min(1).max(64),
   constraints: z.array(z.object({ id: text, name: text, type: z.literal('fixed'), semanticReferenceIds: references }).strict()).min(1).max(64),
   contacts: z.object({ mode: z.literal('none') }).strict(),
-  mesh: z.object({ dimensionality: z.literal('3d'), elementFamily: z.literal('tetrahedral'), order: z.literal(2), globalSizeMm: positive.max(1000000), minimumSizeMm: positive.optional(), maximumNodes: z.number().int().min(10).max(100000), maximumElements: z.number().int().min(10).max(100000), qualityMetric: z.literal('provider_normalized'), minimumQuality: number.min(0.04).max(1) }).strict(),
+  mesh: z.object({ dimensionality: z.literal('3d'), elementFamily: z.literal('tetrahedral'), order: z.literal(2), globalSizeMm: positive.max(1000000), minimumSizeMm: positive.optional(), maximumNodes: z.number().int().min(10).max(500000), maximumElements: z.number().int().min(10).max(250000), qualityMetric: z.literal('provider_normalized'), minimumQuality: number.min(0.04).max(1) }).strict(),
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions'])).min(1).max(5),
 }).strict();
 
@@ -59,7 +65,7 @@ export function validateRequest(value: unknown, now = Date.now()): NeutralSimula
     || Date.parse(request.preparedAt) > now + 60_000) throw new Error('BRIDGE_REQUEST_EXPIRED');
   const required = [
     ...request.constraints.flatMap(constraint => constraint.semanticReferenceIds.map(id => [id, 'constraint'] as const)),
-    ...request.loads.flatMap(load => load.semanticReferenceIds.map(id => [id, 'load'] as const)),
+    ...request.loads.flatMap(load => 'semanticReferenceIds' in load ? load.semanticReferenceIds.map(id => [id, 'load'] as const) : []),
   ];
   const fixed = new Set(required.filter(([, role]) => role === 'constraint').map(([id]) => id));
   const loaded = new Set(required.filter(([, role]) => role === 'load').map(([id]) => id));

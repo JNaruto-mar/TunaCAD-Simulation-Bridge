@@ -23,7 +23,11 @@ export interface NeutralSimulationMaterial {
 
 export type NeutralSimulationLoad =
   | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3 }
+  /** Positive pressure acts inward, opposite each boundary facet's computed
+   * outward normal. Negative pressure represents outward suction. */
   | { id: string; name: string; type: 'pressure'; semanticReferenceIds: string[]; pressureMPa: number }
+  /** Uniform body acceleration in part-local coordinates. The solver combines
+   * it with densityKgM3 and the neutral volume elements to obtain force. */
   | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3 };
 
 export type NeutralSimulationConstraint =
@@ -109,9 +113,9 @@ export interface NeutralFemMesh {
   };
   nodes: NeutralVector3[];
   volumeElements: {
-    /** Quadratic tetrahedra use the neutral order: four vertices, then edge
-     * nodes (0-1), (1-2), (2-0), (0-3), (2-3), (1-3). Solver adapters must
-     * translate this canonical order when their native format differs. */
+    /** Quadratic tetrahedra use the neutral Gmsh order: four vertices, then
+     * edge nodes (0-1), (1-2), (2-0), (0-3), (2-3), (1-3). Solver adapters
+     * must translate this canonical order when their native format differs. */
     connectivity: number[][];
     regionIds: string[];
   };
@@ -305,6 +309,17 @@ export interface SimulationProviderCapabilities {
   normalizedResults: true;
   durableReferenceMapping: 'supported' | 'partial' | 'unavailable';
   authority: NeutralResultAuthority;
+  qualification: {
+    status: 'proof_of_concept' | 'qualified' | 'unsupported';
+    engineeringUsePermitted: boolean;
+    statement: string;
+    limitations: readonly string[];
+    evidence: {
+      schema: 'tunacad-simulation-qualification-matrix/1.0';
+      matrixId: string;
+      pendingLaneIds: readonly string[];
+    } | null;
+  };
   execution: {
     topology: 'remote_service' | 'local_adapter' | 'native_engine' | 'contract_test';
     credentials: 'none' | 'host_managed';
@@ -315,6 +330,15 @@ export interface SimulationProviderCapabilities {
     totalTimeoutMs: number;
     rawArtifactRetentionMs: number;
     normalizedResultRetentionMs: number;
+    resourceLimits?: {
+      maximumInputGeometryBytes: number | null;
+      maximumWorkingDirectoryBytes: number | null;
+      maximumResultFileBytes: number | null;
+      maximumDiagnosticCharacters: number;
+      processTerminationGraceMs: number;
+      cpuTimeLimitMs: number | null;
+      memoryLimitBytes: number | null;
+    };
   };
 }
 
@@ -345,6 +369,7 @@ export interface MeshProviderCapabilities {
   asynchronous: true;
   cancellation: true;
   durableReferenceMapping: 'supported' | 'partial' | 'unavailable';
+  qualification: SimulationProviderCapabilities['qualification'];
   execution: SimulationProviderCapabilities['execution'];
 }
 

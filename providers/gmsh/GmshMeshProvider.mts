@@ -1,12 +1,13 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
   MESH_PROVIDER_INTERFACE_VERSION,
   NEUTRAL_FEM_MESH_SCHEMA,
   type ExternalMeshProvider,
+  type MeshProviderCapabilities,
   type MeshProviderStatus,
   type MeshProviderSubmission,
   type NeutralFemMesh,
@@ -17,6 +18,15 @@ import {
   type SimulationGeometryResolver,
 } from '../../src/simulation/externalSimulationContracts.ts';
 import { tetraMeanRatio, tetraVolume, validateNeutralFemMesh } from '../../src/simulation/neutralFemMesh.ts';
+import {
+  LOCAL_PROVIDER_RESOURCE_LIMITS,
+  hasEnforcedProviderProcessQuotas,
+  monitorWorkingDirectory,
+  readUtf8FileBounded,
+  removeWorkingDirectory,
+  spawnProviderProcess,
+  terminateChildProcess,
+} from '../processLifecycle.mts';
 
 interface MeshRun {
   request: NeutralMeshJobRequest;
@@ -26,6 +36,7 @@ interface MeshRun {
   status: MeshProviderStatus;
   mesh: NeutralFemMesh | null;
   timeout: NodeJS.Timeout;
+  stopResourceMonitor: () => void;
 }
 
 interface ParsedMsh {
@@ -40,7 +51,7 @@ interface ParsedMsh {
 export class GmshMeshProvider implements ExternalMeshProvider {
   readonly id = 'tunacad-gmsh-mesh-poc';
   readonly version = '0.1.0-poc';
-  readonly capabilities = {
+  readonly capabilities: MeshProviderCapabilities = {
     interfaceVersion: MESH_PROVIDER_INTERFACE_VERSION,
     geometryFormats: ['step'] as const,
     elementFamilies: ['tetrahedral'] as const,
@@ -48,6 +59,17 @@ export class GmshMeshProvider implements ExternalMeshProvider {
     asynchronous: true as const,
     cancellation: true as const,
     durableReferenceMapping: 'supported' as const,
+    qualification: {
+      status: 'proof_of_concept' as const,
+      engineeringUsePermitted: false,
+      statement: 'Local Gmsh meshing adapter with version-bound benchmark evidence; independent engineering review is still required before qualified use.',
+      limitations: ['Windows development-host evidence only', 'Second-order tetrahedral volume meshes only'],
+      evidence: {
+        schema: 'tunacad-simulation-qualification-matrix/1.0' as const,
+        matrixId: 'sim2-windows-x64-gmsh-4.15.2-calculix-2.16',
+        pendingLaneIds: ['independent-engineering-review'],
+      },
+    },
     execution: {
       topology: 'local_adapter' as const,
       credentials: 'none' as const,
@@ -58,6 +80,15 @@ export class GmshMeshProvider implements ExternalMeshProvider {
       totalTimeoutMs: 125_000,
       rawArtifactRetentionMs: 0,
       normalizedResultRetentionMs: 20 * 60 * 1000,
+      resourceLimits: {
+        maximumInputGeometryBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumStepBytes,
+        maximumWorkingDirectoryBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumWorkingDirectoryBytes,
+        maximumResultFileBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumResultFileBytes,
+        maximumDiagnosticCharacters: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumDiagnosticCharacters,
+        processTerminationGraceMs: LOCAL_PROVIDER_RESOURCE_LIMITS.processTerminationGraceMs,
+        cpuTimeLimitMs: LOCAL_PROVIDER_RESOURCE_LIMITS.cpuTimeLimitMs,
+        memoryLimitBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.memoryLimitBytes,
+      },
     },
   };
   private readonly executable: string;
@@ -70,12 +101,25 @@ export class GmshMeshProvider implements ExternalMeshProvider {
     }
     this.executable = resolve(options.executable);
     this.runtimeVersion = options.runtimeVersion;
+    if (!hasEnforcedProviderProcessQuotas()) {
+      Object.assign(this.capabilities.qualification, {
+        status: 'unsupported' as const,
+        engineeringUsePermitted: false,
+        statement: `Gmsh execution on ${process.platform}/${process.arch} is outside the supported provider boundary because OS-enforced CPU and memory quotas are not implemented.`,
+        evidence: null,
+      });
+    } else if (nodeMajorVersion() !== 24 || options.runtimeVersion !== '4.15.2') {
+      Object.assign(this.capabilities.qualification, {
+        statement: `Local Gmsh ${options.runtimeVersion} adapter on Node ${process.versions.node} is outside the recorded Windows x64 / Node 24 / Gmsh 4.15.2 qualification matrix.`,
+        evidence: null,
+      });
+    }
   }
 
   async submit(request: NeutralMeshJobRequest, geometry: SimulationGeometryResolver): Promise<MeshProviderSubmission> {
     const step = await geometry.export('step');
-    const header = new TextDecoder().decode(step.slice(0, 256));
-    if (step.byteLength < 128 || !header.includes('ISO-10303-21')) throw meshError('SIMULATION_GEOMETRY_EXPORT_INVALID', 'The approved geometry boundary did not return recognizable STEP.');
+    if (step.byteLength > LOCAL_PROVIDER_RESOURCE_LIMITS.maximumStepBytes) throw meshError('SIMULATION_INPUT_LIMIT', `Approved STEP geometry exceeds the ${LOCAL_PROVIDER_RESOURCE_LIMITS.maximumStepBytes}-byte provider limit.`);
+    validateStepEnvelope(step);
     const directory = await mkdtemp(join(tmpdir(), 'tunacad-gmsh-mesh-'));
     const meshRunId = `gmshmesh_${crypto.randomUUID()}`;
     const acceptedAt = new Date().toISOString();
@@ -86,21 +130,27 @@ export class GmshMeshProvider implements ExternalMeshProvider {
       writeFile(stepPath, step),
       writeFile(geoPath, gmshScript(stepPath, request), 'utf8'),
     ]);
-    const child = spawn(this.executable, [geoPath, '-3', '-format', 'msh4', '-o', meshPath, '-v', '2'], {
+    const child = spawnProviderProcess(this.executable, [geoPath, '-3', '-format', 'msh4', '-o', meshPath, '-v', '2'], {
       cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: executableEnvironment(this.executable),
     });
     const run = {
       request, meshRunId, directory, process: child, mesh: null,
       status: { meshRunId, status: 'running', progress: null, phase: 'gmsh_step_import_and_meshing', updatedAt: acceptedAt },
       timeout: undefined as unknown as NodeJS.Timeout,
+      stopResourceMonitor: () => undefined,
     } satisfies MeshRun;
-    run.timeout = setTimeout(() => { child.kill(); void this.failRun(run, 'SIMULATION_MESH_TIMEOUT', 'Gmsh exceeded its declared execution timeout.'); }, this.capabilities.execution.executionTimeoutMs);
+    run.timeout = setTimeout(() => { void this.failRun(run, 'SIMULATION_MESH_TIMEOUT', 'Gmsh exceeded its declared execution timeout.'); }, this.capabilities.execution.executionTimeoutMs);
     run.timeout.unref();
     this.runs.set(meshRunId, run);
     let stderr = '';
-    child.stderr?.on('data', chunk => { stderr = `${stderr}${String(chunk)}`.slice(-12_000); });
+    child.stderr?.on('data', chunk => { stderr = `${stderr}${String(chunk)}`.slice(-LOCAL_PROVIDER_RESOURCE_LIMITS.maximumDiagnosticCharacters); });
     child.once('error', () => void this.failRun(run, 'SIMULATION_MESHER_UNAVAILABLE', 'The configured external Gmsh process could not be started.'));
     child.once('exit', (code, signal) => void this.finishRun(run, meshPath, geometry.descriptor, code, signal, stderr));
+    run.stopResourceMonitor = monitorWorkingDirectory({
+      child,
+      directory,
+      onExceeded: bytes => this.failRun(run, 'SIMULATION_DISK_LIMIT', `Gmsh working data exceeded the ${LOCAL_PROVIDER_RESOURCE_LIMITS.maximumWorkingDirectoryBytes}-byte limit (${bytes} bytes observed).`),
+    });
     return { meshRunId, acceptedAt };
   }
 
@@ -110,15 +160,23 @@ export class GmshMeshProvider implements ExternalMeshProvider {
   async cancel(meshRunId: string): Promise<MeshProviderStatus> {
     const run = this.requireRun(meshRunId);
     if (run.status.status === 'running' || run.status.status === 'queued') {
-      run.process.kill(); clearTimeout(run.timeout); run.mesh = null;
       run.status = { meshRunId, status: 'cancelled', progress: null, phase: 'cancelled', updatedAt: new Date().toISOString() };
-      await safeRemove(run.directory);
+      clearTimeout(run.timeout); run.stopResourceMonitor(); run.mesh = null;
+      const terminated = await terminateChildProcess(run.process);
+      const cleaned = await removeWorkingDirectory(run.directory);
+      run.status = {
+        ...run.status,
+        phase: terminated && cleaned ? 'cancelled_cleaned' : 'cancelled_cleanup_pending',
+        ...(!terminated || !cleaned ? { failure: { code: 'SIMULATION_CLEANUP_FAILED', message: 'Gmsh cancellation could not confirm process termination and temporary-data cleanup.' } } : {}),
+        updatedAt: new Date().toISOString(),
+      };
     }
     return structuredClone(run.status);
   }
 
   private async finishRun(run: MeshRun, meshPath: string, descriptor: SimulationGeometryResolver['descriptor'], code: number | null, signal: NodeJS.Signals | null, stderr: string): Promise<void> {
-    if (run.status.status === 'cancelled' || run.status.status === 'failed') { await safeRemove(run.directory); return; }
+    run.stopResourceMonitor();
+    if (run.status.status === 'cancelled' || run.status.status === 'failed') { await removeWorkingDirectory(run.directory); return; }
     clearTimeout(run.timeout);
     if (code !== 0) {
       const diagnostic = stderr.split(/\r?\n/).filter(Boolean).slice(-1)[0] ?? '';
@@ -126,7 +184,7 @@ export class GmshMeshProvider implements ExternalMeshProvider {
       return;
     }
     try {
-      const parsed = parseMsh41(await readFile(meshPath, 'utf8'));
+      const parsed = parseMsh41(await readUtf8FileBounded(meshPath), run.request.mesh.maximumNodes, run.request.mesh.maximumElements);
       const mesh = normalizeMesh(parsed, run.request, descriptor, this.id, this.version, this.runtimeVersion);
       validateNeutralFemMesh(mesh, run.request);
       run.mesh = mesh;
@@ -136,14 +194,15 @@ export class GmshMeshProvider implements ExternalMeshProvider {
       await this.failRun(run, typed.code ?? 'SIMULATION_MESH_UNTRUSTED', typed.message);
       return;
     }
-    await safeRemove(run.directory);
+    await removeWorkingDirectory(run.directory);
   }
 
   private async failRun(run: MeshRun, code: string, message: string): Promise<void> {
-    if (run.status.status === 'cancelled') return;
-    clearTimeout(run.timeout); run.mesh = null;
+    if (run.status.status === 'cancelled' || run.status.status === 'failed') return;
+    clearTimeout(run.timeout); run.stopResourceMonitor(); run.mesh = null;
     run.status = { meshRunId: run.meshRunId, status: 'failed', progress: null, phase: 'failed', updatedAt: new Date().toISOString(), failure: { code, message: message.slice(0, 2_000) } };
-    await safeRemove(run.directory);
+    await terminateChildProcess(run.process);
+    await removeWorkingDirectory(run.directory);
   }
 
   private requireRun(meshRunId: string): MeshRun {
@@ -167,23 +226,46 @@ function gmshScript(stepPath: string, request: NeutralMeshJobRequest): string {
   ].join('\n');
 }
 
-function parseMsh41(text: string): ParsedMsh {
+export function validateStepEnvelope(step: Uint8Array): void {
+  if (step.byteLength < 128) throw meshError('SIMULATION_GEOMETRY_EXPORT_INVALID', 'Approved geometry is too short to be a complete STEP exchange file.');
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(step);
+  } catch {
+    throw meshError('SIMULATION_GEOMETRY_EXPORT_INVALID', 'Approved STEP geometry is not valid UTF-8 text.');
+  }
+  if (/[^\t\r\n\x20-\x7e]/.test(text)) throw meshError('SIMULATION_GEOMETRY_EXPORT_INVALID', 'Approved STEP geometry contains forbidden control or non-ASCII bytes.');
+  const normalized = text.replace(/\r/g, '');
+  if (!/^\s*ISO-10303-21;\s*HEADER;/i.test(normalized)
+    || !/HEADER;[\s\S]*?ENDSEC;\s*DATA;/i.test(normalized)
+    || !/DATA;[\s\S]*#[1-9]\d*\s*=/.test(normalized)
+    || !/DATA;[\s\S]*?ENDSEC;\s*END-ISO-10303-21;\s*$/i.test(normalized)) {
+    throw meshError('SIMULATION_GEOMETRY_EXPORT_INVALID', 'Approved geometry does not contain one complete STEP header/data/end envelope.');
+  }
+}
+
+export function parseMsh41(text: string, maximumNodes = 500_000, maximumVolumeElements = 250_000): ParsedMsh {
   if (!/\$MeshFormat\s+4\.1\s+0\s+8\s+\$EndMeshFormat/.test(text.replace(/\r/g, ''))) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Gmsh did not return an ASCII MSH 4.1 mesh.');
   const nodesTokens = section(text, 'Nodes').trim().split(/\s+/);
   let cursor = 0;
   const take = () => { const value = Number(nodesTokens[cursor++]); if (!Number.isFinite(value)) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Invalid Gmsh node section.'); return value; };
-  const nodeBlocks = take(); const nodeCount = take(); take(); take();
+  const takeNodeCount = () => integerCount(take(), 'node');
+  const nodeBlocks = takeNodeCount(); const nodeCount = takeNodeCount(); take(); take();
+  if (nodeCount > maximumNodes || nodeBlocks > Math.max(nodeCount, 1)) throw meshError('SIMULATION_MESH_LIMIT', `Gmsh declared ${nodeCount} nodes in ${nodeBlocks} blocks; the admitted node limit is ${maximumNodes}.`);
   const nodeCoordinates = new Map<number, NeutralVector3>();
+  let parsedNodeCount = 0;
   for (let block = 0; block < nodeBlocks; block++) {
-    const entityDimension = take(); take(); const parametric = take(); const count = take();
-    const tags = Array.from({ length: count }, take);
+    const entityDimension = integerCount(take(), 'node entity dimension'); take(); const parametric = integerCount(take(), 'node parametric flag'); const count = takeNodeCount();
+    if (entityDimension > 3 || parametric > 1 || count > nodeCount - parsedNodeCount) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Invalid or excessive Gmsh node block.');
+    const tags = Array.from({ length: count }, () => positiveInteger(take(), 'node tag'));
     for (const tag of tags) {
       const point: NeutralVector3 = [take(), take(), take()];
       if (parametric) for (let ii = 0; ii < entityDimension; ii++) take();
       nodeCoordinates.set(tag, point);
     }
+    parsedNodeCount += count;
   }
-  if (nodeCoordinates.size !== nodeCount) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Gmsh node count is inconsistent.');
+  if (nodeCoordinates.size !== nodeCount || cursor !== nodesTokens.length) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Gmsh node count or section length is inconsistent.');
   const ordered = [...nodeCoordinates.entries()].sort(([a], [b]) => a - b);
   const nodes = ordered.map(([, point]) => point);
   const nodeIndexByTag = new Map(ordered.map(([tag], index) => [tag, index]));
@@ -191,14 +273,19 @@ function parseMsh41(text: string): ParsedMsh {
   const elementTokens = section(text, 'Elements').trim().split(/\s+/);
   cursor = 0;
   const takeElement = () => { const value = Number(elementTokens[cursor++]); if (!Number.isFinite(value)) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Invalid Gmsh element section.'); return value; };
-  const elementBlocks = takeElement(); takeElement(); takeElement(); takeElement();
+  const takeElementCount = () => integerCount(takeElement(), 'element');
+  const elementBlocks = takeElementCount(); const totalElementCount = takeElementCount(); takeElement(); takeElement();
+  const maximumTotalElements = Math.max(1_000, maximumVolumeElements * 6);
+  if (totalElementCount > maximumTotalElements || elementBlocks > Math.max(totalElementCount, 1)) throw meshError('SIMULATION_MESH_LIMIT', `Gmsh declared ${totalElementCount} total elements; the bounded parser limit is ${maximumTotalElements}.`);
   const tetrahedra: ParsedMsh['tetrahedra'] = []; const triangles: ParsedMsh['triangles'] = [];
+  let parsedElementCount = 0;
   for (let block = 0; block < elementBlocks; block++) {
-    const dimension = takeElement(); const entityTag = takeElement(); const elementType = takeElement(); const count = takeElement();
+    const dimension = integerCount(takeElement(), 'element dimension'); const entityTag = takeElement(); const elementType = integerCount(takeElement(), 'element type'); const count = takeElementCount();
+    if (dimension > 3 || count > totalElementCount - parsedElementCount) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Invalid or excessive Gmsh element block.');
     const width = elementType === 11 ? 10 : elementType === 9 ? 6 : gmshElementWidth(elementType);
     for (let ii = 0; ii < count; ii++) {
-      takeElement();
-      const tags = Array.from({ length: width }, takeElement);
+      positiveInteger(takeElement(), 'element tag');
+      const tags = Array.from({ length: width }, () => positiveInteger(takeElement(), 'element node tag'));
       const connectivity = tags.map(tag => {
         const index = nodeIndexByTag.get(tag);
         if (index === undefined) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Gmsh element references an unknown node.');
@@ -207,9 +294,22 @@ function parseMsh41(text: string): ParsedMsh {
       if (dimension === 3 && elementType === 11) tetrahedra.push({ entityTag, connectivity });
       if (dimension === 2 && elementType === 9) triangles.push({ entityTag, connectivity });
     }
+    parsedElementCount += count;
   }
+  if (parsedElementCount !== totalElementCount || cursor !== elementTokens.length) throw meshError('SIMULATION_MESH_FORMAT_INVALID', 'Gmsh element count or section length is inconsistent.');
+  if (tetrahedra.length > maximumVolumeElements) throw meshError('SIMULATION_MESH_LIMIT', `Gmsh produced ${tetrahedra.length} volume elements; the admitted limit is ${maximumVolumeElements}.`);
   if (!tetrahedra.length || !triangles.length) throw meshError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Gmsh must produce complete second-order tetrahedra and triangular boundary facets.');
   return { nodes, nodeIndexByTag, tetrahedra, triangles };
+}
+
+function integerCount(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) throw meshError('SIMULATION_MESH_FORMAT_INVALID', `Invalid Gmsh ${label} count.`);
+  return value;
+}
+
+function positiveInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) throw meshError('SIMULATION_MESH_FORMAT_INVALID', `Invalid Gmsh ${label}.`);
+  return value;
 }
 
 function section(text: string, name: string): string {
@@ -318,5 +418,5 @@ function subtract(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return
 function cross(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
 function length(a: NeutralVector3): number { return Math.hypot(...a); }
 function executableEnvironment(executable: string): NodeJS.ProcessEnv { return { ...process.env, PATH: `${dirname(executable)}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` }; }
-async function safeRemove(directory: string): Promise<void> { try { await rm(directory, { recursive: true, force: true }); } catch { /* temporary data is best-effort cleanup */ } }
+function nodeMajorVersion(): number { return Number.parseInt(process.versions.node.split('.')[0] ?? '', 10); }
 function meshError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }

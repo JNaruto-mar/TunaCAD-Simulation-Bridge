@@ -9,7 +9,13 @@
   "scripts": {
     "start": "node --experimental-strip-types simulation-bridge/cli.mts",
     "test:providers": "node --experimental-strip-types scripts/test-provider-readiness.mts",
-    "test:convergence": "node --experimental-strip-types scripts/test-mesh-convergence.mts"
+    "test:convergence": "node --experimental-strip-types scripts/test-mesh-convergence.mts",
+    "test:lifecycle": "node --experimental-strip-types scripts/test-process-lifecycle.mts",
+    "test:hostile-inputs": "node --experimental-strip-types scripts/test-hostile-provider-inputs.mts",
+    "test:benchmarks": "node --experimental-strip-types scripts/test-sim2-benchmarks.mts",
+    "test:pressure": "node --experimental-strip-types scripts/test-pressure-loads.mts",
+    "test:gravity": "node --experimental-strip-types scripts/test-gravity-loads.mts",
+    "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },
   "description": "",
   "main": "index.js",

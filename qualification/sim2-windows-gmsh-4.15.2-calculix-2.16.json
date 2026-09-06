@@ -1,0 +1,128 @@
+{
+  "schema": "tunacad-simulation-qualification-matrix/1.0",
+  "matrixId": "sim2-windows-x64-gmsh-4.15.2-calculix-2.16",
+  "scope": "SIM-2 single-Part small-displacement linear-static",
+  "environment": {
+    "os": "win32",
+    "architecture": "x64",
+    "nodeMajor": 24,
+    "gmshVersion": "4.15.2",
+    "calculixVersion": "2.16"
+  },
+  "qualification": {
+    "status": "proof_of_concept",
+    "engineeringUsePermitted": false,
+    "recordedAt": "2026-09-06"
+  },
+  "promotionPolicy": {
+    "requiredLaneIds": [
+      "cantilever-analytical",
+      "plate-with-hole-trend",
+      "tapered-bracket-convergence",
+      "near-singular-failure-mode",
+      "two-load-reaction-equilibrium",
+      "active-phase-cancellation",
+      "hostile-provider-files",
+      "windows-job-object-quotas",
+      "independent-engineering-review"
+    ],
+    "requiresAllPassed": true,
+    "requiresEngineeringReview": true
+  },
+  "lanes": [
+    {
+      "id": "cantilever-analytical",
+      "category": "benchmark",
+      "state": "passed",
+      "acceptance": "Tip displacement and fixed-end reaction match the analytical beam solution within declared tolerances across three meshes.",
+      "command": "npm run test:benchmarks",
+      "evidence": {
+        "elementCounts": [350, 871, 1618],
+        "expectedTipDisplacementMm": 0.19196190476190475,
+        "fineDisplacementMm": 0.1908403137435828,
+        "fineRelativeError": 0.005842779168674629,
+        "mediumToFineRelativeChange": 0.00015553833704096362
+      }
+    },
+    {
+      "id": "plate-with-hole-trend",
+      "category": "benchmark",
+      "state": "passed",
+      "acceptance": "Stress-concentration trend and reaction balance pass while refinement changes decrease.",
+      "command": "npm run test:benchmarks",
+      "evidence": {
+        "elementCounts": [1280, 2176, 3349],
+        "maximumStressMPa": [12.864235866689011, 13.551895008312886, 13.821952833806153],
+        "grossStressMPa": 4,
+        "fineStressConcentrationRatio": 3.455488208451538,
+        "mediumToFineRelativeChange": 0.01953832636678882
+      }
+    },
+    {
+      "id": "tapered-bracket-convergence",
+      "category": "benchmark",
+      "state": "passed",
+      "acceptance": "Three immutable meshes preserve geometry identity and meet the declared displacement/stress change bands.",
+      "command": "npm run test:mcp:simulation:convergence-poc",
+      "evidence": {
+        "elementCounts": [1518, 2420, 3950],
+        "mediumToFineDisplacementRelativeChange": 0.00128634,
+        "mediumToFineStressRelativeChange": 0.0337773
+      }
+    },
+    {
+      "id": "near-singular-failure-mode",
+      "category": "benchmark",
+      "state": "passed",
+      "acceptance": "A deliberately near-singular model fails or warns deterministically without returning qualified engineering evidence.",
+      "command": "npm run test:benchmarks",
+      "evidence": {
+        "maximumDisplacementMm": 190.18495393977634,
+        "sectionThicknessMm": 1,
+        "displacementToThicknessRatio": 190.18495393977634,
+        "warningCode": "SIMULATION_SMALL_DISPLACEMENT_ASSUMPTION_EXCEEDED",
+        "engineeringUsePermitted": false
+      }
+    },
+    {
+      "id": "two-load-reaction-equilibrium",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Per-constraint recovered reactions balance the 500 N applied resultant within the declared relative tolerance.",
+      "command": "npm run test:mcp:simulation:gmsh-calculix-poc",
+      "evidence": { "appliedResultantN": 500, "maximumRelativeResidual": 0.0001 }
+    },
+    {
+      "id": "active-phase-cancellation",
+      "category": "lifecycle",
+      "state": "passed",
+      "acceptance": "Meshing and solving cancellation confirm child exit, cleanup, stable terminal state, and late-result quarantine through Chromium and loopback Bridge.",
+      "command": "npm run test:mcp:simulation:cancellation-poc",
+      "evidence": { "phases": ["gmsh_step_import_and_meshing", "external_solver"] }
+    },
+    {
+      "id": "hostile-provider-files",
+      "category": "security",
+      "state": "passed",
+      "acceptance": "Malformed STEP, MSH count bombs, oversized records, incomplete results, and floating-point overflow fail closed with cleanup.",
+      "command": "npm run test:hostile-inputs",
+      "evidence": { "realGmsh": true, "calculixParser": true }
+    },
+    {
+      "id": "windows-job-object-quotas",
+      "category": "resource",
+      "state": "passed",
+      "acceptance": "Windows Job Objects enforce per-process CPU time, process memory, and kill-on-close behavior.",
+      "command": "npm run test:lifecycle",
+      "evidence": { "cpuTimeLimitMs": 120000, "memoryLimitBytes": 1073741824 }
+    },
+    {
+      "id": "independent-engineering-review",
+      "category": "governance",
+      "state": "pending",
+      "acceptance": "An independent qualified reviewer approves the benchmark definitions, tolerances, solver assumptions, and the exact version-bound evidence before engineering use is enabled.",
+      "command": null,
+      "evidence": null
+    }
+  ]
+}

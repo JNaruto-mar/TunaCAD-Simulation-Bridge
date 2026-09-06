@@ -1,5 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type { ChildProcess } from 'node:child_process';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import {
@@ -12,8 +12,18 @@ import {
   type NeutralSimulationResult,
   type NeutralVector3,
   type SimulationProviderStatus,
+  type SimulationProviderCapabilities,
   type SimulationProviderSubmission,
 } from '../../src/simulation/externalSimulationContracts.ts';
+import {
+  LOCAL_PROVIDER_RESOURCE_LIMITS,
+  hasEnforcedProviderProcessQuotas,
+  monitorWorkingDirectory,
+  readUtf8FileBounded,
+  removeWorkingDirectory,
+  spawnProviderProcess,
+  terminateChildProcess,
+} from '../processLifecycle.mts';
 
 interface SolverRun {
   request: NeutralSimulationRequest;
@@ -25,15 +35,17 @@ interface SolverRun {
   status: SimulationProviderStatus;
   result: NeutralSimulationResult | null;
   timeout: NodeJS.Timeout;
+  stopResourceMonitor: () => void;
 }
 
-interface CalculiXOutput {
+export interface CalculiXOutput {
   maximumDisplacementMm: number;
   maximumDisplacementPositionMm: NeutralVector3;
   maximumDisplacementNode: number;
   maximumVonMisesStressMPa: number;
   maximumStressPositionMm: NeutralVector3;
   reactionForcesBySet: Record<string, NeutralVector3>;
+  totalVolumeMm3: number | null;
 }
 
 /** Node-only adapter for a user-installed CalculiX executable. It accepts only
@@ -41,7 +53,7 @@ interface CalculiXOutput {
 export class CalculiXSolverProvider implements ExternalSolverProvider {
   readonly id = 'tunacad-calculix-solver-poc';
   readonly version = '0.1.0-poc';
-  readonly capabilities = {
+  readonly capabilities: SimulationProviderCapabilities = {
     interfaceVersion: SIMULATION_PROVIDER_INTERFACE_VERSION,
     analysisTypes: ['linear_static'] as const,
     study: {
@@ -50,7 +62,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       maximumMaterials: 1,
       maximumReferenceBindings: 128,
       materialModels: ['isotropic_linear_elastic'] as const,
-      loadTypes: ['surface_force'] as const,
+      loadTypes: ['surface_force', 'pressure', 'gravity'] as const,
       maximumLoads: 64,
       maximumReferencesPerLoad: 32,
       constraintTypes: ['fixed'] as const,
@@ -64,6 +76,17 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
     normalizedResults: true as const,
     durableReferenceMapping: 'supported' as const,
     authority: 'engineering' as const,
+    qualification: {
+      status: 'proof_of_concept' as const,
+      engineeringUsePermitted: false,
+      statement: 'Local CalculiX adapter with version-bound benchmark evidence; independent engineering review is still required before qualified use.',
+      limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'One isotropic linear-elastic material', 'Pressure and gravity loading are experimental SIM-3 capabilities outside the SIM-2 qualification matrix'],
+      evidence: {
+        schema: 'tunacad-simulation-qualification-matrix/1.0' as const,
+        matrixId: 'sim2-windows-x64-gmsh-4.15.2-calculix-2.16',
+        pendingLaneIds: ['independent-engineering-review'],
+      },
+    },
     execution: {
       topology: 'local_adapter' as const,
       credentials: 'none' as const,
@@ -74,6 +97,15 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       totalTimeoutMs: 125_000,
       rawArtifactRetentionMs: 0,
       normalizedResultRetentionMs: 20 * 60 * 1000,
+      resourceLimits: {
+        maximumInputGeometryBytes: null,
+        maximumWorkingDirectoryBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumWorkingDirectoryBytes,
+        maximumResultFileBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumResultFileBytes,
+        maximumDiagnosticCharacters: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumDiagnosticCharacters,
+        processTerminationGraceMs: LOCAL_PROVIDER_RESOURCE_LIMITS.processTerminationGraceMs,
+        cpuTimeLimitMs: LOCAL_PROVIDER_RESOURCE_LIMITS.cpuTimeLimitMs,
+        memoryLimitBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.memoryLimitBytes,
+      },
     },
   };
   private readonly executable: string;
@@ -86,30 +118,52 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
     }
     this.executable = resolve(options.executable);
     this.runtimeVersion = options.runtimeVersion;
+    if (!hasEnforcedProviderProcessQuotas()) {
+      Object.assign(this.capabilities.qualification, {
+        status: 'unsupported' as const,
+        engineeringUsePermitted: false,
+        statement: `CalculiX execution on ${process.platform}/${process.arch} is outside the supported provider boundary because OS-enforced CPU and memory quotas are not implemented.`,
+        evidence: null,
+      });
+    } else if (nodeMajorVersion() !== 24 || options.runtimeVersion !== '2.16') {
+      Object.assign(this.capabilities.qualification, {
+        statement: `Local CalculiX ${options.runtimeVersion} adapter on Node ${process.versions.node} is outside the recorded Windows x64 / Node 24 / CalculiX 2.16 qualification matrix.`,
+        evidence: null,
+      });
+    }
   }
 
   async submit(request: NeutralSimulationRequest, mesh: NeutralFemMesh): Promise<SimulationProviderSubmission> {
     const input = createInputDeck(request, mesh);
+    if (Buffer.byteLength(input, 'utf8') > LOCAL_PROVIDER_RESOURCE_LIMITS.maximumResultFileBytes) {
+      throw providerError('SIMULATION_INPUT_LIMIT', `CalculiX input exceeds the ${LOCAL_PROVIDER_RESOURCE_LIMITS.maximumResultFileBytes}-byte provider limit.`);
+    }
     const directory = await mkdtemp(join(tmpdir(), 'tunacad-calculix-solver-'));
     const providerRunId = `calculixsolve_${crypto.randomUUID()}`;
     const submittedAt = new Date().toISOString();
     await writeFile(join(directory, 'tunacad.inp'), input, 'utf8');
-    const child = spawn(this.executable, ['-i', 'tunacad'], {
+    const child = spawnProviderProcess(this.executable, ['-i', 'tunacad'], {
       cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: executableEnvironment(this.executable),
     });
     const run = {
       request, mesh, providerRunId, submittedAt, directory, process: child, result: null,
       status: { providerRunId, status: 'running', progress: null, phase: 'external_solver', updatedAt: submittedAt },
       timeout: undefined as unknown as NodeJS.Timeout,
+      stopResourceMonitor: () => undefined,
     } satisfies SolverRun;
-    run.timeout = setTimeout(() => { child.kill(); void this.failRun(run, 'SIMULATION_TIMEOUT', 'CalculiX exceeded its declared execution timeout.'); }, this.capabilities.execution.executionTimeoutMs);
+    run.timeout = setTimeout(() => { void this.failRun(run, 'SIMULATION_TIMEOUT', 'CalculiX exceeded its declared execution timeout.'); }, this.capabilities.execution.executionTimeoutMs);
     run.timeout.unref();
     this.runs.set(providerRunId, run);
     let diagnostic = '';
-    const collect = (chunk: unknown) => { diagnostic = `${diagnostic}${String(chunk)}`.slice(-12_000); };
+    const collect = (chunk: unknown) => { diagnostic = `${diagnostic}${String(chunk)}`.slice(-LOCAL_PROVIDER_RESOURCE_LIMITS.maximumDiagnosticCharacters); };
     child.stdout?.on('data', collect); child.stderr?.on('data', collect);
     child.once('error', () => void this.failRun(run, 'SIMULATION_SOLVER_UNAVAILABLE', 'The configured external CalculiX process could not be started.'));
     child.once('exit', (code, signal) => void this.finishRun(run, code, signal, diagnostic));
+    run.stopResourceMonitor = monitorWorkingDirectory({
+      child,
+      directory,
+      onExceeded: bytes => this.failRun(run, 'SIMULATION_DISK_LIMIT', `CalculiX working data exceeded the ${LOCAL_PROVIDER_RESOURCE_LIMITS.maximumWorkingDirectoryBytes}-byte limit (${bytes} bytes observed).`),
+    });
     return { providerRunId, acceptedAt: submittedAt };
   }
 
@@ -119,15 +173,23 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
   async cancel(providerRunId: string): Promise<SimulationProviderStatus> {
     const run = this.requireRun(providerRunId);
     if (run.status.status === 'running' || run.status.status === 'queued') {
-      run.process.kill(); clearTimeout(run.timeout); run.result = null;
       run.status = { providerRunId, status: 'cancelled', progress: null, phase: 'cancelled', updatedAt: new Date().toISOString() };
-      await safeRemove(run.directory);
+      clearTimeout(run.timeout); run.stopResourceMonitor(); run.result = null;
+      const terminated = await terminateChildProcess(run.process);
+      const cleaned = await removeWorkingDirectory(run.directory);
+      run.status = {
+        ...run.status,
+        phase: terminated && cleaned ? 'cancelled_cleaned' : 'cancelled_cleanup_pending',
+        ...(!terminated || !cleaned ? { failure: { code: 'SIMULATION_CLEANUP_FAILED', message: 'CalculiX cancellation could not confirm process termination and temporary-data cleanup.' } } : {}),
+        updatedAt: new Date().toISOString(),
+      };
     }
     return structuredClone(run.status);
   }
 
   private async finishRun(run: SolverRun, code: number | null, signal: NodeJS.Signals | null, diagnostic: string): Promise<void> {
-    if (run.status.status === 'cancelled' || run.status.status === 'failed') { await safeRemove(run.directory); return; }
+    run.stopResourceMonitor();
+    if (run.status.status === 'cancelled' || run.status.status === 'failed') { await removeWorkingDirectory(run.directory); return; }
     clearTimeout(run.timeout);
     if (code !== 0) {
       const lastLine = diagnostic.split(/\r?\n/).filter(Boolean).slice(-1)[0] ?? '';
@@ -136,9 +198,10 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
     }
     try {
       const output = parseCalculiXDat(
-        await readFile(join(run.directory, 'tunacad.dat'), 'utf8'),
+        await readUtf8FileBounded(join(run.directory, 'tunacad.dat')),
         run.mesh,
         run.request.constraints.map((_constraint, index) => constraintSetName(index)),
+        run.request.loads.some(load => load.type === 'gravity'),
       );
       run.result = normalizeResult(run, output, this.id, this.version, this.runtimeVersion);
       run.status = { providerRunId: run.providerRunId, status: 'succeeded', progress: 1, phase: 'normalized', updatedAt: new Date().toISOString() };
@@ -146,14 +209,15 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       await this.failRun(run, 'SIMULATION_RESULT_UNTRUSTED', error instanceof Error ? error.message : String(error));
       return;
     }
-    await safeRemove(run.directory);
+    await removeWorkingDirectory(run.directory);
   }
 
   private async failRun(run: SolverRun, code: string, message: string): Promise<void> {
-    if (run.status.status === 'cancelled') return;
-    clearTimeout(run.timeout); run.result = null;
+    if (run.status.status === 'cancelled' || run.status.status === 'failed') return;
+    clearTimeout(run.timeout); run.stopResourceMonitor(); run.result = null;
     run.status = { providerRunId: run.providerRunId, status: 'failed', progress: null, phase: 'failed', updatedAt: new Date().toISOString(), failure: { code, message: message.slice(0, 2_000) } };
-    await safeRemove(run.directory);
+    await terminateChildProcess(run.process);
+    await removeWorkingDirectory(run.directory);
   }
 
   private requireRun(providerRunId: string): SolverRun {
@@ -163,12 +227,28 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
   }
 }
 
-function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh): string {
+export function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh): string {
   if (request.analysis.type !== 'linear_static' || request.material.model !== 'isotropic_linear_elastic') throw providerError('SIMULATION_ANALYSIS_UNSUPPORTED', 'The CalculiX POC supports isotropic linear-static analysis only.');
   if (mesh.element.geometryOrder !== 2 || mesh.element.solutionOrder !== 2 || mesh.volumeElements.connectivity.some(cell => cell.length !== 10)) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The CalculiX adapter requires complete second-order C3D10 tetrahedra.');
-  const surfaceLoads = request.loads.filter((load): load is Extract<NeutralSimulationRequest['loads'][number], { type: 'surface_force' }> => load.type === 'surface_force');
+  const supportedLoads = request.loads.filter(load => load.type === 'surface_force' || load.type === 'pressure' || load.type === 'gravity');
   const fixedConstraints = request.constraints.filter((constraint): constraint is Extract<NeutralSimulationRequest['constraints'][number], { type: 'fixed' }> => constraint.type === 'fixed');
-  if (!surfaceLoads.length || surfaceLoads.length !== request.loads.length) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter requires one or more surface-force loads.');
+  if (!supportedLoads.length || supportedLoads.length !== request.loads.length) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter requires one or more surface-force, pressure, or gravity loads.');
+  const gravityLoads = supportedLoads.filter((load): load is Extract<NeutralSimulationRequest['loads'][number], { type: 'gravity' }> => load.type === 'gravity');
+  if (gravityLoads.length && (!Number.isFinite(request.material.densityKgM3) || !(request.material.densityKgM3! > 0) || request.material.densityKgM3! > 100_000)) throw providerError('SIMULATION_MATERIAL_INVALID', 'CalculiX gravity loading requires a positive material density no greater than 100,000 kg/m^3.');
+  if (gravityLoads.some(load => load.accelerationMmPerS2.some(value => !Number.isFinite(value))
+    || Math.hypot(...load.accelerationMmPerS2) <= 1e-9 || Math.hypot(...load.accelerationMmPerS2) > 1_000_000_000)) {
+    throw providerError('SIMULATION_LOAD_INVALID', 'Each gravity acceleration must be a finite non-zero vector no greater than 1,000,000,000 mm/s^2 in magnitude.');
+  }
+  const gravityAcceleration = gravityLoads.reduce<NeutralVector3>((sum, load) => [
+    sum[0] + load.accelerationMmPerS2[0],
+    sum[1] + load.accelerationMmPerS2[1],
+    sum[2] + load.accelerationMmPerS2[2],
+  ], [0, 0, 0]);
+  const gravityMagnitude = Math.hypot(...gravityAcceleration);
+  if (!Number.isFinite(gravityMagnitude)) throw providerError('SIMULATION_LOAD_INVALID', 'The combined gravity acceleration is outside the finite solver range.');
+  if (gravityLoads.length && gravityMagnitude <= 1e-9 && supportedLoads.length === gravityLoads.length) {
+    throw providerError('SIMULATION_LOAD_INVALID', 'The combined gravity acceleration is zero, so the study has no effective load.');
+  }
   if (!fixedConstraints.length || fixedConstraints.length !== request.constraints.length) throw providerError('SIMULATION_CONSTRAINT_INVALID', 'The CalculiX adapter requires one or more fixed constraints.');
   const fixedSets = fixedConstraints.map((constraint, index) => ({
     name: constraintSetName(index),
@@ -184,12 +264,17 @@ function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh
   }
   const fixedRegionIds = new Set(fixedSets.flatMap(item => item.regions.map(region => region.regionId)));
   const nodalLoads = new Map<number, NeutralVector3>();
-  for (const load of surfaceLoads) {
+  const facetGeometry = supportedLoads.some(load => load.type === 'pressure') ? buildBoundaryFacetGeometry(mesh) : null;
+  for (const load of supportedLoads) {
+    if (load.type === 'gravity') continue;
     const regions = requireMeshRegions(mesh, load.semanticReferenceIds);
     if (regions.some(region => fixedRegionIds.has(region.regionId))) {
-      throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A surface-force region is also used by a fixed constraint.');
+      throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A loaded region is also used by a fixed constraint.');
     }
-    addNodalLoads(nodalLoads, consistentSurfaceLoads(mesh, uniqueFacetIndices(regions), load.forceN));
+    const facetIndices = uniqueFacetIndices(regions);
+    addNodalLoads(nodalLoads, load.type === 'surface_force'
+      ? consistentSurfaceLoads(mesh, facetIndices, load.forceN)
+      : pressureSurfaceLoads(mesh, facetIndices, load.pressureMPa, facetGeometry!));
   }
   const lines = [
     '*HEADING',
@@ -202,18 +287,26 @@ function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh
     '*MATERIAL, NAME=TUNACAD_MATERIAL',
     '*ELASTIC',
     `${request.material.youngsModulusMPa},${request.material.poissonRatio}`,
+    ...(request.material.densityKgM3 !== undefined ? ['*DENSITY', `${request.material.densityKgM3 * 1e-12}`] : []),
     '*SOLID SECTION, ELSET=EALL, MATERIAL=TUNACAD_MATERIAL',
     '*STEP',
     '*STATIC',
     '*BOUNDARY',
     ...fixedSets.map(fixed => `${fixed.name},1,3,0`),
-    '*CLOAD',
-    ...[...nodalLoads.entries()].flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${value}`] : [])),
+    ...([...nodalLoads.entries()].length ? [
+      '*CLOAD',
+      ...[...nodalLoads.entries()].flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${value}`] : [])),
+    ] : []),
+    ...(gravityMagnitude > 1e-9 ? [
+      '*DLOAD',
+      `EALL,GRAV,${gravityMagnitude},${gravityAcceleration[0] / gravityMagnitude},${gravityAcceleration[1] / gravityMagnitude},${gravityAcceleration[2] / gravityMagnitude}`,
+    ] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES',
     'U',
     ...fixedSets.flatMap(fixed => [`*NODE PRINT, NSET=${fixed.name}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
     '*EL PRINT, ELSET=EALL',
     'S',
+    ...(gravityLoads.length ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
     '*END STEP',
   ];
   return `${lines.join('\n')}\n`;
@@ -274,13 +367,17 @@ function consistentSurfaceLoads(mesh: NeutralFemMesh, facetIndices: number[], to
   return result;
 }
 
-function parseCalculiXDat(text: string, mesh: NeutralFemMesh, expectedReactionSets: string[]): CalculiXOutput {
-  let mode: 'displacement' | 'reaction' | 'stress' | null = null;
+export function parseCalculiXDat(text: string, mesh: NeutralFemMesh, expectedReactionSets: string[], expectVolume = false): CalculiXOutput {
+  let mode: 'displacement' | 'reaction' | 'stress' | 'volume' | null = null;
   let reactionSet: string | null = null;
   let maximumDisplacementMm = -Infinity; let maximumDisplacementNode = -1;
   let maximumVonMisesStressMPa = -Infinity; let maximumStressElement = -1;
+  let totalVolumeMm3: number | null = null;
   const reactionForcesBySet: Record<string, NeutralVector3> = {};
-  for (const rawLine of text.split(/\r?\n/)) {
+  const lines = text.split(/\r?\n/);
+  if (lines.length > 2_000_000) throw new Error('CalculiX result contains too many records.');
+  for (const rawLine of lines) {
+    if (rawLine.length > 4_096) throw new Error('CalculiX result contains an oversized record.');
     const lower = rawLine.toLowerCase();
     if (lower.includes('displacements') && lower.includes('for set')) { mode = 'displacement'; continue; }
     if ((lower.includes('total force') || lower.includes('forces')) && lower.includes('for set')) {
@@ -289,31 +386,184 @@ function parseCalculiXDat(text: string, mesh: NeutralFemMesh, expectedReactionSe
       continue;
     }
     if (lower.includes('stresses') && lower.includes('for set')) { mode = 'stress'; continue; }
-    const values = rawLine.trim().split(/\s+/).map(value => Number(value.replace(/[dD]/g, 'E')));
+    if (lower.includes('volume') && lower.includes('for set')) { mode = 'volume'; continue; }
+    const trimmed = rawLine.trim();
+    if (!trimmed) continue;
+    const values = trimmed.split(/\s+/).map(value => Number(value.replace(/[dD]/g, 'E')));
     if (!values.length || values.some(value => !Number.isFinite(value))) continue;
     if (mode === 'displacement' && values.length >= 4) {
       const node = Math.trunc(values[0]) - 1;
-      if (node < 0 || node >= mesh.nodes.length) continue;
+      if (!Number.isSafeInteger(values[0]) || node < 0 || node >= mesh.nodes.length) continue;
       const magnitude = Math.hypot(values[1], values[2], values[3]);
+      if (!Number.isFinite(magnitude)) throw new Error('CalculiX displacement magnitude overflowed the finite result range.');
       if (magnitude > maximumDisplacementMm) { maximumDisplacementMm = magnitude; maximumDisplacementNode = node; }
     } else if (mode === 'reaction' && reactionSet && values.length >= 3) {
       const force = values.slice(-3); const total = reactionForcesBySet[reactionSet] ?? [0, 0, 0];
       total[0] += force[0]; total[1] += force[1]; total[2] += force[2]; reactionForcesBySet[reactionSet] = total;
+      if (total.some(value => !Number.isFinite(value))) throw new Error('CalculiX reaction accumulation overflowed the finite result range.');
     } else if (mode === 'stress' && values.length >= 8) {
       const element = Math.trunc(values[0]) - 1;
-      if (element < 0 || element >= mesh.volumeElements.connectivity.length) continue;
+      if (!Number.isSafeInteger(values[0]) || element < 0 || element >= mesh.volumeElements.connectivity.length) continue;
       const [sxx, syy, szz, sxy, sxz, syz] = values.slice(-6);
       const vonMises = Math.sqrt(0.5 * ((sxx - syy) ** 2 + (syy - szz) ** 2 + (szz - sxx) ** 2) + 3 * (sxy ** 2 + sxz ** 2 + syz ** 2));
+      if (!Number.isFinite(vonMises)) throw new Error('CalculiX stress magnitude overflowed the finite result range.');
       if (vonMises > maximumVonMisesStressMPa) { maximumVonMisesStressMPa = vonMises; maximumStressElement = element; }
+    } else if (mode === 'volume' && values.length >= 1) {
+      totalVolumeMm3 = values[values.length - 1];
     }
   }
-  if (!(maximumDisplacementMm > 0) || !(maximumVonMisesStressMPa > 0) || maximumDisplacementNode < 0 || maximumStressElement < 0
-    || expectedReactionSets.some(setName => !reactionForcesBySet[setName] || reactionForcesBySet[setName].some(value => !Number.isFinite(value)))) {
-    throw new Error('CalculiX did not produce complete finite displacement, stress and reaction-force output.');
+  if (!Number.isFinite(maximumDisplacementMm) || !(maximumDisplacementMm > 0)
+    || !Number.isFinite(maximumVonMisesStressMPa) || !(maximumVonMisesStressMPa > 0) || maximumDisplacementNode < 0 || maximumStressElement < 0
+    || expectedReactionSets.some(setName => !reactionForcesBySet[setName] || reactionForcesBySet[setName].some(value => !Number.isFinite(value)))
+    || (expectVolume && (!Number.isFinite(totalVolumeMm3) || !(totalVolumeMm3! > 0)))) {
+    throw new Error(`CalculiX did not produce complete finite displacement, stress, reaction-force, and requested volume output (displacement=${maximumDisplacementMm}, node=${maximumDisplacementNode}, stress=${maximumVonMisesStressMPa}, element=${maximumStressElement}, reactionSets=${Object.keys(reactionForcesBySet).join(',')}, volume=${String(totalVolumeMm3)}).`);
   }
   const stressNodes = mesh.volumeElements.connectivity[maximumStressElement].slice(0, 4).map(node => mesh.nodes[node]);
   const maximumStressPositionMm = [0, 1, 2].map(axis => stressNodes.reduce((sum, point) => sum + point[axis], 0) / stressNodes.length) as NeutralVector3;
-  return { maximumDisplacementMm, maximumDisplacementPositionMm: mesh.nodes[maximumDisplacementNode], maximumDisplacementNode, maximumVonMisesStressMPa, maximumStressPositionMm, reactionForcesBySet };
+  return { maximumDisplacementMm, maximumDisplacementPositionMm: mesh.nodes[maximumDisplacementNode], maximumDisplacementNode, maximumVonMisesStressMPa, maximumStressPositionMm, reactionForcesBySet, totalVolumeMm3 };
+}
+
+interface BoundaryFacetGeometry { areaMm2: number; outwardNormal: NeutralVector3 }
+
+/** Convert scalar pressure to consistent C3D10 boundary-node forces. Positive
+ * pressure is compressive (opposite the local outward normal); negative
+ * pressure is suction. MPa is N/mm^2, so no hidden unit conversion is needed. */
+export function pressureSurfaceLoads(
+  mesh: NeutralFemMesh,
+  facetIndices: number[],
+  pressureMPa: number,
+  geometry = buildBoundaryFacetGeometry(mesh),
+): Map<number, NeutralVector3> {
+  if (!Number.isFinite(pressureMPa) || pressureMPa === 0 || Math.abs(pressureMPa) > 1_000_000) throw providerError('SIMULATION_LOAD_INVALID', 'Pressure must be finite, non-zero, and no greater than 1,000,000 MPa in magnitude.');
+  const result = new Map<number, NeutralVector3>();
+  for (const facetIndex of facetIndices) {
+    const facet = mesh.boundaryFacets.connectivity[facetIndex];
+    const facetEvidence = geometry[facetIndex];
+    if (!facet || facet.length !== 6 || !facetEvidence) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Pressure requires an oriented quadratic triangular boundary facet.');
+    const totalFacetForce = facetEvidence.outwardNormal.map(value => -pressureMPa * facetEvidence.areaMm2 * value) as NeutralVector3;
+    for (const node of facet.slice(3, 6)) {
+      const prior = result.get(node) ?? [0, 0, 0];
+      result.set(node, [prior[0] + totalFacetForce[0] / 3, prior[1] + totalFacetForce[1] / 3, prior[2] + totalFacetForce[2] / 3]);
+    }
+  }
+  return result;
+}
+
+/** Resolve a uniform body acceleration into the total force carried by the
+ * neutral volume mesh. kg/m^3 × mm^3 × mm/s^2 × 1e-12 produces newtons in the
+ * CalculiX mm/N/s/tonne unit system. */
+export function gravityResultant(
+  mesh: NeutralFemMesh,
+  densityKgM3: number,
+  accelerationMmPerS2: NeutralVector3,
+): NeutralVector3 {
+  return sumForces(gravityNodalLoads(mesh, densityKgM3, accelerationMmPerS2));
+}
+
+/** Independently integrate the consistent C3D10 nodal body loads. CalculiX's
+ * printed RF total omits body-load contributions attached directly to fixed
+ * nodes, so normalization uses this map to restore those support reactions. */
+export function gravityNodalLoads(
+  mesh: NeutralFemMesh,
+  densityKgM3: number,
+  accelerationMmPerS2: NeutralVector3,
+): Map<number, NeutralVector3> {
+  if (!Number.isFinite(densityKgM3) || densityKgM3 <= 0 || densityKgM3 > 100_000) throw providerError('SIMULATION_MATERIAL_INVALID', 'Gravity requires a positive finite material density no greater than 100,000 kg/m^3.');
+  if (accelerationMmPerS2.some(value => !Number.isFinite(value)) || Math.hypot(...accelerationMmPerS2) <= 1e-9 || Math.hypot(...accelerationMmPerS2) > 1_000_000_000) {
+    throw providerError('SIMULATION_LOAD_INVALID', 'Gravity acceleration must be a finite non-zero vector no greater than 1,000,000,000 mm/s^2 in magnitude.');
+  }
+  const result = new Map<number, NeutralVector3>();
+  for (const cell of mesh.volumeElements.connectivity) {
+    if (cell.length !== 10) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Gravity requires complete second-order C3D10 tetrahedra.');
+    const points = cell.map(node => mesh.nodes[node]);
+    for (const sample of quadraticTetraIntegration(points)) {
+      cell.forEach((node, localNode) => {
+        const scale = densityKgM3 * 1e-12 * sample.volumeWeightMm3 * sample.shapeFunctions[localNode];
+        const prior = result.get(node) ?? [0, 0, 0];
+        result.set(node, [
+          prior[0] + accelerationMmPerS2[0] * scale,
+          prior[1] + accelerationMmPerS2[1] * scale,
+          prior[2] + accelerationMmPerS2[2] * scale,
+        ]);
+      });
+    }
+  }
+  if (!result.size || [...result.values()].some(force => force.some(value => !Number.isFinite(value)))) throw providerError('SIMULATION_MESH_INVALID', 'Gravity produced no finite consistent nodal body loads.');
+  return result;
+}
+
+/** Four-point tetrahedral quadrature matches CalculiX C3D10 volume/body-load
+ * integration and accounts for displaced midside nodes on curved geometry. */
+export function quadraticTetraVolumeMm3(points: NeutralVector3[]): number {
+  return quadraticTetraIntegration(points).reduce((sum, sample) => sum + sample.volumeWeightMm3, 0);
+}
+
+interface QuadraticTetraIntegrationSample { volumeWeightMm3: number; shapeFunctions: number[] }
+
+function quadraticTetraIntegration(points: NeutralVector3[]): QuadraticTetraIntegrationSample[] {
+  if (points.length !== 10 || points.some(point => point.some(value => !Number.isFinite(value)))) {
+    throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'C3D10 volume integration requires ten finite neutral nodes.');
+  }
+  const a = 0.5854101966249685;
+  const b = 0.1381966011250105;
+  const barycentricPoints: NeutralVector3[] = [
+    [b, b, b], [a, b, b], [b, a, b], [b, b, a],
+  ];
+  let orientation = 0;
+  return barycentricPoints.map(([r, s, t]) => {
+    const barycentric = [1 - r - s - t, r, s, t];
+    const shapeFunctions = barycentric.map(value => value * (2 * value - 1));
+    for (const [node, i, j] of [[4, 0, 1], [5, 1, 2], [6, 2, 0], [7, 0, 3], [8, 2, 3], [9, 1, 3]] as const) {
+      shapeFunctions[node] = 4 * barycentric[i] * barycentric[j];
+    }
+    const derivatives = [
+      [-1, 1, 0, 0],
+      [-1, 0, 1, 0],
+      [-1, 0, 0, 1],
+    ];
+    const gradients = derivatives.map(derivative => {
+      const result = barycentric.map((value, index) => (4 * value - 1) * derivative[index]);
+      for (const [node, i, j] of [[4, 0, 1], [5, 1, 2], [6, 2, 0], [7, 0, 3], [8, 2, 3], [9, 1, 3]] as const) {
+        result[node] = 4 * (derivative[i] * barycentric[j] + barycentric[i] * derivative[j]);
+      }
+      return result;
+    });
+    const jacobianColumns = gradients.map(gradient => [0, 1, 2].map(axis => points.reduce((sum, point, node) => sum + point[axis] * gradient[node], 0)) as NeutralVector3);
+    const determinant = dotVector(jacobianColumns[0], crossVector(jacobianColumns[1], jacobianColumns[2]));
+    if (!Number.isFinite(determinant) || Math.abs(determinant) <= 1e-18) throw providerError('SIMULATION_MESH_INVALID', 'Gravity encountered a singular C3D10 Jacobian.');
+    const sign = Math.sign(determinant);
+    if (orientation && sign !== orientation) throw providerError('SIMULATION_MESH_INVALID', 'Gravity encountered an inverted C3D10 element.');
+    orientation = sign;
+    return { volumeWeightMm3: Math.abs(determinant) / 24, shapeFunctions };
+  });
+}
+
+function buildBoundaryFacetGeometry(mesh: NeutralFemMesh): BoundaryFacetGeometry[] {
+  const adjacentCells = new Map<string, NeutralVector3[]>();
+  for (const cell of mesh.volumeElements.connectivity) {
+    const vertices = cell.slice(0, 4);
+    const center = centroid(vertices.map(node => mesh.nodes[node]));
+    for (const localFace of [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]]) {
+      const key = faceKey(localFace.map(index => vertices[index]));
+      const entries = adjacentCells.get(key) ?? [];
+      entries.push(center);
+      adjacentCells.set(key, entries);
+    }
+  }
+  return mesh.boundaryFacets.connectivity.map(facet => {
+    if (facet.length !== 6) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Pressure requires quadratic triangular boundary facets.');
+    const corners = facet.slice(0, 3);
+    const cells = adjacentCells.get(faceKey(corners));
+    if (!cells || cells.length !== 1) throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A pressure facet must bound exactly one volume element.');
+    const points = corners.map(node => mesh.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3];
+    const rawNormal = crossVector(subtractVector(points[1], points[0]), subtractVector(points[2], points[0]));
+    const doubleArea = Math.hypot(...rawNormal);
+    if (!(doubleArea > 0)) throw providerError('SIMULATION_LOAD_INVALID', 'A pressure facet has zero area.');
+    const faceCenter = centroid(points);
+    const towardOutside = subtractVector(faceCenter, cells[0]);
+    const orientation = dotVector(rawNormal, towardOutside) >= 0 ? 1 : -1;
+    return { areaMm2: doubleArea / 2, outwardNormal: rawNormal.map(value => orientation * value / doubleArea) as NeutralVector3 };
+  });
 }
 
 function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: string, adapterVersion: string, runtimeVersion: string): NeutralSimulationResult {
@@ -321,18 +571,47 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
   const displacementBinding = bindingForNode(run.mesh, output.maximumDisplacementNode, request);
   const completedAt = new Date().toISOString();
   const factorOfSafety = request.material.yieldStrengthMPa ? request.material.yieldStrengthMPa / output.maximumVonMisesStressMPa : null;
+  const combinedGravityNodalLoads = new Map<number, NeutralVector3>();
+  for (const load of request.loads) {
+    if (load.type === 'gravity') addNodalLoads(combinedGravityNodalLoads, gravityNodalLoads(run.mesh, request.material.densityKgM3!, load.accelerationMmPerS2));
+  }
   const reactions = request.constraints.map((constraint, index) => ({
     constraintId: constraint.id,
-    forceN: output.reactionForcesBySet[constraintSetName(index)],
+    forceN: subtractVector(
+      output.reactionForcesBySet[constraintSetName(index)],
+      sumForcesAtNodes(combinedGravityNodalLoads, uniqueNodes(run.mesh, uniqueFacetIndices(requireMeshRegions(run.mesh, constraint.semanticReferenceIds)))),
+    ),
     semanticReferenceIds: [...constraint.semanticReferenceIds],
   }));
-  const appliedForce = request.loads.reduce<NeutralVector3>((sum, load) => load.type === 'surface_force'
-    ? [sum[0] + load.forceN[0], sum[1] + load.forceN[1], sum[2] + load.forceN[2]]
-    : sum, [0, 0, 0]);
+  const hasGravity = request.loads.some(load => load.type === 'gravity');
+  if (hasGravity) {
+    const solverVolumeRelativeError = Math.abs(output.totalVolumeMm3! - request.geometry.shape.volumeMm3) / request.geometry.shape.volumeMm3;
+    if (!Number.isFinite(solverVolumeRelativeError) || solverVolumeRelativeError > 0.05) throw new Error(`CalculiX element volume differs from the approved CAD volume by ${solverVolumeRelativeError}; the maximum is 0.05.`);
+  }
+  const pressureGeometry = request.loads.some(load => load.type === 'pressure') ? buildBoundaryFacetGeometry(run.mesh) : null;
+  const appliedForce = request.loads.reduce<NeutralVector3>((sum, load) => {
+    const force = load.type === 'surface_force'
+      ? load.forceN
+      : load.type === 'pressure'
+        ? sumForces(pressureSurfaceLoads(run.mesh, uniqueFacetIndices(requireMeshRegions(run.mesh, load.semanticReferenceIds)), load.pressureMPa, pressureGeometry!))
+        : gravityResultant(run.mesh, request.material.densityKgM3!, load.accelerationMmPerS2);
+    return [sum[0] + force[0], sum[1] + force[1], sum[2] + force[2]];
+  }, [0, 0, 0]);
   const reactionForce = reactions.reduce<NeutralVector3>((sum, reaction) => [sum[0] + reaction.forceN[0], sum[1] + reaction.forceN[1], sum[2] + reaction.forceN[2]], [0, 0, 0]);
   const equilibriumResidual = Math.hypot(appliedForce[0] + reactionForce[0], appliedForce[1] + reactionForce[1], appliedForce[2] + reactionForce[2]);
   const equilibriumTolerance = Math.max(1e-6, Math.hypot(...appliedForce) * 1e-4);
-  if (equilibriumResidual > equilibriumTolerance) throw new Error(`CalculiX reaction/load equilibrium residual ${equilibriumResidual} N exceeds ${equilibriumTolerance} N.`);
+  if (equilibriumResidual > equilibriumTolerance) throw new Error(`CalculiX reaction/load equilibrium residual ${equilibriumResidual} N exceeds ${equilibriumTolerance} N (applied ${appliedForce.join(', ')} N; reaction ${reactionForce.join(', ')} N).`);
+  const positiveDimensions = request.geometry.shape.boundingBoxMm.size.filter(value => value > 0);
+  const smallestDimensionMm = positiveDimensions.length ? Math.min(...positiveDimensions) : null;
+  const exceedsSmallDisplacementAssumption = smallestDimensionMm !== null && output.maximumDisplacementMm > smallestDimensionMm * 0.1;
+  const warnings: NeutralSimulationResult['warnings'] = [
+    { code: 'SIMULATION_PROVIDER_POC', message: 'External CalculiX proof of concept; results require mesh convergence and qualified-engineer review.', severity: 'warning' },
+  ];
+  if (exceedsSmallDisplacementAssumption) warnings.push({
+    code: 'SIMULATION_SMALL_DISPLACEMENT_ASSUMPTION_EXCEEDED',
+    message: `Maximum displacement ${output.maximumDisplacementMm} mm exceeds 10% of the model's smallest ${smallestDimensionMm} mm dimension; linear small-displacement results are not valid for engineering use.`,
+    severity: 'critical',
+  });
   return {
     schema: NEUTRAL_SIMULATION_RESULT_SCHEMA, studyId: request.studyId, jobId: '', requestDigest: request.requestDigest,
     projectRevision: request.geometry.projectRevision, analysisType: request.analysis.type, status: 'succeeded', authority: 'engineering',
@@ -343,9 +622,13 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
       hotspot('calculix-displacement-maximum', 'displacement', output.maximumDisplacementMm, 'mm', output.maximumDisplacementPositionMm, displacementBinding, 'Maximum CalculiX nodal displacement.'),
     ],
     failedConstraints: [],
-    warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'External CalculiX proof of concept; results require mesh convergence and qualified-engineer review.', severity: 'warning' }],
+    warnings,
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
-    suggestedEngineeringIssues: ['Inspect the mapped fixed/load regions and repeat with a refined mesh.', 'Verify material, loading and reference intent before design decisions.'],
+    suggestedEngineeringIssues: [
+      'Inspect the mapped fixed/load regions and repeat with a refined mesh.',
+      'Verify material, loading and reference intent before design decisions.',
+      ...(exceedsSmallDisplacementAssumption ? ['Use a geometrically nonlinear analysis or reduce loading before interpreting this result.'] : []),
+    ],
     provenance: { providerInterfaceVersion: SIMULATION_PROVIDER_INTERFACE_VERSION, adapterId, adapterVersion, providerRunId: run.providerRunId, submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
     review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `External CalculiX ${runtimeVersion} proof-of-concept result. Not certified; qualified-engineer review is mandatory.` },
     mutation: { occurred: false, projectRevisionBefore: request.geometry.projectRevision, projectRevisionAfter: request.geometry.projectRevision },
@@ -369,6 +652,13 @@ function hotspot(id: string, kind: 'stress' | 'displacement', value: number, uni
 function wrapIds(ids: number[]): string[] { const lines: string[] = []; for (let index = 0; index < ids.length; index += 16) lines.push(ids.slice(index, index + 16).join(',')); return lines; }
 function safeComment(value: string): string { return value.replace(/[^A-Za-z0-9 _.:-]/g, '').slice(0, 120); }
 function triangleArea([a, b, c]: [NeutralVector3, NeutralVector3, NeutralVector3]): number { const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]; const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]; return Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2; }
+function centroid(points: NeutralVector3[]): NeutralVector3 { return [0, 1, 2].map(axis => points.reduce((sum, point) => sum + point[axis], 0) / points.length) as NeutralVector3; }
+function faceKey(nodes: number[]): string { return [...nodes].sort((a, b) => a - b).join(':'); }
+function subtractVector(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function crossVector(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
+function dotVector(a: NeutralVector3, b: NeutralVector3): number { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function sumForces(loads: Map<number, NeutralVector3>): NeutralVector3 { return [...loads.values()].reduce<NeutralVector3>((sum, force) => [sum[0] + force[0], sum[1] + force[1], sum[2] + force[2]], [0, 0, 0]); }
+function sumForcesAtNodes(loads: Map<number, NeutralVector3>, nodes: number[]): NeutralVector3 { return nodes.reduce<NeutralVector3>((sum, node) => { const force = loads.get(node) ?? [0, 0, 0]; return [sum[0] + force[0], sum[1] + force[1], sum[2] + force[2]]; }, [0, 0, 0]); }
 function executableEnvironment(executable: string): NodeJS.ProcessEnv { return { ...process.env, PATH: `${dirname(executable)}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` }; }
-async function safeRemove(directory: string): Promise<void> { try { await rm(directory, { recursive: true, force: true }); } catch { /* temporary data is best-effort cleanup */ } }
+function nodeMajorVersion(): number { return Number.parseInt(process.versions.node.split('.')[0] ?? '', 10); }
 function providerError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }

@@ -53,6 +53,10 @@ export class ComposedSimulationProvider implements ExternalSimulationProvider {
       geometryFormats: options.meshProvider.capabilities.geometryFormats,
       durableReferenceMapping: options.meshProvider.capabilities.durableReferenceMapping === 'supported'
         && options.solverProvider.capabilities.durableReferenceMapping === 'supported' ? 'supported' as const : 'partial' as const,
+      qualification: combineQualification(
+        options.meshProvider.capabilities.qualification,
+        options.solverProvider.capabilities.qualification,
+      ),
       execution: {
         ...options.solverProvider.capabilities.execution,
         topology: options.meshProvider.capabilities.execution.topology === 'remote_service'
@@ -62,6 +66,10 @@ export class ComposedSimulationProvider implements ExternalSimulationProvider {
         queueTimeoutMs: options.meshProvider.capabilities.execution.queueTimeoutMs + options.solverProvider.capabilities.execution.queueTimeoutMs,
         executionTimeoutMs: options.meshProvider.capabilities.execution.executionTimeoutMs + options.solverProvider.capabilities.execution.executionTimeoutMs,
         totalTimeoutMs: options.meshProvider.capabilities.execution.totalTimeoutMs + options.solverProvider.capabilities.execution.totalTimeoutMs,
+        resourceLimits: combineResourceLimits(
+          options.meshProvider.capabilities.execution.resourceLimits,
+          options.solverProvider.capabilities.execution.resourceLimits,
+        ),
       },
     };
   }
@@ -83,11 +91,20 @@ export class ComposedSimulationProvider implements ExternalSimulationProvider {
 
   async cancel(providerRunId: string): Promise<SimulationProviderStatus> {
     const run = this.requireRun(providerRunId);
+    if (run.cancelled) return structuredClone(run.status);
     run.cancelled = true;
-    if (run.solverRunId) await this.options.solverProvider.cancel(run.solverRunId);
-    else if (run.meshRunId) await this.options.meshProvider.cancel(run.meshRunId);
+    const childStatus = run.solverRunId
+      ? await this.options.solverProvider.cancel(run.solverRunId)
+      : run.meshRunId ? await this.options.meshProvider.cancel(run.meshRunId) : null;
     run.result = null;
-    run.status = { providerRunId, status: 'cancelled', progress: null, phase: 'cancelled', updatedAt: new Date().toISOString() };
+    run.status = {
+      providerRunId,
+      status: 'cancelled',
+      progress: null,
+      phase: childStatus?.phase ?? 'cancelled_before_provider_start',
+      updatedAt: new Date().toISOString(),
+      ...(childStatus?.failure ? { failure: childStatus.failure } : {}),
+    };
     return structuredClone(run.status);
   }
 
@@ -162,7 +179,10 @@ export class ComposedSimulationProvider implements ExternalSimulationProvider {
       if (status.status === 'cancelled') throw pipelineError('SIMULATION_CANCELLED', 'The MeshProvider was cancelled.');
       await delay(25);
     }
-    if (!run.cancelled) throw pipelineError('SIMULATION_MESH_TIMEOUT', 'The MeshProvider exceeded its declared total timeout.');
+    if (!run.cancelled) {
+      await this.options.meshProvider.cancel(run.meshRunId!).catch(() => undefined);
+      throw pipelineError('SIMULATION_MESH_TIMEOUT', 'The MeshProvider exceeded its declared total timeout and was cancelled.');
+    }
   }
 
   private async waitForSolver(run: PipelineRun): Promise<void> {
@@ -176,7 +196,10 @@ export class ComposedSimulationProvider implements ExternalSimulationProvider {
       if (status.status === 'cancelled') throw pipelineError('SIMULATION_CANCELLED', 'The SolverProvider was cancelled.');
       await delay(25);
     }
-    if (!run.cancelled) throw pipelineError('SIMULATION_TIMEOUT', 'The SolverProvider exceeded its declared total timeout.');
+    if (!run.cancelled) {
+      await this.options.solverProvider.cancel(run.solverRunId!).catch(() => undefined);
+      throw pipelineError('SIMULATION_TIMEOUT', 'The SolverProvider exceeded its declared total timeout and was cancelled.');
+    }
   }
 
   private requireRun(providerRunId: string): PipelineRun {
@@ -188,3 +211,51 @@ export class ComposedSimulationProvider implements ExternalSimulationProvider {
 
 function delay(ms: number): Promise<void> { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function pipelineError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }
+
+function combineQualification(
+  mesh: ExternalMeshProvider['capabilities']['qualification'],
+  solver: ExternalSolverProvider['capabilities']['qualification'],
+): ExternalSolverProvider['capabilities']['qualification'] {
+  const status = mesh.status === 'unsupported' || solver.status === 'unsupported'
+    ? 'unsupported' as const
+    : mesh.status === 'proof_of_concept' || solver.status === 'proof_of_concept'
+      ? 'proof_of_concept' as const
+      : 'qualified' as const;
+  return {
+    status,
+    engineeringUsePermitted: status === 'qualified' && mesh.engineeringUsePermitted && solver.engineeringUsePermitted,
+    statement: `${mesh.statement} ${solver.statement}`,
+    limitations: [...new Set([...mesh.limitations, ...solver.limitations])],
+    evidence: mesh.evidence && solver.evidence && mesh.evidence.matrixId === solver.evidence.matrixId ? {
+      schema: mesh.evidence.schema,
+      matrixId: mesh.evidence.matrixId,
+      pendingLaneIds: [...new Set([...mesh.evidence.pendingLaneIds, ...solver.evidence.pendingLaneIds])],
+    } : null,
+  };
+}
+
+function combineResourceLimits(
+  mesh: ExternalMeshProvider['capabilities']['execution']['resourceLimits'],
+  solver: ExternalSolverProvider['capabilities']['execution']['resourceLimits'],
+) {
+  if (!mesh && !solver) return undefined;
+  return {
+    maximumInputGeometryBytes: mesh?.maximumInputGeometryBytes ?? null,
+    maximumWorkingDirectoryBytes: maximumNullable(mesh?.maximumWorkingDirectoryBytes, solver?.maximumWorkingDirectoryBytes),
+    maximumResultFileBytes: maximumNullable(mesh?.maximumResultFileBytes, solver?.maximumResultFileBytes),
+    maximumDiagnosticCharacters: Math.max(mesh?.maximumDiagnosticCharacters ?? 0, solver?.maximumDiagnosticCharacters ?? 0),
+    processTerminationGraceMs: Math.max(mesh?.processTerminationGraceMs ?? 0, solver?.processTerminationGraceMs ?? 0),
+    cpuTimeLimitMs: minimumNullable(mesh?.cpuTimeLimitMs, solver?.cpuTimeLimitMs),
+    memoryLimitBytes: minimumNullable(mesh?.memoryLimitBytes, solver?.memoryLimitBytes),
+  };
+}
+
+function maximumNullable(a: number | null | undefined, b: number | null | undefined): number | null {
+  const values = [a, b].filter((value): value is number => typeof value === 'number');
+  return values.length ? Math.max(...values) : null;
+}
+
+function minimumNullable(a: number | null | undefined, b: number | null | undefined): number | null {
+  if (a == null || b == null) return null;
+  return Math.min(a, b);
+}
