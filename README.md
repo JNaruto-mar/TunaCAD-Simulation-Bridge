@@ -51,6 +51,12 @@ The Bridge advertises this exact admission profile. TunaCAD rejects unsupported
 studies before creating an approvable job or transferring geometry. Results
 remain experimental and require qualified-engineer review.
 
+TunaCAD can orchestrate three sequential v1 jobs as a mesh-convergence parent.
+The shared public contract includes the normalized
+`tunacad-neutral-mesh-convergence-report/1.0` types and analysis helper. Only
+mesh sizing changes between levels; geometry, material, loads, constraints, and
+their invariant digest remain fixed.
+
 ## Repository ownership
 
 This public repository is the canonical source for:

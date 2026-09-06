@@ -1,5 +1,6 @@
 export const NEUTRAL_SIMULATION_REQUEST_SCHEMA = 'tunacad-neutral-simulation-request/1.0' as const;
 export const NEUTRAL_SIMULATION_RESULT_SCHEMA = 'tunacad-neutral-simulation-result/1.0' as const;
+export const NEUTRAL_MESH_CONVERGENCE_REPORT_SCHEMA = 'tunacad-neutral-mesh-convergence-report/1.0' as const;
 export const NEUTRAL_FEM_MESH_SCHEMA = 'tunacad-neutral-fem-mesh/1.0' as const;
 export const SIMULATION_PROVIDER_INTERFACE_VERSION = '1.0' as const;
 export const MESH_PROVIDER_INTERFACE_VERSION = '1.0' as const;
@@ -407,4 +408,77 @@ export interface SimulationDesignCriteria {
   maximumVonMisesStressMPa?: number;
   maximumDisplacementMm?: number;
   minimumFactorOfSafety?: number;
+}
+
+export type NeutralMeshConvergenceLevelName = 'coarse' | 'medium' | 'fine';
+
+/** Orchestration options are intentionally outside the immutable v1 study.
+ * Each level remains an ordinary v1 simulation request with a distinct digest. */
+export interface NeutralMeshConvergenceOptions {
+  globalSizeMultipliers?: [number, number, number];
+  maximumDisplacementRelativeChange?: number;
+  maximumStressRelativeChange?: number;
+  maximumReactionImbalanceRelative?: number;
+}
+
+export interface NeutralMeshConvergenceConfiguration {
+  globalSizeMultipliers: [number, number, number];
+  maximumDisplacementRelativeChange: number;
+  maximumStressRelativeChange: number;
+  maximumReactionImbalanceRelative: number;
+}
+
+export interface NeutralMeshConvergenceLevelResult {
+  level: NeutralMeshConvergenceLevelName;
+  jobId: string;
+  requestDigest: string;
+  geometryDigest: string;
+  globalSizeMm: number;
+  minimumSizeMm: number | null;
+  nodeCount: number | null;
+  elementCount: number | null;
+  maximumDisplacementMm: number | null;
+  maximumVonMisesStressMPa: number | null;
+  reactionResultantN: NeutralVector3;
+  reactionImbalanceRelative: number | null;
+}
+
+export interface NeutralMeshConvergenceComparison {
+  from: NeutralMeshConvergenceLevelName;
+  to: NeutralMeshConvergenceLevelName;
+  displacementRelativeChange: number | null;
+  stressRelativeChange: number | null;
+}
+
+export interface NeutralMeshConvergenceReport {
+  schema: typeof NEUTRAL_MESH_CONVERGENCE_REPORT_SCHEMA;
+  convergenceId: string;
+  preparationId: string;
+  studyId: string;
+  baseRequestDigest: string;
+  invariantStudyDigest: string;
+  geometryDigest: string;
+  projectRevision: string;
+  status: 'converged' | 'not_converged' | 'indeterminate';
+  configuration: NeutralMeshConvergenceConfiguration;
+  levels: [NeutralMeshConvergenceLevelResult, NeutralMeshConvergenceLevelResult, NeutralMeshConvergenceLevelResult];
+  comparisons: [NeutralMeshConvergenceComparison, NeutralMeshConvergenceComparison];
+  checks: Array<{
+    code: string;
+    status: 'pass' | 'fail' | 'indeterminate';
+    message: string;
+  }>;
+  warnings: Array<{ code: string; message: string; severity: 'info' | 'warning' | 'critical' }>;
+  requestedAt: string;
+  completedAt: string;
+  review: {
+    engineerReviewRequired: true;
+    engineeringUsePermitted: false;
+    disclaimer: string;
+  };
+  mutation: {
+    occurred: false;
+    projectRevisionBefore: string;
+    projectRevisionAfter: string;
+  };
 }
