@@ -1,5 +1,12 @@
 # Optional external Gmsh MeshProvider
 
+`GmshMultiDomainMeshProvider.mts` adds the experimental SIM-4A composition
+boundary. It invokes the hardened single-domain adapter once per approved
+domain in owner-local coordinates, then applies the occurrence transform and
+combines validated meshes with explicit domain, material, volume-region,
+boundary-facet, and node ownership. It never merges coincident nodes or infers
+an interface between domains.
+
 This Node-only adapter invokes a user-installed `gmsh` executable with fixed
 arguments. It imports approved STEP geometry, creates complete second-order
 tetrahedra, parses ASCII MSH 4.1, validates mesh quality and normalizes the

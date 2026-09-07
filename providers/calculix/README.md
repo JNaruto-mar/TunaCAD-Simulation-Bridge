@@ -1,5 +1,11 @@
 # Optional external CalculiX SolverProvider
 
+`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A deck generation. It
+creates deterministic per-domain C3D10 element/node sets, per-material elastic
+and density cards, per-domain solid sections, analysis-coordinate loads and
+constraints, and per-domain result print requests. It emits no tie, contact, or
+rigid-body behavior.
+
 This Node-only adapter consumes TunaCAD's unchanged neutral FEM mesh and writes
 a bounded linear-static C3D10 input deck for a user-installed CalculiX `ccx`
 executable. It parses requested ASCII displacement, integration-point stress and

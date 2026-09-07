@@ -79,7 +79,7 @@ export async function readUtf8FileBounded(path: string, maximumBytes = LOCAL_PRO
   try {
     const metadata = await handle.stat();
     if (!metadata.isFile() || metadata.size > maximumBytes) throwOutputLimit(maximumBytes);
-    const bytes = Buffer.alloc(metadata.size + 1);
+    const bytes = new Uint8Array(metadata.size + 1);
     let offset = 0;
     while (offset < bytes.byteLength) {
       const { bytesRead } = await handle.read(bytes, offset, bytes.byteLength - offset, offset);
@@ -87,7 +87,7 @@ export async function readUtf8FileBounded(path: string, maximumBytes = LOCAL_PRO
       offset += bytesRead;
     }
     if (offset > maximumBytes || offset > metadata.size) throwOutputLimit(maximumBytes);
-    return bytes.subarray(0, offset).toString('utf8');
+    return new TextDecoder('utf-8').decode(bytes.subarray(0, offset));
   } finally {
     await handle.close();
   }

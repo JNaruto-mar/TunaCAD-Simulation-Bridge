@@ -21,6 +21,7 @@
     "test:sim3-benchmarks": "node --experimental-strip-types scripts/test-sim3-benchmarks.mts",
     "test:sim3-matrix": "node --experimental-strip-types scripts/test-sim3-matrix.mts",
     "test:sim4a-contracts": "node --experimental-strip-types scripts/test-sim4a-contracts.mts",
+    "test:sim4a-providers": "node --experimental-strip-types scripts/test-sim4a-gmsh-calculix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },
   "description": "",

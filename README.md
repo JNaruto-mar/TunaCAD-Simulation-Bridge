@@ -155,13 +155,24 @@ They require:
 - per-domain extrema and unique field-dataset ownership in normalized results.
 
 SIM-4A intentionally accepts no interactions yet. Touching/overlapping solids
-and assembly mates do not imply bonding. The current Gmsh/CalculiX adapters
-advertise provider interface `1.0`, so a structurally valid v2 request is
-rejected before approval or geometry transfer until version 2 meshing and
-solving adapters exist.
+and assembly mates do not imply bonding. The experimental multi-domain Gmsh
+composition adapter now exports and meshes each domain in owner-local
+coordinates, applies its rigid occurrence transform, and combines the validated
+meshes without merging nodes or losing domain ownership. The experimental
+CalculiX deck generator emits one C3D10 element set and solid section per domain
+and one card per assigned material. A real repeated-Part, two-material fixture
+passes Gmsh 4.15.2 and CalculiX 2.16 with exact global reaction balance.
+
+The main Bridge pipeline still advertises provider interface `1.0` and rejects
+v2 before approval or geometry transfer. V2 promotion waits for asynchronous
+solver lifecycle, normalized per-domain result recovery, and TunaCAD-side
+multi-domain preparation/export integration.
 
 ```powershell
 npm run test:sim4a-contracts
+$env:TUNACAD_GMSH_EXECUTABLE = 'C:\path\to\gmsh.exe'
+$env:TUNACAD_CALCULIX_EXECUTABLE = 'C:\path\to\ccx.exe'
+npm run test:sim4a-providers
 ```
 
 ## Repository ownership

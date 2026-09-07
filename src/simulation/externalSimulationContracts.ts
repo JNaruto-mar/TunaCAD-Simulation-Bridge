@@ -321,11 +321,15 @@ export interface NeutralMeshJobRequestV2 {
   mesh: NeutralMeshRequest;
   domains: Array<{
     domainId: string;
+    partId: string;
+    bodyId: string;
+    occurrenceId: string;
     geometryDigest: string;
     domainDigest: string;
     transformToAnalysis: NeutralMatrix4;
     volumeRegionId: string;
     materialId: string;
+    shape: NeutralSimulationDomainV2['shape'];
   }>;
   boundaryRegions: Array<{
     regionId: string;
@@ -447,6 +451,7 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
 
 export interface MeshProviderCapabilitiesV2 extends Omit<MeshProviderCapabilities, 'interfaceVersion'> {
   interfaceVersion: typeof MESH_PROVIDER_INTERFACE_V2_VERSION;
+  maximumDomains: number;
   multiDomain: true;
   rigidOccurrenceTransforms: true;
   domainRegionMapping: true;
@@ -617,6 +622,14 @@ export interface MeshProviderCapabilities {
   durableReferenceMapping: 'supported' | 'partial' | 'unavailable';
   qualification: SimulationProviderCapabilities['qualification'];
   execution: SimulationProviderCapabilities['execution'];
+}
+
+/** V2 geometry is exported one approved domain at a time. Repeated Part
+ * occurrences may return identical owner-local STEP bytes; their independent
+ * rigid transforms are applied by the multi-domain mesher composition layer. */
+export interface SimulationGeometryResolverV2 {
+  descriptor: NeutralSimulationRequestV2['model'];
+  exportDomain(domainId: string, format: 'step' | 'brep'): Promise<Uint8Array>;
 }
 
 export interface MeshProviderSubmission {

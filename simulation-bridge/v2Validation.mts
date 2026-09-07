@@ -80,10 +80,10 @@ const requestSchema = z.object({
   materialAssignments: z.array(z.object({ assignmentId: text, domainId: text, materialId: text, volumeRegionId: text }).strict()).min(1).max(128),
   loads: z.array(z.discriminatedUnion('type', [
     z.object({ id: text, name: text, type: z.literal('surface_force'), semanticReferenceIds: uniqueReferences, forceN: vector, coordinateSystem: z.literal('analysis') }).strict()
-      .refine(value => Math.hypot(...value.forceN) > 1e-14 && Math.hypot(...value.forceN) <= 1e12),
+      .refine(value => Math.hypot(...(value.forceN as [number, number, number])) > 1e-14 && Math.hypot(...(value.forceN as [number, number, number])) <= 1e12),
     z.object({ id: text, name: text, type: z.literal('pressure'), semanticReferenceIds: uniqueReferences, pressureMPa: finite.refine(value => value !== 0 && Math.abs(value) <= 1e6) }).strict(),
     z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: vector, coordinateSystem: z.literal('analysis') }).strict()
-      .refine(value => Math.hypot(...value.accelerationMmPerS2) > 1e-9 && Math.hypot(...value.accelerationMmPerS2) <= 1e9),
+      .refine(value => Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) > 1e-9 && Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) <= 1e9),
   ])).max(64),
   constraints: z.array(z.discriminatedUnion('type', [
     z.object({ id: text, name: text, type: z.literal('fixed'), semanticReferenceIds: uniqueReferences }).strict(),
@@ -173,6 +173,7 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   for (const assignment of assignments) {
     if (!domainsById.has(assignment.domainId) || !materials.has(assignment.materialId)) fail('BRIDGE_V2_ASSIGNMENT_INVALID');
   }
+  if (new Set(assignments.map(assignment => assignment.materialId)).size !== materials.size) fail('BRIDGE_V2_MATERIAL_INVALID');
 
   const referenceKeys = request.model.references.map(reference => `${reference.role}:${reference.semanticReferenceId}`);
   if (!unique(referenceKeys)) fail('BRIDGE_V2_REFERENCE_INVALID');
@@ -259,6 +260,7 @@ export function validateNeutralFemModelV2(value: unknown, request: NeutralSimula
   if (model.requestDigest !== request.requestDigest || model.projectRevision !== request.model.projectRevision || model.modelDigest !== request.model.modelDigest) fail('BRIDGE_V2_FEM_IDENTITY_INVALID');
   const elementCount = model.volumeElements.connectivity.length;
   const facetCount = model.boundaryFacets.connectivity.length;
+  if (model.nodes.length > request.mesh.maximumNodes || elementCount > request.mesh.maximumElements) fail('BRIDGE_V2_FEM_BUDGET_EXCEEDED');
   if (model.volumeElements.domainIds.length !== elementCount || model.volumeElements.materialIds.length !== elementCount
     || model.volumeElements.volumeRegionIds.length !== elementCount || model.boundaryFacets.domainIds.length !== facetCount
     || model.boundaryFacets.regionIds.length !== facetCount) fail('BRIDGE_V2_FEM_MODEL_INVALID');
@@ -294,6 +296,10 @@ export function validateNeutralFemModelV2(value: unknown, request: NeutralSimula
     if (!domainRegion || region.facetIndices.some(index => index >= facetCount || model.boundaryFacets.domainIds[index] !== region.domainId
       || model.boundaryFacets.regionIds[index] !== region.regionId || model.boundaryFacets.connectivity[index].some(node => !domainNodes.has(node)))) fail('BRIDGE_V2_FEM_BOUNDARY_MAPPING_INVALID');
   }
+  const requestedBoundaryKeys = request.model.references.map(reference => `${reference.domainId}:${reference.semanticReferenceId}`);
+  const mappedBoundaryKeys = model.boundaryRegions.flatMap(region => region.semanticReferenceIds.map(referenceId => `${region.domainId}:${referenceId}`));
+  if (requestedBoundaryKeys.length !== mappedBoundaryKeys.length || !unique(mappedBoundaryKeys)
+    || requestedBoundaryKeys.some(key => !mappedBoundaryKeys.includes(key))) fail('BRIDGE_V2_FEM_BOUNDARY_MAPPING_INVALID');
   for (const quality of model.quality.perDomain) {
     const region = model.domainRegions.find(entry => entry.domainId === quality.domainId);
     const domain = domains.get(quality.domainId);
