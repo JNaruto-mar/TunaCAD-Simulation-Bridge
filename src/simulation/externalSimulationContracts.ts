@@ -2,13 +2,28 @@ export const NEUTRAL_SIMULATION_REQUEST_SCHEMA = 'tunacad-neutral-simulation-req
 export const NEUTRAL_SIMULATION_RESULT_SCHEMA = 'tunacad-neutral-simulation-result/1.0' as const;
 export const NEUTRAL_MESH_CONVERGENCE_REPORT_SCHEMA = 'tunacad-neutral-mesh-convergence-report/1.0' as const;
 export const NEUTRAL_FEM_MESH_SCHEMA = 'tunacad-neutral-fem-mesh/1.0' as const;
+export const NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA = 'tunacad-neutral-simulation-request/2.0' as const;
+export const NEUTRAL_MESH_REQUEST_V2_SCHEMA = 'tunacad-neutral-mesh-request/2.0' as const;
+export const NEUTRAL_FEM_MODEL_V2_SCHEMA = 'tunacad-neutral-fem-model/2.0' as const;
+export const NEUTRAL_SIMULATION_RESULT_V2_SCHEMA = 'tunacad-neutral-simulation-result/2.0' as const;
 export const SIMULATION_PROVIDER_INTERFACE_VERSION = '1.0' as const;
 export const MESH_PROVIDER_INTERFACE_VERSION = '1.0' as const;
+export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
+export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
+/** Row-major homogeneous transform from occurrence-local coordinates into the
+ * immutable analysis coordinate system. V2 admission accepts rigid transforms
+ * only: the last row is [0, 0, 0, 1] and the 3x3 block is a proper rotation. */
+export type NeutralMatrix4 = [
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+  number, number, number, number,
+];
 
 export interface NeutralSimulationMaterial {
   id: string;
@@ -212,6 +227,229 @@ export interface NeutralSimulationRequest {
   contacts: { mode: 'none' };
   mesh: NeutralMeshRequest;
   requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'factor_of_safety' | 'critical_regions'>;
+}
+
+/** V2 is intentionally additive. V1 remains immutable and providers must never
+ * interpret a V2 envelope as a V1 single-Part request. */
+export interface NeutralSimulationDomainV2 {
+  domainId: string;
+  partId: string;
+  bodyId: string;
+  occurrenceId: string;
+  domainDigest: string;
+  geometryDigest: string;
+  transformToAnalysis: NeutralMatrix4;
+  shape: {
+    valid: true;
+    connectedSolidCount: 1;
+    faceCount: number;
+    edgeCount: number;
+    volumeMm3: number;
+    surfaceAreaMm2: number;
+    boundingBoxOwnerLocalMm: { min: NeutralVector3; max: NeutralVector3; size: NeutralVector3 };
+  };
+}
+
+export interface NeutralSimulationReferenceBindingV2 {
+  semanticReferenceId: string;
+  domainId: string;
+  ownerPartId: string;
+  ownerBodyId: string;
+  occurrenceId: string;
+  geometryKind: 'FACE';
+  role: 'load' | 'constraint' | 'interaction';
+  sourceFeatureId: string | null;
+  resolutionState: 'valid';
+  resolvedAtProjectRevision: string;
+  faceOwnerLocal: NeutralSimulationReferenceBinding['face'];
+}
+
+export interface NeutralMaterialAssignmentV2 {
+  assignmentId: string;
+  domainId: string;
+  materialId: string;
+  volumeRegionId: string;
+}
+
+export type NeutralSimulationLoadV2 =
+  | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3; coordinateSystem: 'analysis' }
+  | { id: string; name: string; type: 'pressure'; semanticReferenceIds: string[]; pressureMPa: number }
+  | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3; coordinateSystem: 'analysis' };
+
+export type NeutralSimulationConstraintV2 =
+  | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
+  | { id: string; name: string; type: 'prescribed_displacement'; semanticReferenceIds: string[]; displacementMm: [number | null, number | null, number | null]; coordinateSystem: 'analysis' };
+
+export interface NeutralSimulationRequestV2 {
+  schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
+  studyId: string;
+  name: string;
+  preparedAt: string;
+  expiresAt: string;
+  requestDigest: string;
+  analysis: {
+    type: 'linear_static';
+    assumptions: ['small_displacement', 'small_strain', 'static_loading'];
+  };
+  model: {
+    projectRevision: string;
+    modelDigest: string;
+    coordinateSpace: 'frozen_analysis';
+    domains: NeutralSimulationDomainV2[];
+    references: NeutralSimulationReferenceBindingV2[];
+  };
+  units: NeutralSimulationRequest['units'];
+  materials: NeutralSimulationMaterial[];
+  materialAssignments: NeutralMaterialAssignmentV2[];
+  loads: NeutralSimulationLoadV2[];
+  constraints: NeutralSimulationConstraintV2[];
+  /** SIM-4A accepts only an empty list. SIM-4B will add explicit, typed
+   * interactions; touching geometry and assembly mates never imply bonding. */
+  interactions: [];
+  mesh: NeutralMeshRequest;
+  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'factor_of_safety' | 'critical_regions'>;
+}
+
+export interface NeutralMeshJobRequestV2 {
+  schema: typeof NEUTRAL_MESH_REQUEST_V2_SCHEMA;
+  studyId: string;
+  requestDigest: string;
+  projectRevision: string;
+  modelDigest: string;
+  coordinateSpace: 'frozen_analysis';
+  units: 'mm';
+  mesh: NeutralMeshRequest;
+  domains: Array<{
+    domainId: string;
+    geometryDigest: string;
+    domainDigest: string;
+    transformToAnalysis: NeutralMatrix4;
+    volumeRegionId: string;
+    materialId: string;
+  }>;
+  boundaryRegions: Array<{
+    regionId: string;
+    domainId: string;
+    role: 'load' | 'constraint' | 'interaction';
+    semanticReferenceId: string;
+    sourceFeatureId: string | null;
+    faceOwnerLocal: NeutralSimulationReferenceBinding['face'];
+  }>;
+}
+
+export interface NeutralFemModelV2 {
+  schema: typeof NEUTRAL_FEM_MODEL_V2_SCHEMA;
+  modelId: string;
+  requestDigest: string;
+  projectRevision: string;
+  modelDigest: string;
+  coordinateSpace: 'frozen_analysis';
+  units: 'mm';
+  element: NeutralFemMesh['element'];
+  nodes: NeutralVector3[];
+  volumeElements: {
+    connectivity: number[][];
+    domainIds: string[];
+    materialIds: string[];
+    volumeRegionIds: string[];
+  };
+  boundaryFacets: {
+    connectivity: number[][];
+    domainIds: string[];
+    regionIds: string[];
+  };
+  domainRegions: Array<{
+    domainId: string;
+    partId: string;
+    bodyId: string;
+    occurrenceId: string;
+    domainDigest: string;
+    geometryDigest: string;
+    materialId: string;
+    volumeRegionId: string;
+    transformToAnalysis: NeutralMatrix4;
+    elementIndices: number[];
+    nodeIndices: number[];
+  }>;
+  boundaryRegions: Array<{
+    regionId: string;
+    domainId: string;
+    semanticReferenceIds: string[];
+    sourceFeatureIds: string[];
+    facetIndices: number[];
+    matchedCadFaceOwnerLocal: NeutralSimulationReferenceBinding['face'];
+    match: NeutralFemMesh['boundaryRegions'][number]['match'];
+  }>;
+  quality: NeutralFemMesh['quality'] & {
+    perDomain: Array<{
+      domainId: string;
+      nodeCount: number;
+      elementCount: number;
+      cadVolumeMm3: number;
+      meshVolumeMm3: number;
+      volumeRelativeError: number;
+      minimum: number;
+      average: number;
+      invalidElementCount: 0;
+    }>;
+  };
+  provenance: Omit<NeutralFemMesh['provenance'], 'meshProviderInterfaceVersion'> & {
+    meshProviderInterfaceVersion: typeof MESH_PROVIDER_INTERFACE_V2_VERSION;
+  };
+}
+
+export interface NeutralSimulationResultV2 {
+  schema: typeof NEUTRAL_SIMULATION_RESULT_V2_SCHEMA;
+  studyId: string;
+  jobId: string;
+  requestDigest: string;
+  projectRevision: string;
+  modelDigest: string;
+  analysisType: 'linear_static';
+  status: 'succeeded' | 'failed' | 'cancelled';
+  authority: NeutralResultAuthority;
+  metrics: NeutralSimulationResult['metrics'];
+  perDomain: Array<{
+    domainId: string;
+    metrics: NeutralSimulationResult['metrics'];
+    /** Dataset IDs provide deterministic ownership for future field payloads;
+     * extrema cannot silently collapse multiple domains into one. */
+    fieldDatasetIds: string[];
+  }>;
+  reactions: Array<NeutralSimulationResult['reactions'][number] & { domainId: string }>;
+  criticalRegions: Array<Omit<NeutralSimulationHotspot, 'positionPartLocalMm' | 'mapping'> & {
+    domainId: string;
+    positionAnalysisMm: NeutralVector3 | null;
+    mapping: 'durable_reference' | 'analysis_location' | 'unmapped';
+  }>;
+  failedConstraints: NeutralSimulationResult['failedConstraints'];
+  warnings: NeutralSimulationResult['warnings'];
+  convergence: NeutralSimulationResult['convergence'];
+  suggestedEngineeringIssues: string[];
+  provenance: Omit<NeutralSimulationResult['provenance'], 'providerInterfaceVersion'> & {
+    providerInterfaceVersion: typeof SIMULATION_PROVIDER_INTERFACE_V2_VERSION;
+  };
+  review: NeutralSimulationResult['review'];
+  mutation: NeutralSimulationResult['mutation'];
+}
+
+export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProviderCapabilities, 'interfaceVersion' | 'study'> {
+  interfaceVersion: typeof SIMULATION_PROVIDER_INTERFACE_V2_VERSION;
+  study: SimulationProviderCapabilities['study'] & {
+    maximumDomains: number;
+    maximumOccurrences: number;
+    multiDomain: true;
+    perDomainMaterials: true;
+    rigidOccurrenceTransforms: true;
+    interactionTypes: readonly [];
+  };
+}
+
+export interface MeshProviderCapabilitiesV2 extends Omit<MeshProviderCapabilities, 'interfaceVersion'> {
+  interfaceVersion: typeof MESH_PROVIDER_INTERFACE_V2_VERSION;
+  multiDomain: true;
+  rigidOccurrenceTransforms: true;
+  domainRegionMapping: true;
 }
 
 export interface NeutralSimulationHotspot {

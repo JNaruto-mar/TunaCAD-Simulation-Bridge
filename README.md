@@ -138,6 +138,32 @@ multi-component prescribed displacement with `EAδ/L` and superposition. All
 automated lanes pass, but this matrix remains proof-of-concept and is not
 advertised as qualified provider evidence while independent review is pending.
 
+## SIM-4A version 2 contract foundation
+
+Version 1 remains immutable. The additive `2.0` request, mesh-request,
+FEM-model, result, and provider-capability contracts establish the fail-closed
+multi-domain boundary without advertising a multi-domain solver prematurely.
+They require:
+
+- a stable domain and occurrence identity for every solid, including repeated
+  occurrences of one Part;
+- a proper rigid transform from owner-local coordinates into one frozen
+  analysis coordinate system;
+- separate geometry, domain, model, and request digests;
+- exactly one explicit material and volume-region assignment per domain;
+- exact per-element, boundary-facet, and per-domain mesh ownership; and
+- per-domain extrema and unique field-dataset ownership in normalized results.
+
+SIM-4A intentionally accepts no interactions yet. Touching/overlapping solids
+and assembly mates do not imply bonding. The current Gmsh/CalculiX adapters
+advertise provider interface `1.0`, so a structurally valid v2 request is
+rejected before approval or geometry transfer until version 2 meshing and
+solving adapters exist.
+
+```powershell
+npm run test:sim4a-contracts
+```
+
 ## Repository ownership
 
 This public repository is the canonical source for:

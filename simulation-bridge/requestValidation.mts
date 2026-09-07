@@ -1,6 +1,9 @@
 import * as z from 'zod/v4';
-import { createHash } from 'node:crypto';
 import type { NeutralSimulationRequest } from '../src/simulation/externalSimulationContracts.ts';
+import { digest } from './stableDigest.mts';
+import { validateNeutralSimulationRequestV2 } from './v2Validation.mts';
+
+export { digest } from './stableDigest.mts';
 
 // Transport admission for the bounded POC, not a replacement public contract.
 const text = z.string().min(1).max(500).regex(/^[^\u0000-\u001f\u007f]*$/);
@@ -49,16 +52,11 @@ const schema = z.object({
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions'])).min(1).max(5),
 }).strict();
 
-export function digest(value: unknown): string {
-  function stable(item: any): string {
-    if (item === null || typeof item !== 'object') return JSON.stringify(item);
-    if (Array.isArray(item)) return `[${item.map(stable).join(',')}]`;
-    return `{${Object.entries(item).sort(([a], [b]) => a.localeCompare(b)).map(([key, entry]) => `${JSON.stringify(key)}:${stable(entry)}`).join(',')}}`;
-  }
-  return `sha256:${createHash('sha256').update(stable(value)).digest('hex')}`;
-}
-
 export function validateRequest(value: unknown, now = Date.now()): NeutralSimulationRequest {
+  if (value && typeof value === 'object' && (value as { schema?: unknown }).schema === 'tunacad-neutral-simulation-request/2.0') {
+    validateNeutralSimulationRequestV2(value, now);
+    throw new Error('BRIDGE_PROVIDER_INTERFACE_VERSION_UNSUPPORTED');
+  }
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error('BRIDGE_REQUEST_INVALID');
   const request = parsed.data;

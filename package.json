@@ -20,6 +20,7 @@
     "test:face-groups": "node --experimental-strip-types scripts/test-face-groups.mts",
     "test:sim3-benchmarks": "node --experimental-strip-types scripts/test-sim3-benchmarks.mts",
     "test:sim3-matrix": "node --experimental-strip-types scripts/test-sim3-matrix.mts",
+    "test:sim4a-contracts": "node --experimental-strip-types scripts/test-sim4a-contracts.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },
   "description": "",
