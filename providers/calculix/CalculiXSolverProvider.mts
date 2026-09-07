@@ -230,9 +230,18 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
 export function createInputDeck(request: NeutralSimulationRequest, mesh: NeutralFemMesh): string {
   if (request.analysis.type !== 'linear_static' || request.material.model !== 'isotropic_linear_elastic') throw providerError('SIMULATION_ANALYSIS_UNSUPPORTED', 'The CalculiX POC supports isotropic linear-static analysis only.');
   if (mesh.element.geometryOrder !== 2 || mesh.element.solutionOrder !== 2 || mesh.volumeElements.connectivity.some(cell => cell.length !== 10)) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The CalculiX adapter requires complete second-order C3D10 tetrahedra.');
-  const supportedLoads = request.loads.filter(load => load.type === 'surface_force' || load.type === 'pressure' || load.type === 'gravity');
+  const supportedLoads = request.loads
+    .filter(load => load.type === 'surface_force' || load.type === 'pressure' || load.type === 'gravity')
+    .sort((a, b) => compareStableText(a.id, b.id));
   const supportedConstraints = request.constraints.filter(constraint => constraint.type === 'fixed' || constraint.type === 'prescribed_displacement');
+  const entryIds = [...request.loads, ...request.constraints].map(entry => entry.id);
+  if (new Set(entryIds).size !== entryIds.length) throw providerError('SIMULATION_DUPLICATE_ID', 'Load and constraint IDs must be unique so simultaneous-load accumulation is deterministic.');
   if (supportedLoads.length !== request.loads.length) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter accepts only surface-force, pressure, and gravity loads.');
+  if (supportedLoads.some(load => load.type === 'surface_force'
+    && (load.forceN.length !== 3 || load.forceN.some(value => !Number.isFinite(value))
+      || Math.hypot(...load.forceN) <= 1e-14 || Math.hypot(...load.forceN) > 1_000_000_000_000))) {
+    throw providerError('SIMULATION_LOAD_INVALID', 'Each surface force must be a finite non-zero part-local vector no greater than 1,000,000,000,000 N in magnitude.');
+  }
   if (!supportedConstraints.length || supportedConstraints.length !== request.constraints.length) throw providerError('SIMULATION_CONSTRAINT_INVALID', 'The CalculiX adapter requires one or more fixed or prescribed-displacement constraints.');
   const prescribedConstraints = supportedConstraints.filter((constraint): constraint is Extract<NeutralSimulationRequest['constraints'][number], { type: 'prescribed_displacement' }> => constraint.type === 'prescribed_displacement');
   if (prescribedConstraints.some(constraint => constraint.displacementMm.length !== 3
@@ -420,8 +429,8 @@ export function parseCalculiXDat(text: string, mesh: NeutralFemMesh, expectedRea
       totalVolumeMm3 = values[values.length - 1];
     }
   }
-  if (!Number.isFinite(maximumDisplacementMm) || !(maximumDisplacementMm > 0)
-    || !Number.isFinite(maximumVonMisesStressMPa) || !(maximumVonMisesStressMPa > 0) || maximumDisplacementNode < 0 || maximumStressElement < 0
+  if (!Number.isFinite(maximumDisplacementMm) || maximumDisplacementMm < 0
+    || !Number.isFinite(maximumVonMisesStressMPa) || maximumVonMisesStressMPa < 0 || maximumDisplacementNode < 0 || maximumStressElement < 0
     || expectedReactionSets.some(setName => !reactionForcesBySet[setName] || reactionForcesBySet[setName].some(value => !Number.isFinite(value)))
     || (expectVolume && (!Number.isFinite(totalVolumeMm3) || !(totalVolumeMm3! > 0)))) {
     throw new Error(`CalculiX did not produce complete finite displacement, stress, reaction-force, and requested volume output (displacement=${maximumDisplacementMm}, node=${maximumDisplacementNode}, stress=${maximumVonMisesStressMPa}, element=${maximumStressElement}, reactionSets=${Object.keys(reactionForcesBySet).join(',')}, volume=${String(totalVolumeMm3)}).`);
@@ -578,7 +587,9 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
   const request = run.request;
   const displacementBinding = bindingForNode(run.mesh, output.maximumDisplacementNode, request);
   const completedAt = new Date().toISOString();
-  const factorOfSafety = request.material.yieldStrengthMPa ? request.material.yieldStrengthMPa / output.maximumVonMisesStressMPa : null;
+  const factorOfSafety = request.material.yieldStrengthMPa && output.maximumVonMisesStressMPa > 0
+    ? request.material.yieldStrengthMPa / output.maximumVonMisesStressMPa
+    : null;
   const combinedGravityNodalLoads = new Map<number, NeutralVector3>();
   for (const load of request.loads) {
     if (load.type === 'gravity') addNodalLoads(combinedGravityNodalLoads, gravityNodalLoads(run.mesh, request.material.densityKgM3!, load.accelerationMmPerS2));
@@ -673,6 +684,7 @@ function hotspot(id: string, kind: 'stress' | 'displacement', value: number, uni
 
 function wrapIds(ids: number[]): string[] { const lines: string[] = []; for (let index = 0; index < ids.length; index += 16) lines.push(ids.slice(index, index + 16).join(',')); return lines; }
 function safeComment(value: string): string { return value.replace(/[^A-Za-z0-9 _.:-]/g, '').slice(0, 120); }
+function compareStableText(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 function triangleArea([a, b, c]: [NeutralVector3, NeutralVector3, NeutralVector3]): number { const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]; const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]; return Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2; }
 function centroid(points: NeutralVector3[]): NeutralVector3 { return [0, 1, 2].map(axis => points.reduce((sum, point) => sum + point[axis], 0) / points.length) as NeutralVector3; }
 function faceKey(nodes: number[]): string { return [...nodes].sort((a, b) => a - b).join(':'); }

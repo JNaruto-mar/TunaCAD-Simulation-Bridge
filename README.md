@@ -51,6 +51,8 @@ the Bridge.
 - multiple non-overlapping fixed FACE groups; and
 - prescribed displacement on non-overlapping FACE groups, independently by
   part-local X/Y/Z component (`null` leaves a component free); and
+- one simultaneous linear-static load case with deterministic accumulation of
+  multiple load entries by stable load ID; and
 - no contacts.
 
 The Bridge advertises this exact admission profile. TunaCAD rejects unsupported
@@ -94,6 +96,7 @@ npm run test:lifecycle
 npm run test:pressure
 npm run test:gravity
 npm run test:prescribed-displacement
+npm run test:superposition
 ```
 
 ## Qualification matrix

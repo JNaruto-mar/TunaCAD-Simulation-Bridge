@@ -7,6 +7,7 @@ const text = z.string().min(1).max(500).regex(/^[^\u0000-\u001f\u007f]*$/);
 const number = z.number().finite();
 const positive = number.positive();
 const vector = z.tuple([number, number, number]);
+const surfaceForce = vector.refine(value => Math.hypot(...value) > 1e-14 && Math.hypot(...value) <= 1_000_000_000_000);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const box = z.object({ min: vector, max: vector }).strict();
 const references = z.array(text).min(1).max(32);
@@ -34,7 +35,7 @@ const schema = z.object({
   units: z.object({ geometry: z.literal('mm'), force: z.literal('N'), stress: z.literal('MPa'), displacement: z.literal('mm'), density: z.literal('kg/m^3'), acceleration: z.literal('mm/s^2') }).strict(),
   material: z.object({ id: text, name: text, model: z.literal('isotropic_linear_elastic'), densityKgM3: positive.max(100000).optional(), youngsModulusMPa: positive.max(100000000), poissonRatio: number.min(0).lt(0.5), yieldStrengthMPa: positive.optional(), source: z.object({ kind: z.enum(['library', 'custom']), reference: text, revision: text.optional() }).strict() }).strict(),
   loads: z.array(z.discriminatedUnion('type', [
-    z.object({ id: text, name: text, type: z.literal('surface_force'), semanticReferenceIds: references, forceN: vector }).strict(),
+    z.object({ id: text, name: text, type: z.literal('surface_force'), semanticReferenceIds: references, forceN: surfaceForce }).strict(),
     z.object({ id: text, name: text, type: z.literal('pressure'), semanticReferenceIds: references, pressureMPa }).strict(),
     z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: acceleration }).strict(),
   ])).max(64),
@@ -60,6 +61,8 @@ export function validateRequest(value: unknown, now = Date.now()): NeutralSimula
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error('BRIDGE_REQUEST_INVALID');
   const request = parsed.data;
+  const entryIds = [...request.loads, ...request.constraints].map(entry => entry.id);
+  if (new Set(entryIds).size !== entryIds.length) throw new Error('BRIDGE_REQUEST_INVALID');
   if (!request.loads.length && !request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
     && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))) {
     throw new Error('BRIDGE_REQUEST_INVALID');

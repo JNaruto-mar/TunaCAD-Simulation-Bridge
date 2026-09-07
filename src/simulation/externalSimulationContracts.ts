@@ -21,6 +21,8 @@ export interface NeutralSimulationMaterial {
   source: { kind: 'library' | 'custom'; reference: string; revision?: string };
 }
 
+/** All load entries belong to one simultaneous linear-static load case.
+ * Providers accumulate them deterministically and preserve every entry ID. */
 export type NeutralSimulationLoad =
   | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3 }
   /** Positive pressure acts inward, opposite each boundary facet's computed

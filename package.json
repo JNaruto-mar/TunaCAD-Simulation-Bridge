@@ -16,6 +16,7 @@
     "test:pressure": "node --experimental-strip-types scripts/test-pressure-loads.mts",
     "test:gravity": "node --experimental-strip-types scripts/test-gravity-loads.mts",
     "test:prescribed-displacement": "node --experimental-strip-types scripts/test-prescribed-displacement.mts",
+    "test:superposition": "node --experimental-strip-types scripts/test-load-superposition.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },
   "description": "",
