@@ -200,7 +200,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       const output = parseCalculiXDat(
         await readUtf8FileBounded(join(run.directory, 'tunacad.dat')),
         run.mesh,
-        run.request.constraints.map((constraint, index) => constraintSetName(index, constraint.type)),
+        run.request.constraints.map((_constraint, index) => reactionSetName(index)),
         run.request.loads.some(load => load.type === 'gravity'),
       );
       run.result = normalizeResult(run, output, this.id, this.version, this.runtimeVersion);
@@ -267,18 +267,7 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
   if (gravityLoads.length && gravityMagnitude <= 1e-9 && supportedLoads.length === gravityLoads.length) {
     throw providerError('SIMULATION_LOAD_INVALID', 'The combined gravity acceleration is zero, so the study has no effective load.');
   }
-  const constraintSets = supportedConstraints.map((constraint, index) => ({
-    name: constraintSetName(index, constraint.type),
-    constraint,
-    regions: requireMeshRegions(mesh, constraint.semanticReferenceIds),
-  })).map(item => ({ ...item, nodes: uniqueNodes(mesh, uniqueFacetIndices(item.regions)) }));
-  const claimedConstraintNodes = new Set<number>();
-  for (const item of constraintSets) {
-    if (item.nodes.some(node => claimedConstraintNodes.has(node))) {
-      throw providerError('SIMULATION_CONSTRAINT_INVALID', 'Constraint FACE groups overlap on neutral mesh nodes, so reactions cannot be attributed uniquely. Merge the overlapping constraints.');
-    }
-    item.nodes.forEach(node => claimedConstraintNodes.add(node));
-  }
+  const constraintSets = buildConstraintSets(supportedConstraints, mesh);
   const constrainedRegionIds = new Set(constraintSets.flatMap(item => item.regions.map(region => region.regionId)));
   const nodalLoads = new Map<number, NeutralVector3>();
   const facetGeometry = supportedLoads.some(load => load.type === 'pressure') ? buildBoundaryFacetGeometry(mesh) : null;
@@ -300,7 +289,10 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     ...mesh.nodes.map((point, index) => `${index + 1},${point[0]},${point[1]},${point[2]}`),
     '*ELEMENT, TYPE=C3D10, ELSET=EALL',
     ...mesh.volumeElements.connectivity.map((cell, index) => `${index + 1},${neutralToCalculiXC3D10(cell).map(node => node + 1).join(',')}`),
-    ...constraintSets.flatMap(item => [`*NSET, NSET=${item.name}`, ...wrapIds(item.nodes.map(node => node + 1))]),
+    ...constraintSets.flatMap(item => [
+      `*NSET, NSET=${item.name}`, ...wrapIds(item.nodes.map(node => node + 1)),
+      `*NSET, NSET=${item.reactionName}`, ...wrapIds(item.reactionNodes.map(node => node + 1)),
+    ]),
     '*MATERIAL, NAME=TUNACAD_MATERIAL',
     '*ELASTIC',
     `${request.material.youngsModulusMPa},${request.material.poissonRatio}`,
@@ -320,7 +312,7 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     ] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES',
     'U',
-    ...constraintSets.flatMap(item => [`*NODE PRINT, NSET=${item.name}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
+    ...constraintSets.flatMap(item => [`*NODE PRINT, NSET=${item.reactionName}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
     '*EL PRINT, ELSET=EALL',
     'S',
     ...(gravityLoads.length ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
@@ -367,7 +359,7 @@ function addNodalLoads(target: Map<number, NeutralVector3>, source: Map<number, 
   }
 }
 
-function consistentSurfaceLoads(mesh: NeutralFemMesh, facetIndices: number[], totalForce: NeutralVector3): Map<number, NeutralVector3> {
+export function consistentSurfaceLoads(mesh: NeutralFemMesh, facetIndices: number[], totalForce: NeutralVector3): Map<number, NeutralVector3> {
   const facets = facetIndices.map(index => mesh.boundaryFacets.connectivity[index]);
   if (facets.some(facet => facet.length !== 6)) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Quadratic triangular boundary facets are required for C3D10 loading.');
   const areas = facets.map(facet => triangleArea(facet.slice(0, 3).map(node => mesh.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3]));
@@ -585,20 +577,30 @@ function buildBoundaryFacetGeometry(mesh: NeutralFemMesh): BoundaryFacetGeometry
 
 function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: string, adapterVersion: string, runtimeVersion: string): NeutralSimulationResult {
   const request = run.request;
+  const constraintSets = buildConstraintSets(request.constraints, run.mesh);
   const displacementBinding = bindingForNode(run.mesh, output.maximumDisplacementNode, request);
   const completedAt = new Date().toISOString();
   const factorOfSafety = request.material.yieldStrengthMPa && output.maximumVonMisesStressMPa > 0
     ? request.material.yieldStrengthMPa / output.maximumVonMisesStressMPa
     : null;
-  const combinedGravityNodalLoads = new Map<number, NeutralVector3>();
+  const pressureGeometry = request.loads.some(load => load.type === 'pressure') ? buildBoundaryFacetGeometry(run.mesh) : null;
+  const combinedAppliedNodalLoads = new Map<number, NeutralVector3>();
   for (const load of request.loads) {
-    if (load.type === 'gravity') addNodalLoads(combinedGravityNodalLoads, gravityNodalLoads(run.mesh, request.material.densityKgM3!, load.accelerationMmPerS2));
+    const nodalLoad = load.type === 'gravity'
+      ? gravityNodalLoads(run.mesh, request.material.densityKgM3!, load.accelerationMmPerS2)
+      : load.type === 'surface_force'
+        ? consistentSurfaceLoads(run.mesh, uniqueFacetIndices(requireMeshRegions(run.mesh, load.semanticReferenceIds)), load.forceN)
+        : pressureSurfaceLoads(run.mesh, uniqueFacetIndices(requireMeshRegions(run.mesh, load.semanticReferenceIds)), load.pressureMPa, pressureGeometry!);
+    addNodalLoads(combinedAppliedNodalLoads, nodalLoad);
   }
+  // CalculiX RF totals omit external nodal-load contributions applied directly
+  // to restrained DOFs. Restore those contributions once, using the disjoint
+  // reaction-node partition, so adjacent load/support FACE edges still balance.
   const reactions = request.constraints.map((constraint, index) => ({
     constraintId: constraint.id,
     forceN: subtractVector(
-      output.reactionForcesBySet[constraintSetName(index, constraint.type)],
-      sumForcesAtNodes(combinedGravityNodalLoads, uniqueNodes(run.mesh, uniqueFacetIndices(requireMeshRegions(run.mesh, constraint.semanticReferenceIds)))),
+      output.reactionForcesBySet[reactionSetName(index)],
+      sumForcesAtNodes(combinedAppliedNodalLoads, constraintSets[index].reactionNodes),
     ),
     semanticReferenceIds: [...constraint.semanticReferenceIds],
   }));
@@ -607,7 +609,6 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
     const solverVolumeRelativeError = Math.abs(output.totalVolumeMm3! - request.geometry.shape.volumeMm3) / request.geometry.shape.volumeMm3;
     if (!Number.isFinite(solverVolumeRelativeError) || solverVolumeRelativeError > 0.05) throw new Error(`CalculiX element volume differs from the approved CAD volume by ${solverVolumeRelativeError}; the maximum is 0.05.`);
   }
-  const pressureGeometry = request.loads.some(load => load.type === 'pressure') ? buildBoundaryFacetGeometry(run.mesh) : null;
   const appliedForce = request.loads.reduce<NeutralVector3>((sum, load) => {
     const force = load.type === 'surface_force'
       ? load.forceN
@@ -660,6 +661,72 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
 
 function constraintSetName(index: number, type: NeutralSimulationRequest['constraints'][number]['type']): string {
   return `${type === 'fixed' ? 'FIXED' : 'PRESCRIBED'}_${String(index + 1).padStart(3, '0')}`;
+}
+
+function reactionSetName(index: number): string {
+  return `REACTION_${String(index + 1).padStart(3, '0')}`;
+}
+
+interface ConstraintSet {
+  name: string;
+  reactionName: string;
+  constraint: NeutralSimulationRequest['constraints'][number];
+  regions: NeutralFemMesh['boundaryRegions'];
+  nodes: number[];
+  reactionNodes: number[];
+}
+
+/** Build constraint boundary sets using FACE-area overlap, not incidental
+ * shared edge/corner nodes. Compatible shared nodes are constrained once by
+ * CalculiX and assigned to exactly one reaction set in stable constraint-ID
+ * order, preventing reaction double-counting while preserving each entry. */
+export function buildConstraintSets(
+  constraints: NeutralSimulationRequest['constraints'],
+  mesh: NeutralFemMesh,
+): ConstraintSet[] {
+  const sets = constraints.map((constraint, index) => {
+    const regions = requireMeshRegions(mesh, constraint.semanticReferenceIds);
+    const facets = uniqueFacetIndices(regions);
+    return {
+      name: constraintSetName(index, constraint.type),
+      reactionName: reactionSetName(index),
+      constraint,
+      regions,
+      facets,
+      nodes: uniqueNodes(mesh, facets),
+      reactionNodes: [] as number[],
+    };
+  });
+  const claimedFacets = new Map<number, string>();
+  const prescribedValues = new Map<string, { value: number; constraintId: string }>();
+  for (const set of sets) {
+    for (const facet of set.facets) {
+      const owner = claimedFacets.get(facet);
+      if (owner) throw providerError('SIMULATION_CONSTRAINT_INVALID', `Constraint FACE groups "${owner}" and "${set.constraint.id}" overlap on a boundary facet.`);
+      claimedFacets.set(facet, set.constraint.id);
+    }
+    const values = set.constraint.type === 'fixed' ? [0, 0, 0] : set.constraint.displacementMm;
+    for (const node of set.nodes) {
+      values.forEach((value, axis) => {
+        if (value === null) return;
+        const key = `${node}:${axis}`;
+        const existing = prescribedValues.get(key);
+        if (existing && Math.abs(existing.value - value) > 1e-12) {
+          throw providerError('SIMULATION_CONSTRAINT_INVALID', `Constraints "${existing.constraintId}" and "${set.constraint.id}" prescribe incompatible component ${axis + 1} values on a shared FACE-edge node.`);
+        }
+        if (!existing) prescribedValues.set(key, { value, constraintId: set.constraint.id });
+      });
+    }
+  }
+  const reactionOwner = new Map<number, number>();
+  [...sets.keys()]
+    .sort((a, b) => compareStableText(sets[a].constraint.id, sets[b].constraint.id) || a - b)
+    .forEach(index => sets[index].nodes.forEach(node => { if (!reactionOwner.has(node)) reactionOwner.set(node, index); }));
+  sets.forEach((set, index) => {
+    set.reactionNodes = set.nodes.filter(node => reactionOwner.get(node) === index);
+    if (!set.reactionNodes.length) throw providerError('SIMULATION_CONSTRAINT_INVALID', `Constraint "${set.constraint.id}" has no uniquely attributable reaction nodes.`);
+  });
+  return sets;
 }
 
 function boundaryLinesForConstraint(item: {

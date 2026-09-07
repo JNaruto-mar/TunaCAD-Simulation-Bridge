@@ -43,14 +43,17 @@ the Bridge.
 - one homogeneous isotropic linear-elastic material;
 - small-displacement linear-static analysis;
 - complete second-order tetrahedral mesh;
-- multiple surface-force FACE groups;
+- surface-force entries targeting arbitrary unique FACE groups, with the total
+  vector distributed over their combined area;
 - multiple pressure FACE groups, with positive values acting inward and
   negative values representing suction;
 - multiple uniform part-local gravity vectors using material density and
   second-order tetrahedral volume integration;
-- multiple non-overlapping fixed FACE groups; and
-- prescribed displacement on non-overlapping FACE groups, independently by
-  part-local X/Y/Z component (`null` leaves a component free); and
+- fixed and prescribed-displacement entries targeting arbitrary unique FACE
+  groups; distinct constraint groups may share edge/corner nodes when their
+  prescribed components are compatible, but may not overlap on facets;
+- prescribed displacement independently controls part-local X/Y/Z components
+  (`null` leaves a component free);
 - one simultaneous linear-static load case with deterministic accumulation of
   multiple load entries by stable load ID; and
 - no contacts.
@@ -97,6 +100,7 @@ npm run test:pressure
 npm run test:gravity
 npm run test:prescribed-displacement
 npm run test:superposition
+npm run test:face-groups
 ```
 
 ## Qualification matrix

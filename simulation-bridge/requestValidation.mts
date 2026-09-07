@@ -10,7 +10,8 @@ const vector = z.tuple([number, number, number]);
 const surfaceForce = vector.refine(value => Math.hypot(...value) > 1e-14 && Math.hypot(...value) <= 1_000_000_000_000);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const box = z.object({ min: vector, max: vector }).strict();
-const references = z.array(text).min(1).max(32);
+const references = z.array(text).min(1).max(32)
+  .refine(ids => new Set(ids).size === ids.length, 'FACE references within one load or constraint must be unique.');
 const pressureMPa = number.refine(value => value !== 0 && Math.abs(value) <= 1_000_000);
 const acceleration = vector.refine(value => Math.hypot(...value) > 1e-9 && Math.hypot(...value) <= 1_000_000_000);
 const displacementComponent = number.min(-1_000_000).max(1_000_000).nullable();

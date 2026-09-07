@@ -22,7 +22,9 @@ export interface NeutralSimulationMaterial {
 }
 
 /** All load entries belong to one simultaneous linear-static load case.
- * Providers accumulate them deterministically and preserve every entry ID. */
+ * Providers accumulate them deterministically and preserve every entry ID.
+ * FACE IDs within one entry are unique. A surface force is the total vector
+ * distributed over the union by facet area; pressure acts on every FACE. */
 export type NeutralSimulationLoad =
   | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3 }
   /** Positive pressure acts inward, opposite each boundary facet's computed
@@ -33,6 +35,8 @@ export type NeutralSimulationLoad =
   | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3 };
 
 export type NeutralSimulationConstraint =
+  /** Every unique FACE in the group receives the same constraint. Distinct
+   * constraint groups may meet at edges/corners but cannot overlap in area. */
   | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
   /** Part-local X/Y/Z components in millimetres. null leaves a component free;
    * numeric zero is an intentional zero-displacement restraint. */
