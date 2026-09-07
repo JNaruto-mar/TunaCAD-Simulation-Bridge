@@ -15,6 +15,7 @@ import {
   type SimulationProviderCapabilities,
   type SimulationProviderSubmission,
 } from '../../src/simulation/externalSimulationContracts.ts';
+import { quadraticTetraVolumeSamples, quadraticTriangleSurfaceSamples } from '../../src/simulation/neutralFemMesh.ts';
 import {
   LOCAL_PROVIDER_RESOURCE_LIMITS,
   hasEnforcedProviderProcessQuotas,
@@ -192,8 +193,10 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
     if (run.status.status === 'cancelled' || run.status.status === 'failed') { await removeWorkingDirectory(run.directory); return; }
     clearTimeout(run.timeout);
     if (code !== 0) {
-      const lastLine = diagnostic.split(/\r?\n/).filter(Boolean).slice(-1)[0] ?? '';
-      await this.failRun(run, 'SIMULATION_SOLVER_FAILED', `CalculiX exited with code ${String(code)}${signal ? ` (${signal})` : ''}.${lastLine ? ` ${lastLine.slice(0, 800)}` : ''}`);
+      const diagnosticLines = diagnostic.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const errorContext = diagnosticLines.flatMap((line, index) => /error/i.test(line) ? diagnosticLines.slice(index, index + 3) : []);
+      const diagnosticTail = [...errorContext, ...diagnosticLines.slice(-8)].slice(-30).join(' ');
+      await this.failRun(run, 'SIMULATION_SOLVER_FAILED', `CalculiX exited with code ${String(code)}${signal ? ` (${signal})` : ''}.${diagnosticTail ? ` ${diagnosticTail.slice(0, 1_600)}` : ''}`);
       return;
     }
     try {
@@ -286,7 +289,7 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     '*HEADING',
     `TunaCAD neutral linear-static study ${safeComment(request.studyId)}`,
     '*NODE, NSET=NALL',
-    ...mesh.nodes.map((point, index) => `${index + 1},${point[0]},${point[1]},${point[2]}`),
+    ...mesh.nodes.map((point, index) => `${index + 1},${point.map(solverNumber).join(',')}`),
     '*ELEMENT, TYPE=C3D10, ELSET=EALL',
     ...mesh.volumeElements.connectivity.map((cell, index) => `${index + 1},${neutralToCalculiXC3D10(cell).map(node => node + 1).join(',')}`),
     ...constraintSets.flatMap(item => [
@@ -295,8 +298,8 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     ]),
     '*MATERIAL, NAME=TUNACAD_MATERIAL',
     '*ELASTIC',
-    `${request.material.youngsModulusMPa},${request.material.poissonRatio}`,
-    ...(request.material.densityKgM3 !== undefined ? ['*DENSITY', `${request.material.densityKgM3 * 1e-12}`] : []),
+    `${solverNumber(request.material.youngsModulusMPa)},${solverNumber(request.material.poissonRatio)}`,
+    ...(request.material.densityKgM3 !== undefined ? ['*DENSITY', solverNumber(request.material.densityKgM3 * 1e-12)] : []),
     '*SOLID SECTION, ELSET=EALL, MATERIAL=TUNACAD_MATERIAL',
     '*STEP',
     '*STATIC',
@@ -304,11 +307,11 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     ...constraintSets.flatMap(boundaryLinesForConstraint),
     ...([...nodalLoads.entries()].length ? [
       '*CLOAD',
-      ...[...nodalLoads.entries()].flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${value}`] : [])),
+      ...[...nodalLoads.entries()].flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
     ] : []),
     ...(gravityMagnitude > 1e-9 ? [
       '*DLOAD',
-      `EALL,GRAV,${gravityMagnitude},${gravityAcceleration[0] / gravityMagnitude},${gravityAcceleration[1] / gravityMagnitude},${gravityAcceleration[2] / gravityMagnitude}`,
+      `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravityAcceleration.map(value => solverNumber(value / gravityMagnitude)).join(',')}`,
     ] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES',
     'U',
@@ -432,7 +435,10 @@ export function parseCalculiXDat(text: string, mesh: NeutralFemMesh, expectedRea
   return { maximumDisplacementMm, maximumDisplacementPositionMm: mesh.nodes[maximumDisplacementNode], maximumDisplacementNode, maximumVonMisesStressMPa, maximumStressPositionMm, reactionForcesBySet, totalVolumeMm3 };
 }
 
-interface BoundaryFacetGeometry { areaMm2: number; outwardNormal: NeutralVector3 }
+interface BoundaryFacetGeometry {
+  areaMm2: number;
+  consistentOutwardAreaVectorsMm2: NeutralVector3[];
+}
 
 /** Convert scalar pressure to consistent C3D10 boundary-node forces. Positive
  * pressure is compressive (opposite the local outward normal); negative
@@ -449,12 +455,19 @@ export function pressureSurfaceLoads(
     const facet = mesh.boundaryFacets.connectivity[facetIndex];
     const facetEvidence = geometry[facetIndex];
     if (!facet || facet.length !== 6 || !facetEvidence) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Pressure requires an oriented quadratic triangular boundary facet.');
-    const totalFacetForce = facetEvidence.outwardNormal.map(value => -pressureMPa * facetEvidence.areaMm2 * value) as NeutralVector3;
-    for (const node of facet.slice(3, 6)) {
+    for (let localNode = 0; localNode < facet.length; localNode += 1) {
+      const node = facet[localNode];
+      const areaVector = facetEvidence.consistentOutwardAreaVectorsMm2[localNode];
       const prior = result.get(node) ?? [0, 0, 0];
-      result.set(node, [prior[0] + totalFacetForce[0] / 3, prior[1] + totalFacetForce[1] / 3, prior[2] + totalFacetForce[2] / 3]);
+      result.set(node, [
+        prior[0] - pressureMPa * areaVector[0],
+        prior[1] - pressureMPa * areaVector[1],
+        prior[2] - pressureMPa * areaVector[2],
+      ]);
     }
   }
+  const scale = Math.max(1, ...[...result.values()].map(force => Math.hypot(...force)));
+  for (const [node, force] of result) if (Math.hypot(...force) <= scale * 1e-13) result.delete(node);
   return result;
 }
 
@@ -485,7 +498,7 @@ export function gravityNodalLoads(
   for (const cell of mesh.volumeElements.connectivity) {
     if (cell.length !== 10) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Gravity requires complete second-order C3D10 tetrahedra.');
     const points = cell.map(node => mesh.nodes[node]);
-    for (const sample of quadraticTetraIntegration(points)) {
+    for (const sample of quadraticTetraVolumeSamples(points)) {
       cell.forEach((node, localNode) => {
         const scale = densityKgM3 * 1e-12 * sample.volumeWeightMm3 * sample.shapeFunctions[localNode];
         const prior = result.get(node) ?? [0, 0, 0];
@@ -504,47 +517,7 @@ export function gravityNodalLoads(
 /** Four-point tetrahedral quadrature matches CalculiX C3D10 volume/body-load
  * integration and accounts for displaced midside nodes on curved geometry. */
 export function quadraticTetraVolumeMm3(points: NeutralVector3[]): number {
-  return quadraticTetraIntegration(points).reduce((sum, sample) => sum + sample.volumeWeightMm3, 0);
-}
-
-interface QuadraticTetraIntegrationSample { volumeWeightMm3: number; shapeFunctions: number[] }
-
-function quadraticTetraIntegration(points: NeutralVector3[]): QuadraticTetraIntegrationSample[] {
-  if (points.length !== 10 || points.some(point => point.some(value => !Number.isFinite(value)))) {
-    throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'C3D10 volume integration requires ten finite neutral nodes.');
-  }
-  const a = 0.5854101966249685;
-  const b = 0.1381966011250105;
-  const barycentricPoints: NeutralVector3[] = [
-    [b, b, b], [a, b, b], [b, a, b], [b, b, a],
-  ];
-  let orientation = 0;
-  return barycentricPoints.map(([r, s, t]) => {
-    const barycentric = [1 - r - s - t, r, s, t];
-    const shapeFunctions = barycentric.map(value => value * (2 * value - 1));
-    for (const [node, i, j] of [[4, 0, 1], [5, 1, 2], [6, 2, 0], [7, 0, 3], [8, 2, 3], [9, 1, 3]] as const) {
-      shapeFunctions[node] = 4 * barycentric[i] * barycentric[j];
-    }
-    const derivatives = [
-      [-1, 1, 0, 0],
-      [-1, 0, 1, 0],
-      [-1, 0, 0, 1],
-    ];
-    const gradients = derivatives.map(derivative => {
-      const result = barycentric.map((value, index) => (4 * value - 1) * derivative[index]);
-      for (const [node, i, j] of [[4, 0, 1], [5, 1, 2], [6, 2, 0], [7, 0, 3], [8, 2, 3], [9, 1, 3]] as const) {
-        result[node] = 4 * (derivative[i] * barycentric[j] + barycentric[i] * derivative[j]);
-      }
-      return result;
-    });
-    const jacobianColumns = gradients.map(gradient => [0, 1, 2].map(axis => points.reduce((sum, point, node) => sum + point[axis] * gradient[node], 0)) as NeutralVector3);
-    const determinant = dotVector(jacobianColumns[0], crossVector(jacobianColumns[1], jacobianColumns[2]));
-    if (!Number.isFinite(determinant) || Math.abs(determinant) <= 1e-18) throw providerError('SIMULATION_MESH_INVALID', 'Gravity encountered a singular C3D10 Jacobian.');
-    const sign = Math.sign(determinant);
-    if (orientation && sign !== orientation) throw providerError('SIMULATION_MESH_INVALID', 'Gravity encountered an inverted C3D10 element.');
-    orientation = sign;
-    return { volumeWeightMm3: Math.abs(determinant) / 24, shapeFunctions };
-  });
+  return quadraticTetraVolumeSamples(points).reduce((sum, sample) => sum + sample.volumeWeightMm3, 0);
 }
 
 function buildBoundaryFacetGeometry(mesh: NeutralFemMesh): BoundaryFacetGeometry[] {
@@ -564,14 +537,20 @@ function buildBoundaryFacetGeometry(mesh: NeutralFemMesh): BoundaryFacetGeometry
     const corners = facet.slice(0, 3);
     const cells = adjacentCells.get(faceKey(corners));
     if (!cells || cells.length !== 1) throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A pressure facet must bound exactly one volume element.');
-    const points = corners.map(node => mesh.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3];
-    const rawNormal = crossVector(subtractVector(points[1], points[0]), subtractVector(points[2], points[0]));
-    const doubleArea = Math.hypot(...rawNormal);
-    if (!(doubleArea > 0)) throw providerError('SIMULATION_LOAD_INVALID', 'A pressure facet has zero area.');
-    const faceCenter = centroid(points);
-    const towardOutside = subtractVector(faceCenter, cells[0]);
-    const orientation = dotVector(rawNormal, towardOutside) >= 0 ? 1 : -1;
-    return { areaMm2: doubleArea / 2, outwardNormal: rawNormal.map(value => orientation * value / doubleArea) as NeutralVector3 };
+    const samples = quadraticTriangleSurfaceSamples(facet.map(node => mesh.nodes[node]));
+    const consistentOutwardAreaVectorsMm2 = facet.map(() => [0, 0, 0] as NeutralVector3);
+    let areaMm2 = 0;
+    for (const sample of samples) {
+      const orientation = dotVector(sample.areaVectorMm2, subtractVector(sample.positionMm, cells[0])) >= 0 ? 1 : -1;
+      areaMm2 += sample.areaWeightMm2;
+      sample.shapeFunctions.forEach((shapeFunction, localNode) => {
+        for (let axis = 0; axis < 3; axis++) {
+          consistentOutwardAreaVectorsMm2[localNode][axis] += orientation * shapeFunction * sample.areaVectorMm2[axis];
+        }
+      });
+    }
+    if (!(areaMm2 > 0)) throw providerError('SIMULATION_LOAD_INVALID', 'A pressure facet has zero area.');
+    return { areaMm2, consistentOutwardAreaVectorsMm2 };
   });
 }
 
@@ -736,7 +715,7 @@ function boundaryLinesForConstraint(item: {
   if (item.constraint.type === 'fixed') return [`${item.name},1,3,0`];
   return item.constraint.displacementMm.flatMap((value, axis) => value === null
     ? []
-    : [`${item.name},${axis + 1},${axis + 1},${value}`]);
+    : [`${item.name},${axis + 1},${axis + 1},${solverNumber(value)}`]);
 }
 
 function bindingForNode(mesh: NeutralFemMesh, node: number, request: NeutralSimulationRequest): NeutralSimulationReferenceBinding | null {
@@ -751,6 +730,13 @@ function hotspot(id: string, kind: 'stress' | 'displacement', value: number, uni
 
 function wrapIds(ids: number[]): string[] { const lines: string[] = []; for (let index = 0; index < ids.length; index += 16) lines.push(ids.slice(index, index + 16).join(',')); return lines; }
 function safeComment(value: string): string { return value.replace(/[^A-Za-z0-9 _.:-]/g, '').slice(0, 120); }
+function solverNumber(value: number): string {
+  if (!Number.isFinite(value)) throw providerError('SIMULATION_INPUT_INVALID', 'CalculiX input contains a non-finite numeric value.');
+  if (Math.abs(value) < 1e-12) return '0';
+  const [mantissa, exponent] = value.toPrecision(12).replace(/e/g, 'E').split('E');
+  const compactMantissa = mantissa.includes('.') ? mantissa.replace(/0+$/, '').replace(/\.$/, '') : mantissa;
+  return exponent === undefined ? compactMantissa : `${compactMantissa}E${Number(exponent)}`;
+}
 function compareStableText(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 function triangleArea([a, b, c]: [NeutralVector3, NeutralVector3, NeutralVector3]): number { const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]]; const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]]; return Math.hypot(u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]) / 2; }
 function centroid(points: NeutralVector3[]): NeutralVector3 { return [0, 1, 2].map(axis => points.reduce((sum, point) => sum + point[axis], 0) / points.length) as NeutralVector3; }

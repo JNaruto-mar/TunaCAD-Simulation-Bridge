@@ -17,7 +17,7 @@ import {
   type NeutralVector3,
   type SimulationGeometryResolver,
 } from '../../src/simulation/externalSimulationContracts.ts';
-import { tetraMeanRatio, tetraVolume, validateNeutralFemMesh } from '../../src/simulation/neutralFemMesh.ts';
+import { quadraticTetraVolume, quadraticTriangleSurfaceSamples, tetraMeanRatio, validateNeutralFemMesh } from '../../src/simulation/neutralFemMesh.ts';
 import {
   LOCAL_PROVIDER_RESOURCE_LIMITS,
   hasEnforcedProviderProcessQuotas,
@@ -350,7 +350,7 @@ function normalizeMesh(parsed: ParsedMsh, request: NeutralMeshJobRequest, descri
   const boundaryFacetRegionIds = parsed.triangles.map(item => matches.get(item.entityTag)?.regionId ?? `boundary_unassigned_${String(item.entityTag).padStart(3, '0')}`);
   const cells = parsed.tetrahedra.map(item => item.connectivity);
   const qualities = cells.map(cell => tetraMeanRatio(cell.slice(0, 4).map(index => parsed.nodes[index]) as [NeutralVector3, NeutralVector3, NeutralVector3, NeutralVector3]));
-  const meshVolume = cells.reduce((sum, cell) => sum + tetraVolume(cell.slice(0, 4).map(index => parsed.nodes[index]) as [NeutralVector3, NeutralVector3, NeutralVector3, NeutralVector3]), 0);
+  const meshVolume = cells.reduce((sum, cell) => sum + quadraticTetraVolume(cell.map(index => parsed.nodes[index])), 0);
   const options = { elementOrder: 2, globalSizeMm: request.mesh.globalSizeMm, minimumSizeMm: request.mesh.minimumSizeMm ?? request.mesh.globalSizeMm / 10, format: 'msh4-ascii' };
   return {
     schema: NEUTRAL_FEM_MESH_SCHEMA,
@@ -384,12 +384,11 @@ function boundaryEvidence(nodes: NeutralVector3[], triangles: ParsedMsh['triangl
   let area = 0; const weighted: NeutralVector3 = [0, 0, 0]; const used = new Set<number>();
   for (const index of indices) {
     const connectivity = triangles[index].connectivity;
-    const [a, b, c] = connectivity.slice(0, 3).map(node => nodes[node]);
-    const normal = cross(subtract(b, a), subtract(c, a));
-    const triangleArea = length(normal) / 2;
-    const center: NeutralVector3 = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3];
-    area += triangleArea;
-    for (let axis = 0; axis < 3; axis++) weighted[axis] += center[axis] * triangleArea;
+    const samples = quadraticTriangleSurfaceSamples(connectivity.map(node => nodes[node]));
+    for (const sample of samples) {
+      area += sample.areaWeightMm2;
+      for (let axis = 0; axis < 3; axis++) weighted[axis] += sample.positionMm[axis] * sample.areaWeightMm2;
+    }
     connectivity.forEach(node => used.add(node));
   }
   if (area <= 0 || !used.size) throw meshError('SIMULATION_FACE_MAPPING_NOT_FOUND', 'Gmsh produced an empty STEP boundary surface.');
@@ -414,9 +413,6 @@ function matchesFace(candidate: NeutralSimulationReferenceBinding['face'], expec
 }
 
 function tolerance(scale: number, size: number): number { return Math.max(1e-5, scale * 1e-6, size * 0.02); }
-function subtract(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
-function cross(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
-function length(a: NeutralVector3): number { return Math.hypot(...a); }
 function executableEnvironment(executable: string): NodeJS.ProcessEnv { return { ...process.env, PATH: `${dirname(executable)}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH ?? ''}` }; }
 function nodeMajorVersion(): number { return Number.parseInt(process.versions.node.split('.')[0] ?? '', 10); }
 function meshError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }

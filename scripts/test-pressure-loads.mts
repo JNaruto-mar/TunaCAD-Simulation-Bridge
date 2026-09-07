@@ -23,7 +23,13 @@ ambiguous.volumeElements.connectivity.push([...ambiguous.volumeElements.connecti
 ambiguous.volumeElements.regionIds.push('duplicate');
 assert.throws(() => pressureSurfaceLoads(ambiguous, [0], 2), { code: 'SIMULATION_FACE_MAPPING_AMBIGUOUS' });
 
-console.log('Pressure translation passed: positive compression, negative suction, quadratic nodal distribution, and unique volume adjacency are enforced.');
+const curved = structuredClone(mesh);
+curved.nodes[5] = [0.5, 0.5, 0.2];
+const curvedCompression = pressureSurfaceLoads(curved, [0], 2);
+assertVectorClose(sum(curvedCompression), [-4 / 15, -4 / 15, 1], 'Quadratic pressure integration must follow the curved six-node surface, not its planar corner chord.');
+assert.ok([0, 1, 2].some(node => curvedCompression.has(node)), 'Varying curved-surface normals must produce consistent corner-node forces.');
+
+console.log('Pressure translation passed: sign convention, six-node curved quadrature, consistent nodal distribution, and unique volume adjacency are enforced.');
 
 function sum(loads: Map<number, NeutralVector3>): NeutralVector3 {
   return [...loads.values()].reduce<NeutralVector3>((total, force) => [total[0] + force[0], total[1] + force[1], total[2] + force[2]], [0, 0, 0]);

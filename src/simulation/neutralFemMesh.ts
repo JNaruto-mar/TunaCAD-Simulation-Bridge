@@ -97,6 +97,93 @@ export function tetraVolume(points: [NeutralVector3, NeutralVector3, NeutralVect
   return Math.abs(determinant([subtract(b, a), subtract(c, a), subtract(d, a)])) / 6;
 }
 
+export interface QuadraticTriangleSurfaceSample {
+  positionMm: NeutralVector3;
+  /** Oriented differential-area vector, including the quadrature weight. */
+  areaVectorMm2: NeutralVector3;
+  areaWeightMm2: number;
+  shapeFunctions: [number, number, number, number, number, number];
+}
+
+export interface QuadraticTetraVolumeSample {
+  volumeWeightMm3: number;
+  shapeFunctions: number[];
+}
+
+/** Four-point tetrahedral quadrature for a ten-node isoparametric tetrahedron.
+ * It preserves curved midside geometry and supplies the shape functions needed
+ * for consistent body loads. */
+export function quadraticTetraVolumeSamples(points: NeutralVector3[]): QuadraticTetraVolumeSample[] {
+  if (points.length !== 10 || points.some(point => point.length !== 3 || point.some(value => !Number.isFinite(value)))) {
+    throw meshError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'C3D10 volume integration requires ten finite neutral nodes.');
+  }
+  const a = 0.5854101966249685;
+  const b = 0.1381966011250105;
+  const barycentricPoints: NeutralVector3[] = [[b, b, b], [a, b, b], [b, a, b], [b, b, a]];
+  let orientation = 0;
+  return barycentricPoints.map(([r, s, t]) => {
+    const barycentric = [1 - r - s - t, r, s, t];
+    const shapeFunctions = barycentric.map(value => value * (2 * value - 1));
+    for (const [node, i, j] of [[4, 0, 1], [5, 1, 2], [6, 2, 0], [7, 0, 3], [8, 2, 3], [9, 1, 3]] as const) {
+      shapeFunctions[node] = 4 * barycentric[i] * barycentric[j];
+    }
+    const derivatives = [[-1, 1, 0, 0], [-1, 0, 1, 0], [-1, 0, 0, 1]];
+    const gradients = derivatives.map(derivative => {
+      const result = barycentric.map((value, index) => (4 * value - 1) * derivative[index]);
+      for (const [node, i, j] of [[4, 0, 1], [5, 1, 2], [6, 2, 0], [7, 0, 3], [8, 2, 3], [9, 1, 3]] as const) {
+        result[node] = 4 * (derivative[i] * barycentric[j] + barycentric[i] * derivative[j]);
+      }
+      return result;
+    });
+    const columns = gradients.map(gradient => interpolate(points, gradient)) as [NeutralVector3, NeutralVector3, NeutralVector3];
+    const jacobian = determinant(columns);
+    if (!Number.isFinite(jacobian) || Math.abs(jacobian) <= 1e-18) throw meshError('SIMULATION_MESH_INVALID', 'C3D10 volume integration encountered a singular Jacobian.');
+    const sign = Math.sign(jacobian);
+    if (orientation && sign !== orientation) throw meshError('SIMULATION_MESH_INVALID', 'C3D10 volume integration encountered an inverted element.');
+    orientation = sign;
+    return { volumeWeightMm3: Math.abs(jacobian) / 24, shapeFunctions };
+  });
+}
+
+export function quadraticTetraVolume(points: NeutralVector3[]): number {
+  return quadraticTetraVolumeSamples(points).reduce((sum, sample) => sum + sample.volumeWeightMm3, 0);
+}
+
+/** Seven-point, degree-five integration of a six-node isoparametric triangle.
+ * Connectivity is corners (0,1,2), then edge nodes (0-1,1-2,2-0), matching
+ * the neutral Gmsh triangle-6 convention. Curved areas, centroids, normals,
+ * and consistent tractions must use all six nodes rather than planar chords. */
+export function quadraticTriangleSurfaceSamples(points: NeutralVector3[]): QuadraticTriangleSurfaceSample[] {
+  if (points.length !== 6 || points.some(point => point.length !== 3 || point.some(value => !Number.isFinite(value)))) {
+    throw meshError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'Quadratic surface integration requires six finite triangle nodes.');
+  }
+  const quadrature = [
+    [1 / 3, 1 / 3, 0.1125],
+    [0.470142064105115, 0.470142064105115, 0.066197076394253],
+    [0.059715871789770, 0.470142064105115, 0.066197076394253],
+    [0.470142064105115, 0.059715871789770, 0.066197076394253],
+    [0.101286507323456, 0.101286507323456, 0.062969590272414],
+    [0.797426985353087, 0.101286507323456, 0.062969590272414],
+    [0.101286507323456, 0.797426985353087, 0.062969590272414],
+  ] as const;
+  return quadrature.map(([r, s, weight]) => {
+    const l1 = 1 - r - s;
+    const shapeFunctions: QuadraticTriangleSurfaceSample['shapeFunctions'] = [
+      l1 * (2 * l1 - 1), r * (2 * r - 1), s * (2 * s - 1), 4 * l1 * r, 4 * r * s, 4 * s * l1,
+    ];
+    const derivativeR = [-(4 * l1 - 1), 4 * r - 1, 0, 4 * (l1 - r), 4 * s, -4 * s];
+    const derivativeS = [-(4 * l1 - 1), 0, 4 * s - 1, -4 * r, 4 * r, 4 * (l1 - s)];
+    const positionMm = interpolate(points, shapeFunctions);
+    const tangentR = interpolate(points, derivativeR);
+    const tangentS = interpolate(points, derivativeS);
+    const rawAreaVector = cross(tangentR, tangentS);
+    const jacobian = Math.hypot(...rawAreaVector);
+    if (!Number.isFinite(jacobian) || jacobian <= 1e-18) throw meshError('SIMULATION_MESH_INVALID', 'Quadratic boundary triangle has a singular surface Jacobian.');
+    const areaVectorMm2 = rawAreaVector.map(value => value * weight) as NeutralVector3;
+    return { positionMm, areaVectorMm2, areaWeightMm2: jacobian * weight, shapeFunctions };
+  });
+}
+
 function requireVector(value: unknown, label: string): asserts value is NeutralVector3 {
   if (!Array.isArray(value) || value.length !== 3 || value.some((entry) => !Number.isFinite(entry))) {
     throw meshError('SIMULATION_MESH_INVALID', `A ${label} contains non-finite coordinates.`);
@@ -117,6 +204,14 @@ function subtract(a: NeutralVector3, b: NeutralVector3): NeutralVector3 {
 
 function squaredLength(a: NeutralVector3): number {
   return a[0] ** 2 + a[1] ** 2 + a[2] ** 2;
+}
+
+function interpolate(points: NeutralVector3[], weights: readonly number[]): NeutralVector3 {
+  return [0, 1, 2].map(axis => points.reduce((sum, point, index) => sum + point[axis] * weights[index], 0)) as NeutralVector3;
+}
+
+function cross(a: NeutralVector3, b: NeutralVector3): NeutralVector3 {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 }
 
 function determinant(columns: readonly [NeutralVector3, NeutralVector3, NeutralVector3]): number {

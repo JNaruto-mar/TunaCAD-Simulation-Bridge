@@ -18,6 +18,8 @@
     "test:prescribed-displacement": "node --experimental-strip-types scripts/test-prescribed-displacement.mts",
     "test:superposition": "node --experimental-strip-types scripts/test-load-superposition.mts",
     "test:face-groups": "node --experimental-strip-types scripts/test-face-groups.mts",
+    "test:sim3-benchmarks": "node --experimental-strip-types scripts/test-sim3-benchmarks.mts",
+    "test:sim3-matrix": "node --experimental-strip-types scripts/test-sim3-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },
   "description": "",

@@ -1,0 +1,100 @@
+{
+  "schema": "tunacad-simulation-qualification-matrix/1.0",
+  "matrixId": "sim3-experimental-windows-x64-gmsh-4.15.2-calculix-2.16",
+  "scope": "SIM-3 extended version 1 linear-static semantics",
+  "environment": {
+    "os": "win32",
+    "architecture": "x64",
+    "nodeMajor": 24,
+    "gmshVersion": "4.15.2",
+    "calculixVersion": "2.16"
+  },
+  "qualification": {
+    "status": "proof_of_concept",
+    "engineeringUsePermitted": false,
+    "recordedAt": "2026-09-07"
+  },
+  "promotionPolicy": {
+    "requiredLaneIds": [
+      "mixed-load-refinement",
+      "curved-pressure-refinement",
+      "gravity-direction-refinement",
+      "prescribed-displacement-analytical",
+      "independent-engineering-review"
+    ],
+    "requiresAllPassed": true,
+    "requiresEngineeringReview": true
+  },
+  "lanes": [
+    {
+      "id": "mixed-load-refinement",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "One simultaneous surface-force, pressure, and gravity case balances the analytical resultant, is invariant to load ordering, and meets three-mesh displacement/stress bands.",
+      "command": "npm run test:sim3-benchmarks",
+      "evidence": {
+        "elementCounts": [254, 910, 1812],
+        "expectedAppliedForceN": [150, 0, -256],
+        "mediumToFineDisplacementRelativeChange": 0.0013895606978641798,
+        "mediumToFineStressRelativeChange": 0.0675372533958799,
+        "fineOrderInvariant": true
+      }
+    },
+    {
+      "id": "curved-pressure-refinement",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Six-node surface quadrature preserves curved area/normals; full cylindrical pressure has zero analytical resultant, balances reactions, converges, and preserves compression/suction magnitude symmetry.",
+      "command": "npm run test:sim3-benchmarks",
+      "evidence": {
+        "elementCounts": [394, 813, 1907],
+        "exactCadAreaMm2": 6283.185307179586,
+        "analyticalResultantN": [0, 0, 0],
+        "mediumToFineDisplacementRelativeChange": 0.0006870418829694031,
+        "mediumToFineStressRelativeChange": 0.14800484443845316,
+        "fineSignSymmetry": true
+      }
+    },
+    {
+      "id": "gravity-direction-refinement",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Diagonal and all three axis-aligned body accelerations balance CAD-volume mass resultants; the diagonal case converges and the axial case matches the distributed-body-force solution.",
+      "command": "npm run test:sim3-benchmarks",
+      "evidence": {
+        "elementCounts": [254, 910, 1812],
+        "diagonalExpectedReactionN": [-93.6, 124.8, 156],
+        "axisExpectedReactionMagnitudeN": 312,
+        "axialExpectedDisplacementMm": 0.00018571428571428572,
+        "axialFineDisplacementMm": 0.00018368911389635625,
+        "axialRelativeError": 0.010904771327312516,
+        "transverseSymmetryRelativeChange": 0.00002314235904306104
+      }
+    },
+    {
+      "id": "prescribed-displacement-analytical",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Axial prescribed displacement matches EAδ/L across three meshes; axial and transverse components superpose with compatible homogeneous constraints and reverse sign symmetrically.",
+      "command": "npm run test:sim3-benchmarks",
+      "evidence": {
+        "elementCounts": [254, 910, 1812],
+        "analyticalReactionN": 8400,
+        "fineReactionN": 8478.432,
+        "fineReactionRelativeError": 0.009250767122977538,
+        "mediumToFineDisplacementRelativeChange": 0.000004832370530901157,
+        "mediumToFineStressRelativeChange": 0.0740809777253593,
+        "combinedSuperposition": true,
+        "signSymmetry": true
+      }
+    },
+    {
+      "id": "independent-engineering-review",
+      "category": "governance",
+      "state": "pending",
+      "acceptance": "An independent qualified reviewer approves the SIM-3 fixture definitions, analytical assumptions, tolerances, curvature quadrature, and exact version-bound evidence before engineering use is enabled.",
+      "command": null,
+      "evidence": null
+    }
+  ]
+}

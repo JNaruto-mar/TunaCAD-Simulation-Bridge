@@ -36,7 +36,7 @@ const request = {
   constraints: [{ id: 'fixed', name: 'Fixed', type: 'fixed', semanticReferenceIds: ['fixed-face'] }],
 } as unknown as NeutralSimulationRequest;
 const deck = createInputDeck(request, mesh);
-assert.match(deck, /\*DENSITY\n6e-9(?:\n|$)/, 'kg/m^3 must convert to tonne/mm^3 for the mm/N/s deck.');
+assert.match(deck, /\*DENSITY\n6E-9(?:\n|$)/, 'kg/m^3 must convert to tonne/mm^3 for the mm/N/s deck.');
 assert.match(deck, /\*DLOAD\nEALL,GRAV,1000,0,0,-1(?:\n|$)/, 'Gravity must use magnitude plus a normalized part-local direction.');
 assert.doesNotMatch(deck, /\*CLOAD/, 'A gravity-only study must not emit an empty nodal-load section.');
 

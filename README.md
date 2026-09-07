@@ -101,6 +101,8 @@ npm run test:gravity
 npm run test:prescribed-displacement
 npm run test:superposition
 npm run test:face-groups
+npm run test:sim3-benchmarks
+npm run test:sim3-matrix
 ```
 
 ## Qualification matrix
@@ -126,6 +128,15 @@ The required independent reviewer should use
 the exact matrix and reviewed commit, identify the reviewer's qualification,
 and include a SHA-256 digest of the signed report. The matrix validator rejects
 incomplete or differently scoped sign-off evidence.
+
+The separate experimental SIM-3 matrix is
+`qualification/sim3-experimental-windows-gmsh-4.15.2-calculix-2.16.json`.
+Its real-solve lane covers mixed load types across three meshes, six-node
+curved-pressure quadrature and sign reversal, diagonal plus axis-aligned
+gravity with an analytical distributed-body-force comparison, and axial plus
+multi-component prescribed displacement with `EAδ/L` and superposition. All
+automated lanes pass, but this matrix remains proof-of-concept and is not
+advertised as qualified provider evidence while independent review is pending.
 
 ## Repository ownership
 
