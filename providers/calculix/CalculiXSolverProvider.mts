@@ -80,7 +80,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       status: 'proof_of_concept' as const,
       engineeringUsePermitted: false,
       statement: 'Local CalculiX adapter with version-bound benchmark evidence; independent engineering review is still required before qualified use.',
-      limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'One isotropic linear-elastic material', 'Pressure, gravity, and prescribed-displacement loading are experimental SIM-3 capabilities outside the SIM-2 qualification matrix'],
+      limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'One isotropic linear-elastic material', 'Pressure, gravity, prescribed-displacement, and simultaneous-load superposition are experimental SIM-3 capabilities outside the SIM-2 qualification matrix'],
       evidence: {
         schema: 'tunacad-simulation-qualification-matrix/1.0' as const,
         matrixId: 'sim2-windows-x64-gmsh-4.15.2-calculix-2.16',
