@@ -32,6 +32,8 @@ export type NeutralSimulationLoad =
 
 export type NeutralSimulationConstraint =
   | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
+  /** Part-local X/Y/Z components in millimetres. null leaves a component free;
+   * numeric zero is an intentional zero-displacement restraint. */
   | { id: string; name: string; type: 'prescribed_displacement'; semanticReferenceIds: string[]; displacementMm: [number | null, number | null, number | null] };
 
 export interface NeutralMeshRequest {

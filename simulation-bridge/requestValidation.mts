@@ -12,6 +12,9 @@ const box = z.object({ min: vector, max: vector }).strict();
 const references = z.array(text).min(1).max(32);
 const pressureMPa = number.refine(value => value !== 0 && Math.abs(value) <= 1_000_000);
 const acceleration = vector.refine(value => Math.hypot(...value) > 1e-9 && Math.hypot(...value) <= 1_000_000_000);
+const displacementComponent = number.min(-1_000_000).max(1_000_000).nullable();
+const prescribedDisplacement = z.tuple([displacementComponent, displacementComponent, displacementComponent])
+  .refine(value => value.some(component => component !== null));
 const face = z.object({
   centroidPartLocalMm: vector, areaMm2: positive, outwardDirection: vector.nullable(), geometryType: text.nullable(),
   boundingBoxMm: box.optional(), edgeCount: z.number().int().positive().optional(),
@@ -34,8 +37,11 @@ const schema = z.object({
     z.object({ id: text, name: text, type: z.literal('surface_force'), semanticReferenceIds: references, forceN: vector }).strict(),
     z.object({ id: text, name: text, type: z.literal('pressure'), semanticReferenceIds: references, pressureMPa }).strict(),
     z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: acceleration }).strict(),
+  ])).max(64),
+  constraints: z.array(z.discriminatedUnion('type', [
+    z.object({ id: text, name: text, type: z.literal('fixed'), semanticReferenceIds: references }).strict(),
+    z.object({ id: text, name: text, type: z.literal('prescribed_displacement'), semanticReferenceIds: references, displacementMm: prescribedDisplacement }).strict(),
   ])).min(1).max(64),
-  constraints: z.array(z.object({ id: text, name: text, type: z.literal('fixed'), semanticReferenceIds: references }).strict()).min(1).max(64),
   contacts: z.object({ mode: z.literal('none') }).strict(),
   mesh: z.object({ dimensionality: z.literal('3d'), elementFamily: z.literal('tetrahedral'), order: z.literal(2), globalSizeMm: positive.max(1000000), minimumSizeMm: positive.optional(), maximumNodes: z.number().int().min(10).max(500000), maximumElements: z.number().int().min(10).max(250000), qualityMetric: z.literal('provider_normalized'), minimumQuality: number.min(0.04).max(1) }).strict(),
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions'])).min(1).max(5),
@@ -54,6 +60,10 @@ export function validateRequest(value: unknown, now = Date.now()): NeutralSimula
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error('BRIDGE_REQUEST_INVALID');
   const request = parsed.data;
+  if (!request.loads.length && !request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
+    && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))) {
+    throw new Error('BRIDGE_REQUEST_INVALID');
+  }
   const size = request.geometry.shape.boundingBoxMm.size;
   if (size.some(value => value <= 0 || value > 1_000_000)
     || request.mesh.globalSizeMm < Math.max(...size) / 200

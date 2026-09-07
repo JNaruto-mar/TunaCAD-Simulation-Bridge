@@ -12,7 +12,7 @@ const pipeline = await loadExternalPipeline(gmsh, calculix);
 assert.equal(pipeline.readiness.ready, true);
 assert.deepEqual(pipeline.provider?.capabilities.study.loadTypes, ['surface_force', 'pressure', 'gravity']);
 assert.equal(pipeline.provider?.capabilities.study.maximumLoads, 64);
-assert.deepEqual(pipeline.provider?.capabilities.study.constraintTypes, ['fixed']);
+assert.deepEqual(pipeline.provider?.capabilities.study.constraintTypes, ['fixed', 'prescribed_displacement']);
 assert.equal(pipeline.provider?.capabilities.study.maximumConstraints, 64);
 const quotaSupportedHost = process.platform === 'win32' && process.arch === 'x64';
 assert.equal(pipeline.provider?.capabilities.qualification.status, quotaSupportedHost ? 'proof_of_concept' : 'unsupported');

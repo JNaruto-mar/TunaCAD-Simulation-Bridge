@@ -49,6 +49,8 @@ the Bridge.
 - multiple uniform part-local gravity vectors using material density and
   second-order tetrahedral volume integration;
 - multiple non-overlapping fixed FACE groups; and
+- prescribed displacement on non-overlapping FACE groups, independently by
+  part-local X/Y/Z component (`null` leaves a component free); and
 - no contacts.
 
 The Bridge advertises this exact admission profile. TunaCAD rejects unsupported
@@ -91,6 +93,7 @@ npm run test:hostile-inputs
 npm run test:lifecycle
 npm run test:pressure
 npm run test:gravity
+npm run test:prescribed-displacement
 ```
 
 ## Qualification matrix

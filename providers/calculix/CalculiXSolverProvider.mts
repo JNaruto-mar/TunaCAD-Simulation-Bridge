@@ -65,7 +65,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       loadTypes: ['surface_force', 'pressure', 'gravity'] as const,
       maximumLoads: 64,
       maximumReferencesPerLoad: 32,
-      constraintTypes: ['fixed'] as const,
+      constraintTypes: ['fixed', 'prescribed_displacement'] as const,
       maximumConstraints: 64,
       maximumReferencesPerConstraint: 32,
       contactModes: ['none'] as const,
@@ -80,7 +80,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       status: 'proof_of_concept' as const,
       engineeringUsePermitted: false,
       statement: 'Local CalculiX adapter with version-bound benchmark evidence; independent engineering review is still required before qualified use.',
-      limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'One isotropic linear-elastic material', 'Pressure and gravity loading are experimental SIM-3 capabilities outside the SIM-2 qualification matrix'],
+      limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'One isotropic linear-elastic material', 'Pressure, gravity, and prescribed-displacement loading are experimental SIM-3 capabilities outside the SIM-2 qualification matrix'],
       evidence: {
         schema: 'tunacad-simulation-qualification-matrix/1.0' as const,
         matrixId: 'sim2-windows-x64-gmsh-4.15.2-calculix-2.16',
@@ -200,7 +200,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       const output = parseCalculiXDat(
         await readUtf8FileBounded(join(run.directory, 'tunacad.dat')),
         run.mesh,
-        run.request.constraints.map((_constraint, index) => constraintSetName(index)),
+        run.request.constraints.map((constraint, index) => constraintSetName(index, constraint.type)),
         run.request.loads.some(load => load.type === 'gravity'),
       );
       run.result = normalizeResult(run, output, this.id, this.version, this.runtimeVersion);
@@ -231,8 +231,17 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
   if (request.analysis.type !== 'linear_static' || request.material.model !== 'isotropic_linear_elastic') throw providerError('SIMULATION_ANALYSIS_UNSUPPORTED', 'The CalculiX POC supports isotropic linear-static analysis only.');
   if (mesh.element.geometryOrder !== 2 || mesh.element.solutionOrder !== 2 || mesh.volumeElements.connectivity.some(cell => cell.length !== 10)) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The CalculiX adapter requires complete second-order C3D10 tetrahedra.');
   const supportedLoads = request.loads.filter(load => load.type === 'surface_force' || load.type === 'pressure' || load.type === 'gravity');
-  const fixedConstraints = request.constraints.filter((constraint): constraint is Extract<NeutralSimulationRequest['constraints'][number], { type: 'fixed' }> => constraint.type === 'fixed');
-  if (!supportedLoads.length || supportedLoads.length !== request.loads.length) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter requires one or more surface-force, pressure, or gravity loads.');
+  const supportedConstraints = request.constraints.filter(constraint => constraint.type === 'fixed' || constraint.type === 'prescribed_displacement');
+  if (supportedLoads.length !== request.loads.length) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter accepts only surface-force, pressure, and gravity loads.');
+  if (!supportedConstraints.length || supportedConstraints.length !== request.constraints.length) throw providerError('SIMULATION_CONSTRAINT_INVALID', 'The CalculiX adapter requires one or more fixed or prescribed-displacement constraints.');
+  const prescribedConstraints = supportedConstraints.filter((constraint): constraint is Extract<NeutralSimulationRequest['constraints'][number], { type: 'prescribed_displacement' }> => constraint.type === 'prescribed_displacement');
+  if (prescribedConstraints.some(constraint => constraint.displacementMm.length !== 3
+    || constraint.displacementMm.every(value => value === null)
+    || constraint.displacementMm.some(value => value !== null && (!Number.isFinite(value) || Math.abs(value) > 1_000_000)))) {
+    throw providerError('SIMULATION_CONSTRAINT_INVALID', 'Each prescribed displacement must define at least one finite part-local component within ±1,000,000 mm; null components remain free.');
+  }
+  const hasEffectivePrescribedDisplacement = prescribedConstraints.some(constraint => constraint.displacementMm.some(value => value !== null && Math.abs(value) > 1e-14));
+  if (!supportedLoads.length && !hasEffectivePrescribedDisplacement) throw providerError('SIMULATION_LOAD_INVALID', 'The CalculiX adapter requires an external load or at least one non-zero prescribed-displacement component.');
   const gravityLoads = supportedLoads.filter((load): load is Extract<NeutralSimulationRequest['loads'][number], { type: 'gravity' }> => load.type === 'gravity');
   if (gravityLoads.length && (!Number.isFinite(request.material.densityKgM3) || !(request.material.densityKgM3! > 0) || request.material.densityKgM3! > 100_000)) throw providerError('SIMULATION_MATERIAL_INVALID', 'CalculiX gravity loading requires a positive material density no greater than 100,000 kg/m^3.');
   if (gravityLoads.some(load => load.accelerationMmPerS2.some(value => !Number.isFinite(value))
@@ -249,27 +258,26 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
   if (gravityLoads.length && gravityMagnitude <= 1e-9 && supportedLoads.length === gravityLoads.length) {
     throw providerError('SIMULATION_LOAD_INVALID', 'The combined gravity acceleration is zero, so the study has no effective load.');
   }
-  if (!fixedConstraints.length || fixedConstraints.length !== request.constraints.length) throw providerError('SIMULATION_CONSTRAINT_INVALID', 'The CalculiX adapter requires one or more fixed constraints.');
-  const fixedSets = fixedConstraints.map((constraint, index) => ({
-    name: constraintSetName(index),
+  const constraintSets = supportedConstraints.map((constraint, index) => ({
+    name: constraintSetName(index, constraint.type),
     constraint,
     regions: requireMeshRegions(mesh, constraint.semanticReferenceIds),
   })).map(item => ({ ...item, nodes: uniqueNodes(mesh, uniqueFacetIndices(item.regions)) }));
-  const claimedFixedNodes = new Set<number>();
-  for (const fixed of fixedSets) {
-    if (fixed.nodes.some(node => claimedFixedNodes.has(node))) {
-      throw providerError('SIMULATION_CONSTRAINT_INVALID', 'Fixed constraints overlap on neutral mesh nodes, so reactions cannot be attributed uniquely. Merge the overlapping constraints.');
+  const claimedConstraintNodes = new Set<number>();
+  for (const item of constraintSets) {
+    if (item.nodes.some(node => claimedConstraintNodes.has(node))) {
+      throw providerError('SIMULATION_CONSTRAINT_INVALID', 'Constraint FACE groups overlap on neutral mesh nodes, so reactions cannot be attributed uniquely. Merge the overlapping constraints.');
     }
-    fixed.nodes.forEach(node => claimedFixedNodes.add(node));
+    item.nodes.forEach(node => claimedConstraintNodes.add(node));
   }
-  const fixedRegionIds = new Set(fixedSets.flatMap(item => item.regions.map(region => region.regionId)));
+  const constrainedRegionIds = new Set(constraintSets.flatMap(item => item.regions.map(region => region.regionId)));
   const nodalLoads = new Map<number, NeutralVector3>();
   const facetGeometry = supportedLoads.some(load => load.type === 'pressure') ? buildBoundaryFacetGeometry(mesh) : null;
   for (const load of supportedLoads) {
     if (load.type === 'gravity') continue;
     const regions = requireMeshRegions(mesh, load.semanticReferenceIds);
-    if (regions.some(region => fixedRegionIds.has(region.regionId))) {
-      throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A loaded region is also used by a fixed constraint.');
+    if (regions.some(region => constrainedRegionIds.has(region.regionId))) {
+      throw providerError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A loaded region is also used by a constraint.');
     }
     const facetIndices = uniqueFacetIndices(regions);
     addNodalLoads(nodalLoads, load.type === 'surface_force'
@@ -283,7 +291,7 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     ...mesh.nodes.map((point, index) => `${index + 1},${point[0]},${point[1]},${point[2]}`),
     '*ELEMENT, TYPE=C3D10, ELSET=EALL',
     ...mesh.volumeElements.connectivity.map((cell, index) => `${index + 1},${neutralToCalculiXC3D10(cell).map(node => node + 1).join(',')}`),
-    ...fixedSets.flatMap(fixed => [`*NSET, NSET=${fixed.name}`, ...wrapIds(fixed.nodes.map(node => node + 1))]),
+    ...constraintSets.flatMap(item => [`*NSET, NSET=${item.name}`, ...wrapIds(item.nodes.map(node => node + 1))]),
     '*MATERIAL, NAME=TUNACAD_MATERIAL',
     '*ELASTIC',
     `${request.material.youngsModulusMPa},${request.material.poissonRatio}`,
@@ -292,7 +300,7 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     '*STEP',
     '*STATIC',
     '*BOUNDARY',
-    ...fixedSets.map(fixed => `${fixed.name},1,3,0`),
+    ...constraintSets.flatMap(boundaryLinesForConstraint),
     ...([...nodalLoads.entries()].length ? [
       '*CLOAD',
       ...[...nodalLoads.entries()].flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${value}`] : [])),
@@ -303,7 +311,7 @@ export function createInputDeck(request: NeutralSimulationRequest, mesh: Neutral
     ] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES',
     'U',
-    ...fixedSets.flatMap(fixed => [`*NODE PRINT, NSET=${fixed.name}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
+    ...constraintSets.flatMap(item => [`*NODE PRINT, NSET=${item.name}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
     '*EL PRINT, ELSET=EALL',
     'S',
     ...(gravityLoads.length ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
@@ -578,7 +586,7 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
   const reactions = request.constraints.map((constraint, index) => ({
     constraintId: constraint.id,
     forceN: subtractVector(
-      output.reactionForcesBySet[constraintSetName(index)],
+      output.reactionForcesBySet[constraintSetName(index, constraint.type)],
       sumForcesAtNodes(combinedGravityNodalLoads, uniqueNodes(run.mesh, uniqueFacetIndices(requireMeshRegions(run.mesh, constraint.semanticReferenceIds)))),
     ),
     semanticReferenceIds: [...constraint.semanticReferenceIds],
@@ -599,7 +607,11 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
   }, [0, 0, 0]);
   const reactionForce = reactions.reduce<NeutralVector3>((sum, reaction) => [sum[0] + reaction.forceN[0], sum[1] + reaction.forceN[1], sum[2] + reaction.forceN[2]], [0, 0, 0]);
   const equilibriumResidual = Math.hypot(appliedForce[0] + reactionForce[0], appliedForce[1] + reactionForce[1], appliedForce[2] + reactionForce[2]);
-  const equilibriumTolerance = Math.max(1e-6, Math.hypot(...appliedForce) * 1e-4);
+  const equilibriumScale = Math.max(
+    Math.hypot(...appliedForce),
+    reactions.reduce((sum, reaction) => sum + Math.hypot(...reaction.forceN), 0),
+  );
+  const equilibriumTolerance = Math.max(1e-6, equilibriumScale * 1e-4);
   if (equilibriumResidual > equilibriumTolerance) throw new Error(`CalculiX reaction/load equilibrium residual ${equilibriumResidual} N exceeds ${equilibriumTolerance} N (applied ${appliedForce.join(', ')} N; reaction ${reactionForce.join(', ')} N).`);
   const positiveDimensions = request.geometry.shape.boundingBoxMm.size.filter(value => value > 0);
   const smallestDimensionMm = positiveDimensions.length ? Math.min(...positiveDimensions) : null;
@@ -625,7 +637,7 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
     warnings,
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
     suggestedEngineeringIssues: [
-      'Inspect the mapped fixed/load regions and repeat with a refined mesh.',
+      'Inspect the mapped constraint/load regions and repeat with a refined mesh.',
       'Verify material, loading and reference intent before design decisions.',
       ...(exceedsSmallDisplacementAssumption ? ['Use a geometrically nonlinear analysis or reduce loading before interpreting this result.'] : []),
     ],
@@ -635,8 +647,18 @@ function normalizeResult(run: SolverRun, output: CalculiXOutput, adapterId: stri
   };
 }
 
-function constraintSetName(index: number): string {
-  return `FIXED_${String(index + 1).padStart(3, '0')}`;
+function constraintSetName(index: number, type: NeutralSimulationRequest['constraints'][number]['type']): string {
+  return `${type === 'fixed' ? 'FIXED' : 'PRESCRIBED'}_${String(index + 1).padStart(3, '0')}`;
+}
+
+function boundaryLinesForConstraint(item: {
+  name: string;
+  constraint: NeutralSimulationRequest['constraints'][number];
+}): string[] {
+  if (item.constraint.type === 'fixed') return [`${item.name},1,3,0`];
+  return item.constraint.displacementMm.flatMap((value, axis) => value === null
+    ? []
+    : [`${item.name},${axis + 1},${axis + 1},${value}`]);
 }
 
 function bindingForNode(mesh: NeutralFemMesh, node: number, request: NeutralSimulationRequest): NeutralSimulationReferenceBinding | null {
