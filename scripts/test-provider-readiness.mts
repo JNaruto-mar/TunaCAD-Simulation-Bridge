@@ -10,6 +10,12 @@ if (!gmsh || !calculix) throw new Error('Set TUNACAD_GMSH_EXECUTABLE and TUNACAD
 
 const pipeline = await loadExternalPipeline(gmsh, calculix);
 assert.equal(pipeline.readiness.ready, true);
+assert.ok(pipeline.providerV2);
+assert.equal(pipeline.readiness.providerV2?.capabilities.interfaceVersion, '2.0');
+assert.equal(pipeline.providerV2?.capabilities.study.maximumDomains, 16);
+assert.equal(pipeline.providerV2?.capabilities.study.perDomainMaterials, true);
+assert.deepEqual(pipeline.providerV2?.capabilities.study.interactionTypes, ['bonded_tie', 'shared_topology']);
+assert.equal(pipeline.providerV2?.capabilities.fieldResults.paginated, true);
 assert.deepEqual(pipeline.provider?.capabilities.study.loadTypes, ['surface_force', 'pressure', 'gravity']);
 assert.equal(pipeline.provider?.capabilities.study.maximumLoads, 64);
 assert.deepEqual(pipeline.provider?.capabilities.study.constraintTypes, ['fixed', 'prescribed_displacement']);
@@ -35,6 +41,7 @@ assert.equal(outsideRecordedMatrix.capabilities.qualification.evidence, null, 'U
 
 console.log(JSON.stringify({
   ready: pipeline.readiness.ready,
+  v2Ready: Boolean(pipeline.providerV2),
   gmsh: { ready: pipeline.readiness.meshing.ready, version: pipeline.readiness.meshing.runtimeVersion },
   calculix: { ready: pipeline.readiness.solving.ready, version: pipeline.readiness.solving.runtimeVersion },
   qualification: pipeline.provider?.capabilities.qualification,

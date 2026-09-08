@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCalculiXInputDeckV2, asV1Mesh } from '../providers/calculix/CalculiXMultiDomainDeck.mts';
-import { parseCalculiXDat } from '../providers/calculix/CalculiXSolverProvider.mts';
+import { createCalculiXInputDeckV2 } from '../providers/calculix/CalculiXMultiDomainDeck.mts';
+import { CalculiXMultiDomainSolverProvider } from '../providers/calculix/CalculiXMultiDomainSolverProvider.mts';
 import { GmshMultiDomainMeshProvider } from '../providers/gmsh/GmshMultiDomainMeshProvider.mts';
 import { digest } from '../simulation-bridge/stableDigest.mts';
 import { admitV2MeshRequest, sealNeutralSimulationRequestV2, validateNeutralSimulationRequestV2 } from '../simulation-bridge/v2Validation.mts';
@@ -57,15 +57,74 @@ try {
   assert.doesNotMatch(deck, /^\*(?:TIE|CONTACT|RIGID BODY)/gm, 'SIM-4A must not infer connected behavior.');
   assert.match(deck, /\*SOLID SECTION, ELSET=DOMAIN_001, MATERIAL=MATERIAL_001/);
   assert.match(deck, /\*SOLID SECTION, ELSET=DOMAIN_002, MATERIAL=MATERIAL_002/);
+  const tiedRequest = createBondedRequest();
+  const tiedModel = await provider.mesh(tiedRequest, { descriptor: tiedRequest.model, async exportDomain() { return step; } });
+  const tiedDeck = createCalculiXInputDeckV2(tiedRequest, tiedModel);
+  assert.match(tiedDeck, /^\*SURFACE, NAME=TIE_SECONDARY_001, TYPE=ELEMENT$/m);
+  assert.match(tiedDeck, /^\*SURFACE, NAME=TIE_PRIMARY_001, TYPE=ELEMENT$/m);
+  assert.match(tiedDeck, /^\*TIE, NAME=TIE_001, ADJUST=NO, POSITION TOLERANCE=0\.05$/m);
+  assert.match(tiedDeck, /^TIE_SECONDARY_001,TIE_PRIMARY_001$/m);
+  const sharedRequest = createSharedTopologyRequest();
+  const sharedModel = await provider.mesh(sharedRequest, { descriptor: sharedRequest.model, async exportDomain() { return step; } });
+  const sharedNodes = new Set(sharedModel.domainRegions[0].nodeIndices.filter(node => sharedModel.domainRegions[1].nodeIndices.includes(node)));
+  assert.ok(sharedNodes.size > 0, 'A conformal interface must share node identities across both domains.');
+  assert.ok(sharedModel.nodes.length < tiedModel.nodes.length, 'Shared topology must compact duplicate interface nodes.');
+  const sharedDeck = createCalculiXInputDeckV2(sharedRequest, sharedModel);
+  assert.doesNotMatch(sharedDeck, /^\*(?:TIE|CONTACT)/gm, 'Conformal shared topology must not emit a solver tie or contact card.');
+  const nonconformal = structuredClone(sharedRequest);
+  nonconformal.model.domains[1].transformToAnalysis[3] += .01;
+  nonconformal.interactions[0].positionToleranceMm = .001;
+  reseal(nonconformal);
+  await assert.rejects(() => provider.mesh(nonconformal, { descriptor: nonconformal.model, async exportDomain() { return step; } }), { code: 'SIMULATION_SHARED_TOPOLOGY_NONCONFORMAL' });
+  const overlapping = structuredClone(sharedRequest);
+  overlapping.model.domains[1].transformToAnalysis = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const overlapPrimary = overlapping.model.references.find(reference => reference.semanticReferenceId === 'tie-primary')!;
+  overlapPrimary.faceOwnerLocal.centroidPartLocalMm = [40, 5, 5]; overlapPrimary.faceOwnerLocal.outwardDirection = [1, 0, 0];
+  overlapPrimary.faceOwnerLocal.boundingBoxMm = { min: [40, 0, 0], max: [40, 10, 10] };
+  const overlapLoad = overlapping.model.references.find(reference => reference.semanticReferenceId === 'load-aluminum')!;
+  overlapLoad.faceOwnerLocal.centroidPartLocalMm = [0, 5, 5]; overlapLoad.faceOwnerLocal.outwardDirection = [-1, 0, 0];
+  overlapLoad.faceOwnerLocal.boundingBoxMm = { min: [0, 0, 0], max: [0, 10, 10] };
+  reseal(overlapping);
+  await assert.rejects(() => provider.mesh(overlapping, { descriptor: overlapping.model, async exportDomain() { return step; } }), { code: 'SIMULATION_SHARED_TOPOLOGY_ORIENTATION_INVALID' });
 
-  await writeFile(join(directory, 'sim4a.inp'), deck, 'utf8');
-  execFileSync(calculix, ['-i', 'sim4a'], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  const parsed = parseCalculiXDat(await readFile(join(directory, 'sim4a.dat'), 'utf8'), asV1Mesh(model), ['REACTION_001', 'REACTION_002']);
-  assert.ok(parsed.maximumDisplacementMm > 0 && Number.isFinite(parsed.maximumDisplacementMm));
-  assert.ok(parsed.maximumVonMisesStressMPa > 0 && Number.isFinite(parsed.maximumVonMisesStressMPa));
-  const totalReaction = Object.values(parsed.reactionForcesBySet).reduce<NeutralVector3>((sum, force) => [sum[0] + force[0], sum[1] + force[1], sum[2] + force[2]], [0, 0, 0]);
+  const solver = new CalculiXMultiDomainSolverProvider({ executable: calculix, runtimeVersion: '2.16' });
+  const submission = await solver.submit(request, model);
+  const result = await waitForResult(solver, submission.providerRunId);
+  assert.equal(result.perDomain.length, 2);
+  const steelResult = result.perDomain.find(domain => domain.domainId === 'domain-steel')!;
+  const aluminumResult = result.perDomain.find(domain => domain.domainId === 'domain-aluminum')!;
+  assert.ok(aluminumResult.metrics.maximumDisplacementMm! > steelResult.metrics.maximumDisplacementMm! * 2.9, 'Per-domain recovery did not preserve the expected stiffness contrast.');
+  assert.equal(new Set(result.perDomain.flatMap(domain => domain.fieldDatasetIds)).size, 4);
+  for (const domain of result.perDomain) for (const datasetId of domain.fieldDatasetIds) {
+    let cursor: string | undefined = '0'; const triangles: unknown[] = []; let datasetDigest = '';
+    do {
+      const page = await solver.getFieldDataset(submission.providerRunId, datasetId, cursor, 17);
+      assert.equal(page.dataset.domainId, domain.domainId); assert.ok(page.triangleCount <= 17);
+      assert.equal(page.chunkDigest, digest(page.triangles)); datasetDigest ||= page.dataset.datasetDigest;
+      assert.equal(page.dataset.datasetDigest, datasetDigest); triangles.push(...page.triangles); cursor = page.nextCursor ?? undefined;
+    } while (cursor !== undefined);
+    assert.equal(digest(triangles), datasetDigest, 'Complete paginated field digest must match.');
+  }
+  const totalReaction = result.reactions.reduce<NeutralVector3>((sum, reaction) => [sum[0] + reaction.forceN[0], sum[1] + reaction.forceN[1], sum[2] + reaction.forceN[2]], [0, 0, 0]);
   assert.ok(Math.abs(totalReaction[0] + 200) <= 0.05, `Expected -200 N total X reaction, received ${totalReaction.join(', ')}.`);
   assert.ok(Math.abs(totalReaction[1]) <= 0.05 && Math.abs(totalReaction[2]) <= 0.05);
+  const tiedSubmission = await solver.submit(tiedRequest, tiedModel); const tiedResult = await waitForResult(solver, tiedSubmission.providerRunId);
+  assert.ok(Math.abs(tiedResult.reactions[0].forceN[0] + 100) <= .1, 'Explicit bonded coupon must balance its 100 N load.');
+  assert.ok(tiedResult.metrics.maximumDisplacementMm! > .00065 && tiedResult.metrics.maximumDisplacementMm! < .0009, 'Two-material bonded coupon displacement must follow the series-stiffness trend.');
+  const sharedSubmission = await solver.submit(sharedRequest, sharedModel); const sharedResult = await waitForResult(solver, sharedSubmission.providerRunId);
+  const sharedReactionX = sharedResult.reactions.reduce((sum, reaction) => sum + reaction.forceN[0], 0);
+  assert.ok(Math.abs(sharedReactionX + 100) <= .1, 'Shared-topology coupon must balance its 100 N load.');
+  assert.ok(sharedResult.metrics.maximumDisplacementMm! > .00065 && sharedResult.metrics.maximumDisplacementMm! < .0009, 'Shared-topology coupon displacement must follow the series-stiffness trend.');
+  assert.ok(Math.abs(sharedResult.metrics.maximumDisplacementMm! - tiedResult.metrics.maximumDisplacementMm!) / tiedResult.metrics.maximumDisplacementMm! < .08,
+    'Tie and conformal formulations should agree for the matching linear coupon.');
+  const cancelledSubmission = await solver.submit(request, model);
+  const cancelled = await solver.cancel(cancelledSubmission.providerRunId);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.match(cancelled.phase, /^cancelled_/);
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal((await solver.getStatus(cancelledSubmission.providerRunId)).status, 'cancelled', 'Late process exit must not resurrect a cancelled v2 solver run.');
+  assert.equal(await solver.getResult(cancelledSubmission.providerRunId), null);
+  await assert.rejects(() => solver.getFieldDataset(cancelledSubmission.providerRunId, `${cancelledSubmission.providerRunId}:domain-steel:stress`), /Unknown or expired field dataset/);
 
   const wrongMaterial = structuredClone(model);
   wrongMaterial.volumeElements.materialIds[wrongMaterial.domainRegions[1].elementIndices[0]] = 'steel';
@@ -79,11 +138,39 @@ try {
   console.log(JSON.stringify({
     domains: model.domainRegions.map(domain => ({ domainId: domain.domainId, occurrenceId: domain.occurrenceId, materialId: domain.materialId, elementCount: domain.elementIndices.length })),
     nodeCount: model.nodes.length, elementCount: model.volumeElements.connectivity.length,
-    maximumDisplacementMm: parsed.maximumDisplacementMm, maximumVonMisesStressMPa: parsed.maximumVonMisesStressMPa,
+    maximumDisplacementMm: result.metrics.maximumDisplacementMm, maximumVonMisesStressMPa: result.metrics.maximumVonMisesStressMPa,
+    perDomain: result.perDomain.map(domain => ({ domainId: domain.domainId, metrics: domain.metrics })),
     totalReactionN: totalReaction, inferredInteractions: 0,
+    sharedTopology: { nodeCount: sharedModel.nodes.length, sharedNodeCount: sharedNodes.size,
+      maximumDisplacementMm: sharedResult.metrics.maximumDisplacementMm, totalReactionXN: sharedReactionX,
+      relativeDisplacementDifferenceFromTie: Math.abs(sharedResult.metrics.maximumDisplacementMm! - tiedResult.metrics.maximumDisplacementMm!) / tiedResult.metrics.maximumDisplacementMm! },
   }, null, 2));
 } finally {
   await rm(directory, { recursive: true, force: true });
+}
+
+function createBondedRequest(): NeutralSimulationRequestV2 {
+  const request = structuredClone(createRequest());
+  request.studyId = 'sim4b-bonded-coupon'; request.name = 'Explicit two-material bonded coupon';
+  request.model.domains[1].transformToAnalysis = [1, 0, 0, 40, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  const secondary = { ...structuredClone(request.model.references.find(reference => reference.semanticReferenceId === 'load-steel')!), semanticReferenceId: 'tie-secondary', role: 'interaction' as const };
+  const primary = { ...structuredClone(request.model.references.find(reference => reference.semanticReferenceId === 'support-aluminum')!), semanticReferenceId: 'tie-primary', role: 'interaction' as const };
+  request.model.references = [
+    request.model.references.find(reference => reference.semanticReferenceId === 'support-steel')!,
+    request.model.references.find(reference => reference.semanticReferenceId === 'load-aluminum')!, secondary, primary,
+  ];
+  request.loads = [request.loads.find(load => load.id === 'pull-aluminum')!];
+  request.constraints = [request.constraints.find(constraint => constraint.id === 'fix-steel')!];
+  request.interactions = [{ id: 'bonded-interface', name: 'Explicit bonded interface', type: 'bonded_tie', secondaryReferenceIds: ['tie-secondary'], primaryReferenceIds: ['tie-primary'], adjustment: 'none', positionToleranceMm: .05 }];
+  reseal(request); return request;
+}
+
+function createSharedTopologyRequest(): NeutralSimulationRequestV2 {
+  const request = createBondedRequest();
+  request.studyId = 'sim4b-shared-topology-coupon'; request.name = 'Explicit conformal two-material coupon';
+  request.mesh.globalSizeMm = 20; request.mesh.minimumSizeMm = 5;
+  request.interactions = [{ ...request.interactions[0], id: 'shared-interface', name: 'Explicit shared topology', type: 'shared_topology' }];
+  reseal(request); return request;
 }
 
 function createRequest(): NeutralSimulationRequestV2 {
@@ -147,4 +234,20 @@ function createRequest(): NeutralSimulationRequestV2 {
 function reseal(request: NeutralSimulationRequestV2): void {
   const sealed = sealNeutralSimulationRequestV2({ ...(request as any), requestDigest: undefined, model: { ...(request.model as any), modelDigest: undefined, domains: request.model.domains.map(domain => ({ ...domain, domainDigest: undefined })) } });
   Object.assign(request, sealed);
+}
+
+async function waitForResult(solver: CalculiXMultiDomainSolverProvider, providerRunId: string) {
+  const deadline = Date.now() + solver.capabilities.execution.totalTimeoutMs;
+  while (Date.now() < deadline) {
+    const status = await solver.getStatus(providerRunId);
+    if (status.status === 'failed') throw new Error(`${status.failure?.code}: ${status.failure?.message}`);
+    if (status.status === 'succeeded') {
+      const result = await solver.getResult(providerRunId);
+      if (!result) throw new Error('CalculiX v2 completed without a result.');
+      return result;
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  await solver.cancel(providerRunId);
+  throw new Error('CalculiX v2 provider timed out.');
 }

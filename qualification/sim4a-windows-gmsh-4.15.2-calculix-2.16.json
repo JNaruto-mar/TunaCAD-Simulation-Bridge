@@ -1,0 +1,70 @@
+{
+  "schema": "tunacad-simulation-qualification-matrix/1.0",
+  "matrixId": "sim4a-windows-x64-gmsh-4.15.2-calculix-2.16",
+  "scope": "SIM-4A explicit multi-domain and multi-material linear statics with normalized field transport",
+  "environment": {
+    "os": "win32",
+    "architecture": "x64",
+    "nodeMajor": 24,
+    "gmshVersion": "4.15.2",
+    "calculixVersion": "2.16"
+  },
+  "qualification": {
+    "status": "proof_of_concept",
+    "engineeringUsePermitted": false,
+    "recordedAt": "2026-09-07"
+  },
+  "promotionPolicy": {
+    "requiredLaneIds": [
+      "domain-contract-and-transform-ownership",
+      "multi-material-repeated-occurrence-solve",
+      "paginated-field-integrity",
+      "cancellation-and-result-quarantine",
+      "independent-engineering-review"
+    ],
+    "requiresAllPassed": true,
+    "requiresEngineeringReview": true
+  },
+  "lanes": [
+    {
+      "id": "domain-contract-and-transform-ownership",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Exact domain, occurrence, rigid-transform, material, volume-region, reference, and layered-digest ownership fails closed under mismatch or reordering.",
+      "command": "npm run test:sim4a-contracts",
+      "evidence": { "maximumDomains": 16, "rigidTransformsDerivedByHost": true, "implicitInteractions": 0 }
+    },
+    {
+      "id": "multi-material-repeated-occurrence-solve",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Independent steel and aluminum occurrences preserve domain ownership, show material-sensitive displacement, and balance the applied resultant.",
+      "command": "npm run test:sim4a-providers",
+      "evidence": { "nodeCount": 1854, "elementCount": 846, "appliedForceN": [200, 0, 0], "reactionForceN": [-200, 0, 0], "aluminumToSteelDisplacementRatioMinimum": 2.9 }
+    },
+    {
+      "id": "paginated-field-integrity",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Displacement and von Mises surface fields retain exact domain ownership, bounded pages, deterministic cursors, chunk digests, and a complete dataset digest.",
+      "command": "npm run test:sim4a-providers",
+      "evidence": { "components": ["displacement_magnitude", "von_mises_stress"], "maximumPageTriangles": 128, "nativeSolverFilesExposed": false }
+    },
+    {
+      "id": "cancellation-and-result-quarantine",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "Cancellation terminates active children, cleans temporary data, and prevents late result or field publication.",
+      "command": "npm run test:sim4a-providers",
+      "evidence": { "lateResultQuarantined": true, "lateFieldPagesQuarantined": true }
+    },
+    {
+      "id": "independent-engineering-review",
+      "category": "governance",
+      "state": "pending",
+      "acceptance": "An independent qualified reviewer approves the SIM-4A definitions, tolerances, multi-domain assumptions, field recovery, evidence, and reviewed commit before engineering use is enabled.",
+      "command": null,
+      "evidence": null
+    }
+  ]
+}

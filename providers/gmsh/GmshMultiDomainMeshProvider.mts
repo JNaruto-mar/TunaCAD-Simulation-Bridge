@@ -12,10 +12,11 @@ import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { validateNeutralFemModelV2, validateNeutralSimulationRequestV2 } from '../../simulation-bridge/v2Validation.mts';
 import { GmshMeshProvider } from './GmshMeshProvider.mts';
 
-/** SIM-4A composition adapter. Each domain passes independently through the
+/** SIM-4A/4B composition adapter. Each domain passes independently through the
  * hardened v1 STEP/Gmsh boundary in owner-local coordinates. Only validated
  * neutral meshes are transformed and concatenated, so repeated occurrences do
- * not rely on ambiguous STEP volume/entity ordering. */
+ * not rely on ambiguous STEP volume/entity ordering. Explicit conformal
+ * interfaces are merged only after exact quadratic topology checks. */
 export class GmshMultiDomainMeshProvider {
   readonly id = 'tunacad-gmsh-multi-domain-poc';
   readonly version = '0.1.0-poc';
@@ -33,18 +34,19 @@ export class GmshMultiDomainMeshProvider {
       multiDomain: true,
       rigidOccurrenceTransforms: true,
       domainRegionMapping: true,
+      interactionTypes: ['shared_topology'],
       qualification: {
         ...this.local.capabilities.qualification,
         status: this.local.capabilities.qualification.status === 'unsupported' ? 'unsupported' : 'proof_of_concept',
         engineeringUsePermitted: false,
-        statement: `${this.local.capabilities.qualification.statement} SIM-4A per-domain composition is experimental and not qualification evidence.`,
-        limitations: [...this.local.capabilities.qualification.limitations, 'SIM-4A domains are meshed independently; no conformal or bonded interfaces are created'],
-        evidence: null,
+        statement: `${this.local.capabilities.qualification.statement} SIM-4A per-domain composition and fail-closed conformal node sharing are experimental.`,
+        limitations: [...this.local.capabilities.qualification.limitations, 'Domains are meshed independently; shared topology requires an exact one-to-one quadratic interface match, otherwise an explicit solver-side bonded tie is required'],
+        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim4a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
     };
   }
 
-  async mesh(request: NeutralSimulationRequestV2, geometry: SimulationGeometryResolverV2): Promise<NeutralFemModelV2> {
+  async mesh(request: NeutralSimulationRequestV2, geometry: SimulationGeometryResolverV2, signal?: AbortSignal): Promise<NeutralFemModelV2> {
     validateNeutralSimulationRequestV2(request);
     if (request.model.domains.length > this.capabilities.maximumDomains) throw meshError('SIMULATION_MESH_DOMAIN_LIMIT', `The SIM-4A mesher accepts at most ${this.capabilities.maximumDomains} domains.`);
     if (geometry.descriptor.projectRevision !== request.model.projectRevision || geometry.descriptor.modelDigest !== request.model.modelDigest) {
@@ -53,6 +55,7 @@ export class GmshMultiDomainMeshProvider {
     const meshRequest = createNeutralMeshJobRequestV2(request);
     const meshes: Array<{ domainId: string; mesh: NeutralFemMesh }> = [];
     for (const domain of meshRequest.domains) {
+      if (signal?.aborted) throw meshError('SIMULATION_CANCELLED', 'SIM-4A meshing was cancelled before the next domain export.');
       const localRequest: NeutralMeshJobRequest = {
         schema: 'tunacad-neutral-mesh-request/1.0', studyId: request.studyId, requestDigest: request.requestDigest,
         projectRevision: request.model.projectRevision, geometryDigest: domain.geometryDigest,
@@ -79,24 +82,29 @@ export class GmshMultiDomainMeshProvider {
         descriptor,
         export: format => geometry.exportDomain(domain.domainId, format),
       });
-      const localMesh = await this.waitForMesh(submission.meshRunId);
+      const localMesh = await this.waitForMesh(submission.meshRunId, signal);
+      if (signal?.aborted) throw meshError('SIMULATION_CANCELLED', 'SIM-4A meshing was cancelled before domain composition.');
       meshes.push({ domainId: domain.domainId, mesh: localMesh });
     }
     const model = composeNeutralFemModelV2(meshRequest, meshes, {
       adapterId: this.id, adapterVersion: this.version, engine: 'Gmsh',
       engineVersion: this.runtimeVersion,
-      optionsDigest: digest({ mode: 'independent-domain-composition', domainIds: request.model.domains.map(domain => domain.domainId), mesh: request.mesh }),
+      optionsDigest: digest({ mode: 'independent-domain-composition', domainIds: request.model.domains.map(domain => domain.domainId), mesh: request.mesh,
+        sharedTopologyInteractionIds: request.interactions.filter(interaction => interaction.type === 'shared_topology').map(interaction => interaction.id).sort() }),
     });
     validateNeutralFemModelV2(model, request);
     return model;
   }
 
-  private async waitForMesh(meshRunId: string): Promise<NeutralFemMesh> {
+  private async waitForMesh(meshRunId: string, signal?: AbortSignal): Promise<NeutralFemMesh> {
     const deadline = Date.now() + this.local.capabilities.execution.totalTimeoutMs;
     while (Date.now() < deadline) {
+      if (signal?.aborted) { await this.local.cancel(meshRunId); throw meshError('SIMULATION_CANCELLED', 'SIM-4A domain meshing was cancelled.'); }
       const status = await this.local.getStatus(meshRunId);
+      if (signal?.aborted) { await this.local.cancel(meshRunId); throw meshError('SIMULATION_CANCELLED', 'SIM-4A domain meshing was cancelled.'); }
       if (status.status === 'succeeded') {
         const mesh = await this.local.getMesh(meshRunId);
+        if (signal?.aborted) throw meshError('SIMULATION_CANCELLED', 'SIM-4A domain meshing was cancelled before result composition.');
         if (!mesh) throw meshError('SIMULATION_MESH_INVALID', 'Gmsh completed without a neutral domain mesh.');
         return mesh;
       }

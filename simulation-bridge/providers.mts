@@ -5,6 +5,9 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ComposedSimulationProvider } from '../providers/ComposedSimulationProvider.mts';
 import { GmshMeshProvider } from '../providers/gmsh/GmshMeshProvider.mts';
 import { CalculiXSolverProvider } from '../providers/calculix/CalculiXSolverProvider.mts';
+import { GmshMultiDomainMeshProvider } from '../providers/gmsh/GmshMultiDomainMeshProvider.mts';
+import { CalculiXMultiDomainSolverProvider } from '../providers/calculix/CalculiXMultiDomainSolverProvider.mts';
+import { ComposedSimulationProviderV2 } from '../providers/ComposedSimulationProviderV2.mts';
 const execute = promisify(execFile);
 
 export interface ExternalProviderPaths { gmshExecutable: string; calculixExecutable: string }
@@ -19,12 +22,16 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
   const mesh = gmshVersion ? new GmshMeshProvider({ executable: paths.gmshExecutable, runtimeVersion: gmshVersion }) : null;
   const solver = calculixVersion ? new CalculiXSolverProvider({ executable: paths.calculixExecutable, runtimeVersion: calculixVersion }) : null;
   const provider = mesh && solver ? new ComposedSimulationProvider({ id: 'tunacad-local-simulation-bridge', version: '1.1-poc', meshProvider: mesh, solverProvider: solver }) : null;
+  const meshV2 = gmshVersion ? new GmshMultiDomainMeshProvider({ executable: paths.gmshExecutable, runtimeVersion: gmshVersion }) : null;
+  const solverV2 = calculixVersion ? new CalculiXMultiDomainSolverProvider({ executable: paths.calculixExecutable, runtimeVersion: calculixVersion }) : null;
+  const providerV2 = meshV2 && solverV2 ? new ComposedSimulationProviderV2({ id: 'tunacad-local-simulation-bridge-v2', version: '2.0-poc', meshProvider: meshV2, solverProvider: solverV2 }) : null;
   return {
-    provider,
+    provider, providerV2,
     paths,
     readiness: {
       ready: !!provider,
       provider: provider ? { id: provider.id, version: provider.version, capabilities: provider.capabilities } : null,
+      providerV2: providerV2 ? { id: providerV2.id, version: providerV2.version, capabilities: providerV2.capabilities } : null,
       meshing: { ready: !!mesh, adapterVersion: mesh?.version ?? 'unavailable', runtimeVersion: gmshVersion, geometryFormats: mesh ? ['step'] : [], elementFamilies: mesh ? ['tetrahedral'] : [] },
       solving: { ready: !!solver, adapterVersion: solver?.version ?? 'unavailable', runtimeVersion: calculixVersion, analysisTypes: solver ? ['linear_static'] : [] },
       configuration: { ...paths, discoveryUsed: (!gmshExecutable && !!paths.gmshExecutable) || (!calculixExecutable && !!paths.calculixExecutable) },

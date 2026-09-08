@@ -1,5 +1,5 @@
 import * as z from 'zod/v4';
-import type { NeutralSimulationRequest } from '../src/simulation/externalSimulationContracts.ts';
+import type { NeutralSimulationRequest, NeutralSimulationRequestV2 } from '../src/simulation/externalSimulationContracts.ts';
 import { digest } from './stableDigest.mts';
 import { validateNeutralSimulationRequestV2 } from './v2Validation.mts';
 
@@ -8,15 +8,21 @@ export { digest } from './stableDigest.mts';
 // Transport admission for the bounded POC, not a replacement public contract.
 const text = z.string().min(1).max(500).regex(/^[^\u0000-\u001f\u007f]*$/);
 const number = z.number().finite();
-const positive = number.positive();
-const vector = z.tuple([number, number, number]);
-const surfaceForce = vector.refine(value => Math.hypot(...value) > 1e-14 && Math.hypot(...value) <= 1_000_000_000_000);
+const positive = z.number().finite().positive();
+const vector = z.tuple([z.number().finite(), z.number().finite(), z.number().finite()]);
+const surfaceForce = vector.refine(value => {
+  const components = value as [number, number, number];
+  return Math.hypot(...components) > 1e-14 && Math.hypot(...components) <= 1_000_000_000_000;
+});
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const box = z.object({ min: vector, max: vector }).strict();
 const references = z.array(text).min(1).max(32)
   .refine(ids => new Set(ids).size === ids.length, 'FACE references within one load or constraint must be unique.');
 const pressureMPa = number.refine(value => value !== 0 && Math.abs(value) <= 1_000_000);
-const acceleration = vector.refine(value => Math.hypot(...value) > 1e-9 && Math.hypot(...value) <= 1_000_000_000);
+const acceleration = vector.refine(value => {
+  const components = value as [number, number, number];
+  return Math.hypot(...components) > 1e-9 && Math.hypot(...components) <= 1_000_000_000;
+});
 const displacementComponent = number.min(-1_000_000).max(1_000_000).nullable();
 const prescribedDisplacement = z.tuple([displacementComponent, displacementComponent, displacementComponent])
   .refine(value => value.some(component => component !== null));
@@ -59,7 +65,7 @@ export function validateRequest(value: unknown, now = Date.now()): NeutralSimula
   }
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error('BRIDGE_REQUEST_INVALID');
-  const request = parsed.data;
+  const request = parsed.data as NeutralSimulationRequest;
   const entryIds = [...request.loads, ...request.constraints].map(entry => entry.id);
   if (new Set(entryIds).size !== entryIds.length) throw new Error('BRIDGE_REQUEST_INVALID');
   if (!request.loads.length && !request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
@@ -90,4 +96,11 @@ export function validateRequest(value: unknown, now = Date.now()): NeutralSimula
     if (matches.length !== 1) throw new Error('BRIDGE_REFERENCE_INVALID');
   }
   return request as NeutralSimulationRequest;
+}
+
+export function validateRequestEnvelope(value: unknown, now = Date.now()): NeutralSimulationRequest | NeutralSimulationRequestV2 {
+  if (value && typeof value === 'object' && (value as { schema?: unknown }).schema === 'tunacad-neutral-simulation-request/2.0') {
+    return validateNeutralSimulationRequestV2(value, now);
+  }
+  return validateRequest(value, now);
 }

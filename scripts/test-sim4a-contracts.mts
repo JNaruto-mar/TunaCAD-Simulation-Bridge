@@ -82,7 +82,12 @@ assert.deepEqual(admitV2MeshRequest({ interfaceVersion: '1.0' } as any), {
   accepted: false, code: 'PROVIDER_INTERFACE_VERSION_UNSUPPORTED', message: 'A version 2.0 mesh provider is required before geometry transfer.',
 });
 assert.deepEqual(admitV2SimulationRequest(request, {
-  interfaceVersion: '2.0', study: { multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, maximumDomains: 8, maximumOccurrences: 8, maximumMaterials: 8, interactionTypes: [] },
+  interfaceVersion: '2.0', analysisTypes: ['linear_static'], normalizedResults: true, asynchronous: true, cancellation: true,
+  fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress'], topology: 'triangle_soup' },
+  study: { multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, maximumDomains: 8, maximumOccurrences: 8,
+    maximumParts: 8, maximumBodies: 8, maximumMaterials: 8, maximumReferenceBindings: 32, materialModels: ['isotropic_linear_elastic'],
+    loadTypes: ['surface_force'], maximumLoads: 8, maximumReferencesPerLoad: 8, constraintTypes: ['fixed'], maximumConstraints: 8,
+    maximumReferencesPerConstraint: 8, contactModes: ['none'], interactionTypes: ['bonded_tie', 'shared_topology'], maximumInteractions: 8, maximumReferencesPerInteractionSide: 8 },
 } as any), { accepted: true });
 
 expectCode('BRIDGE_V2_TRANSFORM_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => { candidate.model.domains[1].transformToAnalysis[0] = 2; }), now));

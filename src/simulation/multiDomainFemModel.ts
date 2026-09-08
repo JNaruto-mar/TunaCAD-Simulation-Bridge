@@ -33,6 +33,7 @@ export function createNeutralMeshJobRequestV2(request: NeutralSimulationRequestV
       domainId: binding.domainId, role: binding.role, semanticReferenceId: binding.semanticReferenceId,
       sourceFeatureId: binding.sourceFeatureId, faceOwnerLocal: structuredClone(binding.faceOwnerLocal),
     })),
+    interactions: structuredClone(request.interactions),
   };
 }
 
@@ -100,20 +101,22 @@ export function composeNeutralFemModelV2(
       minimum: mesh.quality.minimum, average: mesh.quality.average, invalidElementCount: 0,
     });
   }
+  const compactedNodes = applySharedTopology(request, nodes, connectivity, boundaryConnectivity, boundaryRegions, domainRegions);
+  for (const quality of perDomain) quality.nodeCount = domainRegions.find(region => region.domainId === quality.domainId)!.nodeIndices.length;
   const cadVolumeMm3 = perDomain.reduce((sum, domain) => sum + domain.cadVolumeMm3, 0);
   const meshVolumeMm3 = perDomain.reduce((sum, domain) => sum + domain.meshVolumeMm3, 0);
   const elementCount = connectivity.length;
   return {
     schema: 'tunacad-neutral-fem-model/2.0', modelId: `femmodel_${crypto.randomUUID()}`,
     requestDigest: request.requestDigest, projectRevision: request.projectRevision, modelDigest: request.modelDigest,
-    coordinateSpace: 'frozen_analysis', units: 'mm', element: { family: 'tetrahedral', geometryOrder: 2, solutionOrder: 2 }, nodes,
+    coordinateSpace: 'frozen_analysis', units: 'mm', element: { family: 'tetrahedral', geometryOrder: 2, solutionOrder: 2 }, nodes: compactedNodes,
     volumeElements: { connectivity, domainIds: elementDomainIds, materialIds, volumeRegionIds },
     boundaryFacets: { connectivity: boundaryConnectivity, domainIds: boundaryDomainIds, regionIds: boundaryRegionIds },
     domainRegions, boundaryRegions,
     quality: {
       metric: 'mean_ratio', minimum: Math.min(...perDomain.map(domain => domain.minimum)),
       average: perDomain.reduce((sum, domain) => sum + domain.average * domain.elementCount, 0) / elementCount,
-      invalidElementCount: 0, nodeCount: nodes.length, elementCount, boundaryFacetCount: boundaryConnectivity.length,
+      invalidElementCount: 0, nodeCount: compactedNodes.length, elementCount, boundaryFacetCount: boundaryConnectivity.length,
       cadVolumeMm3, meshVolumeMm3, volumeRelativeError: Math.abs(meshVolumeMm3 - cadVolumeMm3) / cadVolumeMm3, perDomain,
     },
     provenance: {
@@ -122,6 +125,88 @@ export function composeNeutralFemModelV2(
       inputGeometryDigest: request.modelDigest, generatedAt: new Date().toISOString(),
     },
   };
+}
+
+function applySharedTopology(
+  request: NeutralMeshJobRequestV2,
+  nodes: NeutralVector3[],
+  elements: number[][],
+  facets: number[][],
+  boundaryRegions: NeutralFemModelV2['boundaryRegions'],
+  domainRegions: NeutralFemModelV2['domainRegions'],
+): NeutralVector3[] {
+  const shared = request.interactions.filter(interaction => interaction.type === 'shared_topology');
+  if (!shared.length) return nodes;
+  const regionsByReference = new Map<string, NeutralFemModelV2['boundaryRegions'][number]>();
+  for (const region of boundaryRegions) for (const referenceId of region.semanticReferenceIds) regionsByReference.set(referenceId, region);
+  const replacement = new Map<number, number>();
+  const claimed = new Set<number>();
+  const resolved = (node: number): number => { let current = node; while (replacement.has(current)) current = replacement.get(current)!; return current; };
+
+  for (const interaction of [...shared].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)) {
+    const secondaryFacets = interaction.secondaryReferenceIds.flatMap(referenceId => {
+      const region = regionsByReference.get(referenceId);
+      if (!region) throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_REGION_INVALID', `Shared-topology secondary reference "${referenceId}" was not mapped.`);
+      return region.facetIndices.map(index => facets[index]);
+    });
+    const primaryFacets = interaction.primaryReferenceIds.flatMap(referenceId => {
+      const region = regionsByReference.get(referenceId);
+      if (!region) throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_REGION_INVALID', `Shared-topology primary reference "${referenceId}" was not mapped.`);
+      return region.facetIndices.map(index => facets[index]);
+    });
+    const secondaryNodes = [...new Set(secondaryFacets.flat().map(resolved))].sort((a, b) => a - b);
+    const primaryNodes = [...new Set(primaryFacets.flat().map(resolved))].sort((a, b) => a - b);
+    if (!secondaryFacets.length || secondaryFacets.length !== primaryFacets.length || secondaryNodes.length !== primaryNodes.length) {
+      throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_NONCONFORMAL', `Shared-topology interaction "${interaction.id}" does not have equal facet and node counts.`);
+    }
+    if ([...secondaryNodes, ...primaryNodes].some(node => claimed.has(node))) {
+      throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_OVERLAP', `Shared-topology interaction "${interaction.id}" reuses an interface node from another interaction.`);
+    }
+    const usedPrimary = new Set<number>();
+    const local = new Map<number, number>();
+    for (const secondaryNode of secondaryNodes) {
+      const matches = primaryNodes.filter(primaryNode => !usedPrimary.has(primaryNode) && distance(nodes[secondaryNode], nodes[primaryNode]) <= interaction.positionToleranceMm);
+      if (matches.length !== 1) {
+        const nearest = Math.min(...primaryNodes.filter(node => !usedPrimary.has(node)).map(primaryNode => distance(nodes[secondaryNode], nodes[primaryNode])));
+        throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_NONCONFORMAL', `Shared-topology interaction "${interaction.id}" requires an unambiguous one-to-one node match within ${interaction.positionToleranceMm} mm (nearest ${nearest} mm, candidates ${matches.length}).`);
+      }
+      local.set(secondaryNode, matches[0]); usedPrimary.add(matches[0]);
+    }
+    const primaryByKey = new Map(primaryFacets.map(facet => [facetKey(facet), facet]));
+    const mappedSecondaryFacets = secondaryFacets.map(facet => facet.map(node => local.get(resolved(node)) ?? resolved(node)));
+    const mappedFacetKeys = mappedSecondaryFacets.map(facetKey);
+    if (new Set(mappedFacetKeys).size !== mappedFacetKeys.length || mappedFacetKeys.some(key => !primaryByKey.has(key))) {
+      throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_NONCONFORMAL', `Shared-topology interaction "${interaction.id}" does not have identical quadratic facet topology.`);
+    }
+    if (mappedSecondaryFacets.some((facet, index) => normalDot(nodes, facet, primaryByKey.get(mappedFacetKeys[index])!) > -.9)) {
+      throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_ORIENTATION_INVALID', `Shared-topology interaction "${interaction.id}" requires consistently opposed interface facets.`);
+    }
+    for (const [secondaryNode, primaryNode] of local) replacement.set(secondaryNode, primaryNode);
+    for (const node of [...secondaryNodes, ...primaryNodes]) claimed.add(node);
+  }
+
+  const replaceConnectivity = (entries: number[][]) => entries.forEach(entry => entry.forEach((node, index) => { entry[index] = resolved(node); }));
+  replaceConnectivity(elements); replaceConnectivity(facets);
+  const connected = new Set(elements.flat());
+  const oldToNew = new Map<number, number>();
+  const compacted = [...connected].sort((a, b) => a - b).map((old, index) => { oldToNew.set(old, index); return nodes[old]; });
+  const compact = (entries: number[][]) => entries.forEach(entry => entry.forEach((node, index) => { entry[index] = oldToNew.get(node)!; }));
+  compact(elements); compact(facets);
+  for (const region of domainRegions) region.nodeIndices = [...new Set(region.elementIndices.flatMap(index => elements[index]))].sort((a, b) => a - b);
+  return compacted;
+}
+
+function facetKey(nodes: number[]): string { return [...nodes].sort((a, b) => a - b).join(','); }
+function distance(a: NeutralVector3, b: NeutralVector3): number { return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]); }
+function normalDot(nodes: NeutralVector3[], a: number[], b: number[]): number {
+  const normal = (facet: number[]) => {
+    const p = nodes[facet[0]]; const q = nodes[facet[1]]; const r = nodes[facet[2]];
+    const u = [q[0] - p[0], q[1] - p[1], q[2] - p[2]]; const v = [r[0] - p[0], r[1] - p[1], r[2] - p[2]];
+    const n: NeutralVector3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const length = Math.hypot(...n); if (!(length > 0)) throw multiDomainError('SIMULATION_SHARED_TOPOLOGY_ORIENTATION_INVALID', 'Shared-topology interface contains a degenerate facet.');
+    return n.map(value => value / length) as NeutralVector3;
+  };
+  const left = normal(a); const right = normal(b); return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
 }
 
 function transformPoint(matrix: readonly number[], point: NeutralVector3): NeutralVector3 {

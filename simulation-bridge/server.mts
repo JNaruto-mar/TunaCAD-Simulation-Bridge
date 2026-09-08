@@ -1,11 +1,20 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import * as z from 'zod/v4';
-import type { ExternalSimulationProvider, NeutralSimulationRequest, SimulationProviderSubmission } from '../src/simulation/externalSimulationContracts.ts';
+import type {
+  ExternalSimulationProvider,
+  ExternalSimulationProviderV2,
+  NeutralSimulationRequest,
+  NeutralSimulationRequestV2,
+  SimulationProviderSubmission,
+} from '../src/simulation/externalSimulationContracts.ts';
 import { SIMULATION_BRIDGE_VERSION, type SimulationBridgeReadiness } from '../src/simulation/simulationBridgeProtocol.ts';
-import { validateRequest } from './requestValidation.mts';
+import { validateRequestEnvelope } from './requestValidation.mts';
+import { admitV2SimulationRequest, validateNeutralSimulationFieldPageV2 } from './v2Validation.mts';
 
 const MAX_STEP = 16 * 1024 * 1024;
+const MAX_TOTAL_STEP = 64 * 1024 * 1024;
+const MAX_DOMAINS = 16;
 const SESSION_MS = 30 * 60_000;
 const APPROVAL_MS = 2 * 60_000;
 const token = () => randomBytes(32).toString('hex');
@@ -13,16 +22,22 @@ const secretEquals = (a: string, b: string) => {
   const left = new TextEncoder().encode(a), right = new TextEncoder().encode(b);
   return left.length === right.length && timingSafeEqual(left, right);
 };
-type Approval = { id: string; request: NeutralSimulationRequest; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used' };
+type BridgeRequest = NeutralSimulationRequest | NeutralSimulationRequestV2;
+type AnyProvider = ExternalSimulationProvider | ExternalSimulationProviderV2;
+type Approval = { id: string; request: BridgeRequest; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used' };
+type BridgeJob = { submission: SimulationProviderSubmission; provider: AnyProvider };
+const isV2Request = (request: BridgeRequest): request is NeutralSimulationRequestV2 => request.schema === 'tunacad-neutral-simulation-request/2.0';
 
 /** Local host API only. Provider configuration accepts two executable paths
  * behind an authenticated session; execution arguments remain fixed in host adapters. */
 export async function startSimulationBridge(options: {
   provider: ExternalSimulationProvider | null;
+  providerV2?: ExternalSimulationProviderV2 | null;
   readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
-  approve: (request: NeutralSimulationRequest, signal: AbortSignal) => Promise<boolean>;
+  approve: (request: BridgeRequest, signal: AbortSignal) => Promise<boolean>;
   configureProviders?: (paths: { gmshExecutable: string; calculixExecutable: string }) => Promise<{
     provider: ExternalSimulationProvider | null;
+    providerV2?: ExternalSimulationProviderV2 | null;
     readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
   }>;
   browseProviderExecutable?: (provider: 'gmsh' | 'calculix') => Promise<string>;
@@ -40,23 +55,24 @@ export async function startSimulationBridge(options: {
   let session: { key: string; expiresAt: number } | null = null;
   let approvalController: AbortController | null = null;
   const approvals = new Map<string, Approval>();
-  const jobs = new Map<string, SimulationProviderSubmission>();
+  const jobs = new Map<string, BridgeJob>();
   let submissions = 0;
   let authorizationAttempts = 0;
   let busy = false;
   let stopping = false;
   let authority = '';
   let provider = options.provider;
+  let providerV2 = options.providerV2 ?? null;
   let readiness: SimulationBridgeReadiness = {
     ...options.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION,
-    limits: { maximumStepBytes: MAX_STEP, maximumJobs: 4, sessionLifetimeMs: SESSION_MS },
+    limits: { maximumStepBytes: MAX_STEP, maximumTotalStepBytes: MAX_TOTAL_STEP, maximumDomains: MAX_DOMAINS, maximumJobs: 4, sessionLifetimeMs: SESSION_MS },
   };
 
   async function revoke() {
     session = null;
     approvalController?.abort();
     approvals.clear();
-    if (provider) await Promise.all([...jobs.values()].map(job => provider.cancel(job.providerRunId).catch(() => undefined)));
+    await Promise.all([...jobs.values()].map(job => job.provider.cancel(job.submission.providerRunId).catch(() => undefined)));
     jobs.clear();
   }
   const server = createServer(async (req, res) => {
@@ -106,19 +122,26 @@ export async function startSimulationBridge(options: {
         const paths = z.object({ gmshExecutable: executablePath, calculixExecutable: executablePath }).strict().parse(await readJson(req, 3_000));
         const configured = await options.configureProviders(paths);
         provider = configured.provider;
+        providerV2 = configured.providerV2 ?? null;
         readiness = { ...configured.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION, limits: readiness.limits };
         return reply(res, 200, readiness);
       }
-      if (!provider || !readiness.ready) return reply(res, 503, { error: 'BRIDGE_PROVIDERS_UNAVAILABLE' });
       if (req.method === 'POST' && req.url === '/v1/authorizations') {
-        const request = validateRequest(await readJson(req, 64 * 1024), now());
+        const request = validateRequestEnvelope(await readJson(req, 256 * 1024), now());
+        const v2Request = isV2Request(request);
+        const requestProvider = v2Request ? providerV2 : provider;
+        if (!requestProvider || (v2Request ? !readiness.providerV2 : !readiness.ready)) return reply(res, 503, { error: 'BRIDGE_PROVIDERS_UNAVAILABLE' });
+        if (v2Request) {
+          const admission = admitV2SimulationRequest(request, providerV2!.capabilities);
+          if (!admission.accepted) throw new Error('BRIDGE_PROVIDER_CAPABILITY_MISMATCH');
+        }
         if (!session || session.expiresAt <= now()) return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
         if (++authorizationAttempts > 8) return reply(res, 429, { error: 'BRIDGE_AUTHORIZATION_LIMIT' });
         if (busy || submissions >= 4 || [...approvals.values()].some(a => a.expiresAt > now() && (a.state === 'pending' || a.state === 'approved'))) return reply(res, 409, { error: 'BRIDGE_BUSY' });
         busy = true;
         try {
         if (jobs.size) {
-          const states = await Promise.all([...jobs.values()].map(job => provider.getStatus(job.providerRunId)));
+          const states = await Promise.all([...jobs.values()].map(job => job.provider.getStatus(job.submission.providerRunId)));
           if (states.some(state => ['running', 'queued'].includes(state.status))) return reply(res, 409, { error: 'BRIDGE_BUSY' });
         }
         if (!session || session.expiresAt <= now()) return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
@@ -153,32 +176,91 @@ export async function startSimulationBridge(options: {
           const permitted = [...approvals.values()].find(a => a.state === 'approved' && a.expiresAt > now());
           if (!permitted) return reply(res, 403, { error: 'BRIDGE_TRANSFER_NOT_APPROVED' });
           permitted.state = 'used';
-          const body = z.object({ authorizationId: z.literal(permitted.id), stepBase64: z.string().max(Math.ceil(MAX_STEP / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/) }).strict().parse(await readJson(req, Math.ceil(MAX_STEP / 3) * 4 + 2048));
           if (!session || session.expiresAt <= now() || permitted.expiresAt <= now()) throw new Error('BRIDGE_AUTHORIZATION_EXPIRED');
-          const bytes = Buffer.from(body.stepBase64, 'base64');
-          if (bytes.length > MAX_STEP || bytes.length < 128 || bytes.toString('base64') !== body.stepBase64
-            || !bytes.subarray(0, 256).toString().includes('ISO-10303-21')) throw new Error('BRIDGE_STEP_INVALID');
+          const rawBody = await readJson(req, Math.ceil(MAX_TOTAL_STEP / 3) * 4 + 16 * 1024);
+          let selectedProvider: AnyProvider;
+          let submission: SimulationProviderSubmission;
+          if (isV2Request(permitted.request)) {
+            if (!providerV2) throw new Error('BRIDGE_PROVIDERS_UNAVAILABLE');
+            const encodedLimit = Math.ceil(MAX_STEP / 3) * 4;
+            const body = z.object({
+              authorizationId: z.literal(permitted.id),
+              stepDomains: z.array(z.object({
+                domainId: z.string().min(1).max(160),
+                stepBase64: z.string().max(encodedLimit).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+              }).strict()).min(2).max(MAX_DOMAINS),
+            }).strict().parse(rawBody);
+            const expectedDomainIds = permitted.request.model.domains.map(domain => domain.domainId);
+            if (new Set(body.stepDomains.map(domain => domain.domainId)).size !== body.stepDomains.length
+              || body.stepDomains.length !== expectedDomainIds.length
+              || body.stepDomains.some((domain, index) => domain.domainId !== expectedDomainIds[index])) {
+              throw new Error('BRIDGE_DOMAIN_SET_MISMATCH');
+            }
+            const domainBytes = new Map(body.stepDomains.map(domain => [domain.domainId, decodeStep(domain.stepBase64)]));
+            if ([...domainBytes.values()].reduce((total, bytes) => total + bytes.byteLength, 0) > MAX_TOTAL_STEP) {
+              throw new Error('BRIDGE_PAYLOAD_TOO_LARGE');
+            }
+            selectedProvider = providerV2;
+            submission = await providerV2.submit(permitted.request, {
+              descriptor: permitted.request.model,
+              async exportDomain(domainId, format) {
+                if (format !== 'step') throw new Error('BRIDGE_FORMAT_UNSUPPORTED');
+                const bytes = domainBytes.get(domainId);
+                if (!bytes) throw new Error('BRIDGE_DOMAIN_SET_MISMATCH');
+                return new Uint8Array(bytes);
+              },
+            });
+          } else {
+            if (!provider) throw new Error('BRIDGE_PROVIDERS_UNAVAILABLE');
+            const body = z.object({
+              authorizationId: z.literal(permitted.id),
+              stepBase64: z.string().max(Math.ceil(MAX_STEP / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+            }).strict().parse(rawBody);
+            const bytes = decodeStep(body.stepBase64);
+            selectedProvider = provider;
+            submission = await provider.submit(permitted.request, {
+              descriptor: permitted.request.geometry,
+              async export(format) {
+                if (format !== 'step') throw new Error('BRIDGE_FORMAT_UNSUPPORTED');
+                return new Uint8Array(bytes);
+              },
+            });
+          }
           submissions++;
-          const submission = await provider.submit(permitted.request, { descriptor: permitted.request.geometry,
-            async export(format) { if (format !== 'step') throw new Error('BRIDGE_FORMAT_UNSUPPORTED'); return new Uint8Array(bytes); } });
-          if (!session || session.expiresAt <= now() || stopping) { await provider.cancel(submission.providerRunId); throw new Error('BRIDGE_SESSION_REQUIRED'); }
-          jobs.set(submission.providerRunId, submission);
+          if (!session || session.expiresAt <= now() || stopping) { await selectedProvider.cancel(submission.providerRunId); throw new Error('BRIDGE_SESSION_REQUIRED'); }
+          jobs.set(submission.providerRunId, { submission, provider: selectedProvider });
           return reply(res, 202, submission);
         } finally { busy = false; }
+      }
+      const fieldUrl = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const fieldMatch = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,160})\/fields$/.exec(fieldUrl.pathname);
+      if (req.method === 'GET' && fieldMatch && jobs.has(fieldMatch[1])) {
+        const job = jobs.get(fieldMatch[1])!;
+        if (!('getFieldDataset' in job.provider)) return reply(res, 404, { error: 'BRIDGE_FIELD_DATASET_UNSUPPORTED' });
+        if ([...fieldUrl.searchParams.keys()].some(key => !['datasetId', 'cursor', 'limit'].includes(key))) throw new Error('BRIDGE_REQUEST_INVALID');
+        const query = z.object({
+          datasetId: z.string().min(1).max(500).regex(/^[A-Za-z0-9_.:-]+$/),
+          cursor: z.string().regex(/^\d{1,10}$/).default('0'),
+          limit: z.coerce.number().int().min(1).max(128).default(128),
+        }).strict().parse(Object.fromEntries(fieldUrl.searchParams));
+        const page = validateNeutralSimulationFieldPageV2(await job.provider.getFieldDataset(fieldMatch[1], query.datasetId, query.cursor, query.limit));
+        if (page.dataset.jobId !== fieldMatch[1]) throw new Error('BRIDGE_FIELD_DATASET_IDENTITY_INVALID');
+        return reply(res, 200, page);
       }
       const jobMatch = /^\/v1\/jobs\/([A-Za-z0-9_-]{1,160})\/(status|result|cancel)$/.exec(req.url ?? '');
       if (jobMatch && jobs.has(jobMatch[1])) {
         const [, id, operation] = jobMatch;
-        if (now() - Date.parse(jobs.get(id)!.acceptedAt) > 20 * 60_000) {
+        const job = jobs.get(id)!;
+        if (now() - Date.parse(job.submission.acceptedAt) > 20 * 60_000) {
           jobs.delete(id); return reply(res, 410, { error: 'BRIDGE_RESULT_EXPIRED' });
         }
-        if (req.method === 'POST' && operation === 'cancel') return reply(res, 200, await provider.cancel(id));
+        if (req.method === 'POST' && operation === 'cancel') return reply(res, 200, await job.provider.cancel(id));
         if (req.method === 'GET' && operation === 'status') {
-          const status = await provider.getStatus(id);
+          const status = await job.provider.getStatus(id);
           if (status.failure) status.failure.message = 'The local simulation failed. Review the Bridge terminal or provider diagnostics locally.';
           return reply(res, 200, status);
         }
-        if (req.method === 'GET' && operation === 'result') return reply(res, 200, await provider.getResult(id));
+        if (req.method === 'GET' && operation === 'result') return reply(res, 200, await job.provider.getResult(id));
       }
       return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
     } catch (error) {
@@ -205,6 +287,12 @@ export async function startSimulationBridge(options: {
 function reply(res: ServerResponse, status: number, value: unknown) {
   res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
   res.end(status === 204 ? undefined : JSON.stringify(value));
+}
+function decodeStep(stepBase64: string): Uint8Array {
+  const bytes = Buffer.from(stepBase64, 'base64');
+  if (bytes.length > MAX_STEP || bytes.length < 128 || bytes.toString('base64') !== stepBase64
+    || !bytes.subarray(0, 256).toString().includes('ISO-10303-21')) throw new Error('BRIDGE_STEP_INVALID');
+  return new Uint8Array(bytes);
 }
 async function readJson(req: IncomingMessage, limit: number) {
   if (req.headers['content-type'] !== 'application/json' || req.headers['content-encoding']) throw new Error('BRIDGE_CONTENT_TYPE_INVALID');

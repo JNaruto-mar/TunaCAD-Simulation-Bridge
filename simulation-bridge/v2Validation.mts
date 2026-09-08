@@ -3,6 +3,7 @@ import type {
   MeshProviderCapabilities,
   MeshProviderCapabilitiesV2,
   NeutralFemModelV2,
+  NeutralSimulationFieldPageV2,
   NeutralSimulationRequestV2,
   NeutralSimulationResultV2,
   SimulationProviderCapabilities,
@@ -94,7 +95,18 @@ const requestSchema = z.object({
       coordinateSystem: z.literal('analysis'),
     }).strict(),
   ])).min(1).max(64),
-  interactions: z.array(z.never()).max(0),
+  interactions: z.array(z.discriminatedUnion('type', [
+    z.object({
+      id: text, name: text, type: z.literal('bonded_tie'),
+      secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
+      adjustment: z.literal('none'), positionToleranceMm: positive.max(1000),
+    }).strict(),
+    z.object({
+      id: text, name: text, type: z.literal('shared_topology'),
+      secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
+      adjustment: z.literal('none'), positionToleranceMm: positive.max(1000),
+    }).strict(),
+  ])).max(32),
   mesh: meshRequest,
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions'])).min(1).max(5),
 }).strict();
@@ -186,11 +198,18 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   const required = [
     ...request.loads.flatMap(load => 'semanticReferenceIds' in load ? load.semanticReferenceIds.map(id => [`load:${id}`, id] as const) : []),
     ...request.constraints.flatMap(constraint => constraint.semanticReferenceIds.map(id => [`constraint:${id}`, id] as const)),
+    ...request.interactions.flatMap(interaction => [...interaction.secondaryReferenceIds, ...interaction.primaryReferenceIds].map(id => [`interaction:${id}`, id] as const)),
   ];
   if (required.length !== references.size || required.some(([key]) => !references.has(key))) fail('BRIDGE_V2_REFERENCE_INVALID');
   const loaded = new Set(required.filter(([key]) => key.startsWith('load:')).map(([, id]) => id));
   if (required.some(([key, id]) => key.startsWith('constraint:') && loaded.has(id))) fail('BRIDGE_V2_REFERENCE_INVALID');
-  const entryIds = [...request.loads, ...request.constraints].map(entry => entry.id);
+  for (const interaction of request.interactions) {
+    const secondaryDomains = new Set(interaction.secondaryReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
+    const primaryDomains = new Set(interaction.primaryReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
+    if (secondaryDomains.size !== 1 || primaryDomains.size !== 1 || [...secondaryDomains][0] === [...primaryDomains][0]
+      || interaction.secondaryReferenceIds.some(id => interaction.primaryReferenceIds.includes(id))) fail('BRIDGE_V2_INTERACTION_INVALID');
+  }
+  const entryIds = [...request.loads, ...request.constraints, ...request.interactions].map(entry => entry.id);
   if (!unique(entryIds)) fail('BRIDGE_V2_REQUEST_INVALID');
   if (!request.loads.length && !request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
     && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))) fail('BRIDGE_V2_REQUEST_INVALID');
@@ -205,11 +224,36 @@ export type V2Admission = { accepted: true } | { accepted: false; code: 'PROVIDE
 export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, capabilities: SimulationProviderCapabilities | SimulationProviderCapabilitiesV2): V2Admission {
   if (capabilities.interfaceVersion !== '2.0') return { accepted: false, code: 'PROVIDER_INTERFACE_VERSION_UNSUPPORTED', message: 'A version 2.0 simulation provider is required before geometry transfer.' };
   const profile = capabilities as SimulationProviderCapabilitiesV2;
-  if (!profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
+  if (!Array.isArray(profile.analysisTypes) || !profile.study || !Array.isArray(profile.study.materialModels)
+    || !Array.isArray(profile.study.loadTypes) || !Array.isArray(profile.study.constraintTypes)
+    || !Array.isArray(profile.study.contactModes) || !Array.isArray(profile.study.interactionTypes)
+    || !Number.isInteger(profile.study.maximumInteractions) || !Number.isInteger(profile.study.maximumReferencesPerInteractionSide)) {
+    return { accepted: false, code: 'PROVIDER_V2_CAPABILITY_UNSUPPORTED', message: 'The provider does not exactly support this SIM-4A study envelope.' };
+  }
+  const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
+  if (!profile.analysisTypes.includes(request.analysis.type) || !profile.normalizedResults || !profile.asynchronous || !profile.cancellation
+    || !profile.fieldResults?.paginated || profile.fieldResults.maximumPageTriangles < 1 || profile.fieldResults.maximumPageTriangles > 512
+    || profile.fieldResults.topology !== 'triangle_soup' || !profile.fieldResults.components.includes('displacement_magnitude') || !profile.fieldResults.components.includes('von_mises_stress')
+    || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
     || request.model.domains.length > profile.study.maximumOccurrences
+    || request.model.domains.length > profile.study.maximumBodies
+    || new Set(request.model.domains.map(domain => domain.partId)).size > profile.study.maximumParts
     || request.materials.length > profile.study.maximumMaterials
-    || profile.study.interactionTypes.length !== 0) {
+    || request.materials.some(material => !profile.study.materialModels.includes(material.model))
+    || request.model.references.length > profile.study.maximumReferenceBindings
+    || request.loads.length > profile.study.maximumLoads
+    || request.loads.some(load => !profile.study.loadTypes.includes(load.type)
+      || ('semanticReferenceIds' in load && load.semanticReferenceIds.length > profile.study.maximumReferencesPerLoad))
+    || request.constraints.length > profile.study.maximumConstraints
+    || request.constraints.some(constraint => !profile.study.constraintTypes.includes(constraint.type)
+      || constraint.semanticReferenceIds.length > profile.study.maximumReferencesPerConstraint)
+    || !profile.study.contactModes.includes('none')
+    || request.constraints.some(constraint => new Set(constraint.semanticReferenceIds.map(referenceId => referenceDomains.get(referenceId))).size !== 1)
+    || request.interactions.length > profile.study.maximumInteractions
+    || request.interactions.some(interaction => !profile.study.interactionTypes.includes(interaction.type)
+      || interaction.primaryReferenceIds.length > profile.study.maximumReferencesPerInteractionSide
+      || interaction.secondaryReferenceIds.length > profile.study.maximumReferencesPerInteractionSide)) {
     return { accepted: false, code: 'PROVIDER_V2_CAPABILITY_UNSUPPORTED', message: 'The provider does not exactly support this SIM-4A study envelope.' };
   }
   return { accepted: true };
@@ -312,7 +356,8 @@ export function validateNeutralFemModelV2(value: unknown, request: NeutralSimula
 export function admitV2MeshRequest(capabilities: MeshProviderCapabilities | MeshProviderCapabilitiesV2): V2Admission {
   if (capabilities.interfaceVersion !== '2.0') return { accepted: false, code: 'PROVIDER_INTERFACE_VERSION_UNSUPPORTED', message: 'A version 2.0 mesh provider is required before geometry transfer.' };
   const profile = capabilities as MeshProviderCapabilitiesV2;
-  if (!profile.multiDomain || !profile.rigidOccurrenceTransforms || !profile.domainRegionMapping) {
+  if (!profile.multiDomain || !profile.rigidOccurrenceTransforms || !profile.domainRegionMapping
+    || !Array.isArray(profile.interactionTypes)) {
     return { accepted: false, code: 'PROVIDER_V2_CAPABILITY_UNSUPPORTED', message: 'The mesh provider cannot preserve SIM-4A domain ownership.' };
   }
   return { accepted: true };
@@ -362,4 +407,41 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
     || result.criticalRegions.some(region => !domainIds.includes(region.domainId))) fail('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID');
   if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
   return result;
+}
+
+const fieldTriangle = z.object({
+  facetIndex: z.number().int().nonnegative(), elementIndex: z.number().int().nonnegative(),
+  positionsAnalysisMm: z.tuple([vector, vector, vector]),
+  displacementsMm: z.tuple([vector, vector, vector]),
+  values: z.tuple([finite, finite, finite]),
+}).strict();
+const fieldDataset = z.object({
+  schema: z.literal('tunacad-neutral-simulation-field-dataset/2.0'),
+  datasetId: text, jobId: text, domainId: text, analysisType: z.literal('linear_static'),
+  step: z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
+  component: z.enum(['displacement_magnitude', 'von_mises_stress']), unit: z.enum(['mm', 'MPa']),
+  location: z.literal('boundary_facet'), topology: z.literal('triangle_soup'),
+  valueRange: z.object({ minimum: nonNegative, maximum: nonNegative, minimumPositionAnalysisMm: vector, maximumPositionAnalysisMm: vector }).strict(),
+  deformation: z.object({ vectorsIncluded: z.literal(true), trueScale: z.literal(1), recommendedScale: positive }).strict(),
+  mapping: z.object({ domain: z.literal('exact'), cadRegions: z.enum(['partial', 'exact']), semanticReferenceIds: z.array(text).max(512) }).strict(),
+  totalTriangles: z.number().int().positive().max(4_000_000), maximumPageTriangles: z.number().int().min(1).max(512), datasetDigest: hash,
+}).strict();
+const fieldPage = z.object({
+  schema: z.literal('tunacad-neutral-simulation-field-page/2.0'), dataset: fieldDataset,
+  cursor: z.string().regex(/^\d{1,10}$/), nextCursor: z.string().regex(/^\d{1,10}$/).nullable(),
+  triangleOffset: z.number().int().nonnegative(), triangleCount: z.number().int().positive().max(512),
+  chunkDigest: hash, triangles: z.array(fieldTriangle).min(1).max(512),
+}).strict();
+
+export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSimulationFieldPageV2 {
+  const parsed = fieldPage.safeParse(value);
+  if (!parsed.success) fail('BRIDGE_V2_FIELD_PAGE_INVALID');
+  const page = parsed.data as NeutralSimulationFieldPageV2;
+  if (page.cursor !== String(page.triangleOffset) || page.triangleCount !== page.triangles.length
+    || page.triangleCount > page.dataset.maximumPageTriangles || page.triangleOffset + page.triangleCount > page.dataset.totalTriangles
+    || page.nextCursor !== (page.triangleOffset + page.triangleCount < page.dataset.totalTriangles ? String(page.triangleOffset + page.triangleCount) : null)
+    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' ? 'mm' : 'MPa')
+    || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
+    || digest(page.triangles) !== page.chunkDigest) fail('BRIDGE_V2_FIELD_PAGE_INVALID');
+  return page;
 }

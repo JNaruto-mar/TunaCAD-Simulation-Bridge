@@ -103,6 +103,7 @@ npm run test:superposition
 npm run test:face-groups
 npm run test:sim3-benchmarks
 npm run test:sim3-matrix
+npm run test:sim4a-matrix
 ```
 
 ## Qualification matrix
@@ -142,7 +143,7 @@ advertised as qualified provider evidence while independent review is pending.
 
 Version 1 remains immutable. The additive `2.0` request, mesh-request,
 FEM-model, result, and provider-capability contracts establish the fail-closed
-multi-domain boundary without advertising a multi-domain solver prematurely.
+multi-domain boundary used by the experimental v2 Gmsh/CalculiX pipeline.
 They require:
 
 - a stable domain and occurrence identity for every solid, including repeated
@@ -154,25 +155,46 @@ They require:
 - exact per-element, boundary-facet, and per-domain mesh ownership; and
 - per-domain extrema and unique field-dataset ownership in normalized results.
 
-SIM-4A intentionally accepts no interactions yet. Touching/overlapping solids
-and assembly mates do not imply bonding. The experimental multi-domain Gmsh
+SIM-4A never infers interactions. Touching/overlapping solids and assembly
+mates do not imply bonding. The experimental multi-domain Gmsh
 composition adapter now exports and meshes each domain in owner-local
 coordinates, applies its rigid occurrence transform, and combines the validated
-meshes without merging nodes or losing domain ownership. The experimental
+meshes without losing domain ownership. By default nodes remain independent. An
+explicit `shared_topology` interaction may merge them only after a complete,
+unambiguous one-to-one quadratic node and facet match. The experimental
 CalculiX deck generator emits one C3D10 element set and solid section per domain
 and one card per assigned material. A real repeated-Part, two-material fixture
 passes Gmsh 4.15.2 and CalculiX 2.16 with exact global reaction balance.
 
-The main Bridge pipeline still advertises provider interface `1.0` and rejects
-v2 before approval or geometry transfer. V2 promotion waits for asynchronous
-solver lifecycle, normalized per-domain result recovery, and TunaCAD-side
-multi-domain preparation/export integration.
+The Bridge now advertises independent v1 and v2 provider capabilities. Its v2
+path validates exact provider admission before approval, obtains one local-host
+approval, then accepts 2–16 ordered STEP domains with 16 MiB per-domain and
+64 MiB aggregate limits. The asynchronous CalculiX adapter uses the hardened
+process quotas, cancellation, cleanup and bounded result parser, and normalizes
+global plus per-domain extrema, reaction ownership, hotspots and field-dataset
+IDs. Displacement and von Mises surface fields are retained only as normalized,
+digest-verified triangle pages; native solver files never cross the Bridge.
+TunaCAD uses the same MCP lifecycle tools for v1 and v2 and rechecks the CAD
+revision around every domain export. The formal SIM-4A matrix records all
+automated lanes as passed, but independent engineering review is still pending,
+so the pipeline remains `proof_of_concept` and engineering use is not permitted.
+The reviewer packet is `qualification/SIM4A_INDEPENDENT_ENGINEERING_REVIEW.md`.
+
+SIM-4B supports explicitly declared nonconformal `bonded_tie` and conformal
+`shared_topology` interactions. A tie emits named CalculiX element surfaces and
+`*TIE,ADJUST=NO`. Shared topology compacts duplicate interface nodes and emits
+no tie/contact card, but fails closed if independently generated surface meshes
+do not match exactly within the declared tolerance. Real two-material series
+coupons compare both load paths. Separable or frictional contact is not treated
+as either linear connection and remains unsupported until SIM-6.
 
 ```powershell
 npm run test:sim4a-contracts
 $env:TUNACAD_GMSH_EXECUTABLE = 'C:\path\to\gmsh.exe'
 $env:TUNACAD_CALCULIX_EXECUTABLE = 'C:\path\to\ccx.exe'
 npm run test:sim4a-providers
+npm run test:sim4a-matrix
+npm run test:sim4b-connections
 ```
 
 ## Repository ownership
@@ -182,7 +204,8 @@ This public repository is the canonical source for:
 - `simulation-bridge/` — pairing, approval, transport, and host process;
 - `providers/gmsh/` — STEP meshing adapter;
 - `providers/calculix/` — solver adapter;
-- `providers/ComposedSimulationProvider.mts` — mesher/solver orchestration; and
+- `providers/ComposedSimulationProvider.mts` and
+  `providers/ComposedSimulationProviderV2.mts` — mesher/solver orchestration; and
 - `src/simulation/` — shared neutral contracts and Bridge protocol.
 
 The private TunaCAD repository consumes this repository as a Git submodule.

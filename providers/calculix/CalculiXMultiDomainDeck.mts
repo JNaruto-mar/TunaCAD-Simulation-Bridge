@@ -12,9 +12,9 @@ import {
   pressureSurfaceLoads,
 } from './CalculiXSolverProvider.mts';
 
-/** Generate a deterministic CalculiX C3D10 deck with one element set and solid
- * section per domain and one material card per referenced material. There are
- * deliberately no tie/contact cards in SIM-4A. */
+/** Generate a deterministic CalculiX C3D10 deck with explicit domain/material
+ * ownership, optional nonconformal ties, and prevalidated shared-topology
+ * interfaces. No contact behavior is inferred from proximity or assembly. */
 export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): string {
   validateNeutralSimulationRequestV2(request);
   validateNeutralFemModelV2(model, request);
@@ -45,6 +45,24 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     sum[0] + load.accelerationMmPerS2[0], sum[1] + load.accelerationMmPerS2[1], sum[2] + load.accelerationMmPerS2[2],
   ], [0, 0, 0]);
   const gravityMagnitude = Math.hypot(...gravity);
+  validateSharedTopology(request, model);
+  const ties = request.interactions.filter(interaction => interaction.type === 'bonded_tie').sort((a, b) => compareText(a.id, b.id));
+  const claimedTieFacets = new Set<number>();
+  const tieCards = ties.flatMap((tie, index) => {
+    const number = String(index + 1).padStart(3, '0');
+    const secondary = [...new Set(requireRegions(model, tie.secondaryReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    const primary = [...new Set(requireRegions(model, tie.primaryReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    if (!secondary.length || !primary.length || secondary.some(facet => primary.includes(facet))
+      || [...secondary, ...primary].some(facet => claimedTieFacets.has(facet))) throw deckError('SIMULATION_INTERACTION_FACE_OVERLAP', 'Bonded-tie FACE groups must be non-empty and cannot overlap or be reused.');
+    [...secondary, ...primary].forEach(facet => claimedTieFacets.add(facet));
+    const secondaryName = `TIE_SECONDARY_${number}`; const primaryName = `TIE_PRIMARY_${number}`;
+    return [
+      `*SURFACE, NAME=${secondaryName}, TYPE=ELEMENT`, ...calculixSurfaceFaces(model, secondary),
+      `*SURFACE, NAME=${primaryName}, TYPE=ELEMENT`, ...calculixSurfaceFaces(model, primary),
+      `*TIE, NAME=TIE_${number}, ADJUST=NO, POSITION TOLERANCE=${solverNumber(tie.positionToleranceMm)}`,
+      `${secondaryName},${primaryName}`,
+    ];
+  });
   if (loads.some(load => load.type === 'gravity') && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
     throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a gravity-loaded SIM-4A model requires positive density.');
   }
@@ -73,6 +91,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
       ...(material.densityKgM3 !== undefined ? ['*DENSITY', solverNumber(material.densityKgM3 * 1e-12)] : []),
     ]),
     ...domains.map(domain => `*SOLID SECTION, ELSET=${domainSetNames.get(domain.domainId)!}, MATERIAL=${materialNames.get(domain.materialId)!}`),
+    ...tieCards,
     '*STEP', '*STATIC', '*BOUNDARY',
     ...constraintSets.flatMap(item => boundaryLines(item.name, item.constraint)),
     ...([...nodalLoads.entries()].length ? [
@@ -92,6 +111,25 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   ];
   return `${lines.join('\n')}\n`;
 }
+
+function validateSharedTopology(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): void {
+  for (const interaction of request.interactions.filter(interaction => interaction.type === 'shared_topology')) {
+    const side = (referenceIds: string[]) => {
+      const facetIndices = [...new Set(requireRegions(model, referenceIds).flatMap(region => region.facetIndices))];
+      return {
+        nodes: [...new Set(facetIndices.flatMap(index => model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b),
+        facets: facetIndices.map(index => facetKey(model.boundaryFacets.connectivity[index])).sort(),
+      };
+    };
+    const secondary = side(interaction.secondaryReferenceIds); const primary = side(interaction.primaryReferenceIds);
+    if (!secondary.nodes.length || secondary.nodes.join(',') !== primary.nodes.join(',')
+      || secondary.facets.length !== primary.facets.length || secondary.facets.some((key, index) => key !== primary.facets[index])) {
+      throw deckError('SIMULATION_SHARED_TOPOLOGY_INVALID', `Interaction "${interaction.id}" was not composed as an exact shared-node interface.`);
+    }
+  }
+}
+
+function facetKey(nodes: number[]): string { return [...nodes].sort((a, b) => a - b).join(','); }
 
 export function asV1Mesh(model: NeutralFemModelV2): NeutralFemMesh {
   const { perDomain: _perDomain, ...quality } = model.quality;
@@ -119,6 +157,23 @@ function requireRegions(model: NeutralFemModelV2, referenceIds: string[]): Neutr
   });
   if (new Set(regions.map(region => region.regionId)).size !== regions.length) throw deckError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'Several FACE references map to one SIM-4A boundary region.');
   return regions;
+}
+
+const surfaceFaceCache = new WeakMap<NeutralFemModelV2, Map<string, { element: number; face: number }>>();
+function calculixSurfaceFaces(model: NeutralFemModelV2, facetIndices: number[]): string[] {
+  let faces = surfaceFaceCache.get(model);
+  if (!faces) {
+    faces = new Map();
+    model.volumeElements.connectivity.forEach((cell, element) => {
+      [[0, 1, 2], [0, 3, 1], [1, 3, 2], [2, 3, 0]].forEach((indices, face) => faces!.set(indices.map(index => cell[index]).sort((a, b) => a - b).join(':'), { element, face: face + 1 }));
+    });
+    surfaceFaceCache.set(model, faces);
+  }
+  return facetIndices.map(facetIndex => {
+    const match = faces!.get(model.boundaryFacets.connectivity[facetIndex].slice(0, 3).sort((a, b) => a - b).join(':'));
+    if (!match) throw deckError('SIMULATION_INTERACTION_FACE_MAPPING_INVALID', `Interaction facet ${facetIndex} has no owning volume face.`);
+    return `${match.element + 1},S${match.face}`;
+  });
 }
 
 function boundaryLines(name: string, constraint: NeutralSimulationConstraint): string[] {

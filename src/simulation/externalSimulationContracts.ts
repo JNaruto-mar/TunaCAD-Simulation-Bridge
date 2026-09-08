@@ -6,6 +6,8 @@ export const NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA = 'tunacad-neutral-simulation-
 export const NEUTRAL_MESH_REQUEST_V2_SCHEMA = 'tunacad-neutral-mesh-request/2.0' as const;
 export const NEUTRAL_FEM_MODEL_V2_SCHEMA = 'tunacad-neutral-fem-model/2.0' as const;
 export const NEUTRAL_SIMULATION_RESULT_V2_SCHEMA = 'tunacad-neutral-simulation-result/2.0' as const;
+export const NEUTRAL_SIMULATION_FIELD_DATASET_V2_SCHEMA = 'tunacad-neutral-simulation-field-dataset/2.0' as const;
+export const NEUTRAL_SIMULATION_FIELD_PAGE_V2_SCHEMA = 'tunacad-neutral-simulation-field-page/2.0' as const;
 export const SIMULATION_PROVIDER_INTERFACE_VERSION = '1.0' as const;
 export const MESH_PROVIDER_INTERFACE_VERSION = '1.0' as const;
 export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
@@ -15,6 +17,7 @@ export type NeutralAnalysisType = 'linear_static';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
+export type NeutralTriangle3<T> = [T, T, T];
 /** Row-major homogeneous transform from occurrence-local coordinates into the
  * immutable analysis coordinate system. V2 admission accepts rigid transforms
  * only: the last row is [0, 0, 0, 1] and the 3x3 block is a proper rotation. */
@@ -280,6 +283,34 @@ export type NeutralSimulationConstraintV2 =
   | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
   | { id: string; name: string; type: 'prescribed_displacement'; semanticReferenceIds: string[]; displacementMm: [number | null, number | null, number | null]; coordinateSystem: 'analysis' };
 
+/** SIM-4B connected behavior is always explicit. Neither variant is separable
+ * contact. Frictionless/frictional contact remains a separately
+ * capability-gated nonlinear SIM-6 feature. */
+export interface NeutralBondedTieInteractionV2 {
+  id: string;
+  name: string;
+  type: 'bonded_tie';
+  secondaryReferenceIds: string[];
+  primaryReferenceIds: string[];
+  adjustment: 'none';
+  positionToleranceMm: number;
+}
+
+/** A conformal interface is admitted only when the independently generated
+ * quadratic surface meshes have a complete one-to-one node and facet match.
+ * The mesher then shares node identities; it never projects or adjusts CAD. */
+export interface NeutralSharedTopologyInteractionV2 {
+  id: string;
+  name: string;
+  type: 'shared_topology';
+  secondaryReferenceIds: string[];
+  primaryReferenceIds: string[];
+  adjustment: 'none';
+  positionToleranceMm: number;
+}
+
+export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2;
+
 export interface NeutralSimulationRequestV2 {
   schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
   studyId: string;
@@ -303,9 +334,7 @@ export interface NeutralSimulationRequestV2 {
   materialAssignments: NeutralMaterialAssignmentV2[];
   loads: NeutralSimulationLoadV2[];
   constraints: NeutralSimulationConstraintV2[];
-  /** SIM-4A accepts only an empty list. SIM-4B will add explicit, typed
-   * interactions; touching geometry and assembly mates never imply bonding. */
-  interactions: [];
+  interactions: NeutralSimulationInteractionV2[];
   mesh: NeutralMeshRequest;
   requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'factor_of_safety' | 'critical_regions'>;
 }
@@ -339,6 +368,7 @@ export interface NeutralMeshJobRequestV2 {
     sourceFeatureId: string | null;
     faceOwnerLocal: NeutralSimulationReferenceBinding['face'];
   }>;
+  interactions: NeutralSimulationInteractionV2[];
 }
 
 export interface NeutralFemModelV2 {
@@ -437,15 +467,78 @@ export interface NeutralSimulationResultV2 {
   mutation: NeutralSimulationResult['mutation'];
 }
 
+/** A small, immutable handle describing a solver-normalized visualization
+ * field. Native solver files never cross the provider boundary. Triangle
+ * pages deliberately repeat their vertices so every page can be rendered and
+ * verified independently without hidden topology state. */
+export interface NeutralSimulationFieldDatasetV2 {
+  schema: typeof NEUTRAL_SIMULATION_FIELD_DATASET_V2_SCHEMA;
+  datasetId: string;
+  jobId: string;
+  domainId: string;
+  analysisType: 'linear_static';
+  step: { index: 0; label: 'static' };
+  component: 'displacement_magnitude' | 'von_mises_stress';
+  unit: 'mm' | 'MPa';
+  location: 'boundary_facet';
+  topology: 'triangle_soup';
+  valueRange: {
+    minimum: number;
+    maximum: number;
+    minimumPositionAnalysisMm: NeutralVector3;
+    maximumPositionAnalysisMm: NeutralVector3;
+  };
+  deformation: {
+    vectorsIncluded: true;
+    trueScale: 1;
+    recommendedScale: number;
+  };
+  mapping: {
+    domain: 'exact';
+    cadRegions: 'partial' | 'exact';
+    semanticReferenceIds: string[];
+  };
+  totalTriangles: number;
+  maximumPageTriangles: number;
+  datasetDigest: string;
+}
+
+export interface NeutralSimulationFieldTriangleV2 {
+  facetIndex: number;
+  elementIndex: number;
+  positionsAnalysisMm: NeutralTriangle3<NeutralVector3>;
+  displacementsMm: NeutralTriangle3<NeutralVector3>;
+  values: [number, number, number];
+}
+
+export interface NeutralSimulationFieldPageV2 {
+  schema: typeof NEUTRAL_SIMULATION_FIELD_PAGE_V2_SCHEMA;
+  dataset: NeutralSimulationFieldDatasetV2;
+  cursor: string;
+  nextCursor: string | null;
+  triangleOffset: number;
+  triangleCount: number;
+  chunkDigest: string;
+  triangles: NeutralSimulationFieldTriangleV2[];
+}
+
 export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProviderCapabilities, 'interfaceVersion' | 'study'> {
   interfaceVersion: typeof SIMULATION_PROVIDER_INTERFACE_V2_VERSION;
+  fieldResults: {
+    paginated: true;
+    maximumPageTriangles: number;
+    components: readonly ['displacement_magnitude', 'von_mises_stress'];
+    topology: 'triangle_soup';
+  };
   study: SimulationProviderCapabilities['study'] & {
     maximumDomains: number;
     maximumOccurrences: number;
     multiDomain: true;
     perDomainMaterials: true;
     rigidOccurrenceTransforms: true;
-    interactionTypes: readonly [];
+    interactionTypes: ReadonlyArray<NeutralSimulationInteractionV2['type']>;
+    maximumInteractions: number;
+    maximumReferencesPerInteractionSide: number;
   };
 }
 
@@ -455,6 +548,7 @@ export interface MeshProviderCapabilitiesV2 extends Omit<MeshProviderCapabilitie
   multiDomain: true;
   rigidOccurrenceTransforms: true;
   domainRegionMapping: true;
+  interactionTypes: ReadonlyArray<NeutralSimulationInteractionV2['type']>;
 }
 
 export interface NeutralSimulationHotspot {
@@ -666,6 +760,17 @@ export interface ExternalSolverProvider {
   cancel(providerRunId: string): Promise<SimulationProviderStatus>;
 }
 
+export interface ExternalSolverProviderV2 {
+  readonly id: string;
+  readonly version: string;
+  readonly capabilities: SimulationProviderCapabilitiesV2;
+  submit(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): Promise<SimulationProviderSubmission>;
+  getStatus(providerRunId: string): Promise<SimulationProviderStatus>;
+  getResult(providerRunId: string): Promise<NeutralSimulationResultV2 | null>;
+  getFieldDataset(providerRunId: string, datasetId: string, cursor?: string, limit?: number): Promise<NeutralSimulationFieldPageV2>;
+  cancel(providerRunId: string): Promise<SimulationProviderStatus>;
+}
+
 export interface ExternalSimulationProvider {
   readonly id: string;
   readonly version: string;
@@ -673,6 +778,17 @@ export interface ExternalSimulationProvider {
   submit(request: NeutralSimulationRequest, geometry: SimulationGeometryResolver): Promise<SimulationProviderSubmission>;
   getStatus(providerRunId: string): Promise<SimulationProviderStatus>;
   getResult(providerRunId: string): Promise<NeutralSimulationResult | null>;
+  cancel(providerRunId: string): Promise<SimulationProviderStatus>;
+}
+
+export interface ExternalSimulationProviderV2 {
+  readonly id: string;
+  readonly version: string;
+  readonly capabilities: SimulationProviderCapabilitiesV2;
+  submit(request: NeutralSimulationRequestV2, geometry: SimulationGeometryResolverV2): Promise<SimulationProviderSubmission>;
+  getStatus(providerRunId: string): Promise<SimulationProviderStatus>;
+  getResult(providerRunId: string): Promise<NeutralSimulationResultV2 | null>;
+  getFieldDataset(providerRunId: string, datasetId: string, cursor?: string, limit?: number): Promise<NeutralSimulationFieldPageV2>;
   cancel(providerRunId: string): Promise<SimulationProviderStatus>;
 }
 
@@ -692,6 +808,34 @@ export interface SimulationDesignCriteria {
   maximumVonMisesStressMPa?: number;
   maximumDisplacementMm?: number;
   minimumFactorOfSafety?: number;
+}
+
+/** Browser/MCP preparation shape for an explicit SIM-4A multi-domain study.
+ * Assembly proximity and mates are deliberately absent: every occurrence,
+ * material assignment and FACE binding must be named by the caller. */
+export interface PrepareNeutralSimulationInputV2 {
+  schema: 'tunacad-neutral-simulation-preparation/2.0';
+  studyId: string;
+  name: string;
+  analysisType: 'linear_static';
+  domains: Array<{
+    domainId: string;
+    partId: string;
+    bodyId: string;
+    occurrenceId: string;
+    materialId: string;
+    volumeRegionId: string;
+  }>;
+  referenceBindings: Array<{
+    semanticReferenceId: string;
+    domainId: string;
+    role: 'load' | 'constraint' | 'interaction';
+  }>;
+  materials: NeutralSimulationMaterial[];
+  loads: NeutralSimulationLoadV2[];
+  constraints: NeutralSimulationConstraintV2[];
+  interactions: NeutralSimulationInteractionV2[];
+  mesh: NeutralMeshRequest;
 }
 
 export type NeutralMeshConvergenceLevelName = 'coarse' | 'medium' | 'fine';
