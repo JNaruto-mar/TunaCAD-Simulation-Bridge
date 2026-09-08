@@ -277,13 +277,15 @@ export interface NeutralMaterialAssignmentV2 {
 export type NeutralSimulationLoadV2 =
   | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3; coordinateSystem: 'analysis' }
   | { id: string; name: string; type: 'pressure'; semanticReferenceIds: string[]; pressureMPa: number }
-  | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3; coordinateSystem: 'analysis' };
+  | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3; coordinateSystem: 'analysis' }
+  | { id: string; name: string; type: 'remote_force'; connectorId: string; forceN: NeutralVector3; momentNmm: NeutralVector3; coordinateSystem: 'analysis' };
 
 export type NeutralSimulationConstraintV2 =
   | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
-  | { id: string; name: string; type: 'prescribed_displacement'; semanticReferenceIds: string[]; displacementMm: [number | null, number | null, number | null]; coordinateSystem: 'analysis' };
+  | { id: string; name: string; type: 'prescribed_displacement'; semanticReferenceIds: string[]; displacementMm: [number | null, number | null, number | null]; coordinateSystem: 'analysis' }
+  | { id: string; name: string; type: 'remote_displacement'; connectorId: string; translationMm: [number | null, number | null, number | null]; rotationRad: [number | null, number | null, number | null]; coordinateSystem: 'analysis' };
 
-/** SIM-4B connected behavior is always explicit. Neither variant is separable
+/** SIM-4B connected behavior is always explicit. No variant is separable
  * contact. Frictionless/frictional contact remains a separately
  * capability-gated nonlinear SIM-6 feature. */
 export interface NeutralBondedTieInteractionV2 {
@@ -309,7 +311,19 @@ export interface NeutralSharedTopologyInteractionV2 {
   positionToleranceMm: number;
 }
 
-export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2;
+/** A deliberately named analysis object that rigidly couples one verified FACE
+ * group to a reference point. Loads and supports target the connector ID; the
+ * point is never inferred from assembly proximity or transient mesh nodes. */
+export interface NeutralRigidConnectorInteractionV2 {
+  id: string;
+  name: string;
+  type: 'rigid_connector';
+  semanticReferenceIds: string[];
+  referencePointAnalysisMm: NeutralVector3;
+  coupling: 'rigid_6dof';
+}
+
+export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2;
 
 export interface NeutralSimulationRequestV2 {
   schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
@@ -450,7 +464,18 @@ export interface NeutralSimulationResultV2 {
      * extrema cannot silently collapse multiple domains into one. */
     fieldDatasetIds: string[];
   }>;
-  reactions: Array<NeutralSimulationResult['reactions'][number] & { domainId: string }>;
+  reactions: Array<{
+    constraintId: string;
+    domainId: string;
+    semanticReferenceIds: string[];
+    forceN: NeutralVector3;
+    /** Present only for a remote-displacement constraint. CalculiX reports
+     * the rotation-node resultant in N*mm; direct FACE constraints have no
+     * single trustworthy moment reduction and therefore return null. */
+    momentNmm: NeutralVector3 | null;
+    connectorId: string | null;
+    referencePointAnalysisMm: NeutralVector3 | null;
+  }>;
   criticalRegions: Array<Omit<NeutralSimulationHotspot, 'positionPartLocalMm' | 'mapping'> & {
     domainId: string;
     positionAnalysisMm: NeutralVector3 | null;
@@ -530,7 +555,9 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
     components: readonly ['displacement_magnitude', 'von_mises_stress'];
     topology: 'triangle_soup';
   };
-  study: SimulationProviderCapabilities['study'] & {
+  study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
+    loadTypes: ReadonlyArray<NeutralSimulationLoadV2['type']>;
+    constraintTypes: ReadonlyArray<NeutralSimulationConstraintV2['type']>;
     maximumDomains: number;
     maximumOccurrences: number;
     multiDomain: true;

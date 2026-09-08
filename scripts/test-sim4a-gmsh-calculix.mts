@@ -71,6 +71,17 @@ try {
   assert.ok(sharedModel.nodes.length < tiedModel.nodes.length, 'Shared topology must compact duplicate interface nodes.');
   const sharedDeck = createCalculiXInputDeckV2(sharedRequest, sharedModel);
   assert.doesNotMatch(sharedDeck, /^\*(?:TIE|CONTACT)/gm, 'Conformal shared topology must not emit a solver tie or contact card.');
+  const remoteLoadRequest = createRemoteLoadRequest();
+  const remoteLoadModel = await provider.mesh(remoteLoadRequest, { descriptor: remoteLoadRequest.model, async exportDomain() { return step; } });
+  const remoteLoadDeck = createCalculiXInputDeckV2(remoteLoadRequest, remoteLoadModel);
+  assert.match(remoteLoadDeck, /^\*RIGID BODY, NSET=RIGID_CONNECTOR_001, REF NODE=\d+, ROT NODE=\d+$/m);
+  assert.match(remoteLoadDeck, /^\d+,1,100$/m, 'Remote force must be applied to the generated reference node.');
+  assert.match(remoteLoadDeck, /^\d+,3,250$/m, 'Remote moment must be applied through the generated rotation node.');
+  const remoteSupportRequest = createRemoteSupportRequest();
+  const remoteSupportModel = await provider.mesh(remoteSupportRequest, { descriptor: remoteSupportRequest.model, async exportDomain() { return step; } });
+  const remoteSupportDeck = createCalculiXInputDeckV2(remoteSupportRequest, remoteSupportModel);
+  assert.match(remoteSupportDeck, /^\*NSET, NSET=REACTION_001\n\d+$/m);
+  assert.ok((remoteSupportDeck.match(/^\d+,[123],[123],0$/gm) ?? []).length >= 6, 'A fixed remote support must constrain three reference translations and three reference rotations.');
   const nonconformal = structuredClone(sharedRequest);
   nonconformal.model.domains[1].transformToAnalysis[3] += .01;
   nonconformal.interactions[0].positionToleranceMm = .001;
@@ -117,6 +128,15 @@ try {
   assert.ok(sharedResult.metrics.maximumDisplacementMm! > .00065 && sharedResult.metrics.maximumDisplacementMm! < .0009, 'Shared-topology coupon displacement must follow the series-stiffness trend.');
   assert.ok(Math.abs(sharedResult.metrics.maximumDisplacementMm! - tiedResult.metrics.maximumDisplacementMm!) / tiedResult.metrics.maximumDisplacementMm! < .08,
     'Tie and conformal formulations should agree for the matching linear coupon.');
+  const remoteLoadSubmission = await solver.submit(remoteLoadRequest, remoteLoadModel); const remoteLoadResult = await waitForResult(solver, remoteLoadSubmission.providerRunId);
+  assert.ok(Math.abs(remoteLoadResult.reactions[0].forceN[0] + 100) <= .1, 'Rigid remote force must balance at the fixed support.');
+  assert.ok(remoteLoadResult.metrics.maximumDisplacementMm! > 0, 'Rigid remote force and moment must produce a finite non-zero response.');
+  assert.equal(remoteLoadResult.reactions[0].momentNmm, null, 'A direct FACE support does not claim a normalized moment resultant.');
+  const remoteSupportSubmission = await solver.submit(remoteSupportRequest, remoteSupportModel); const remoteSupportResult = await waitForResult(solver, remoteSupportSubmission.providerRunId);
+  assert.ok(Math.abs(remoteSupportResult.reactions[0].forceN[0] + 100) <= .1, 'Rigid remote support must recover the applied force resultant at its reference point.');
+  assert.deepEqual(remoteSupportResult.reactions[0].semanticReferenceIds, ['connector-support-face']);
+  assert.deepEqual(remoteSupportResult.reactions[0].connectorId, 'support-connector');
+  assert.ok(remoteSupportResult.reactions[0].momentNmm?.every(value => Math.abs(value) <= .1), 'Centered axial loading should recover an approximately zero remote-support moment.');
   const cancelledSubmission = await solver.submit(request, model);
   const cancelled = await solver.cancel(cancelledSubmission.providerRunId);
   assert.equal(cancelled.status, 'cancelled');
@@ -144,6 +164,10 @@ try {
     sharedTopology: { nodeCount: sharedModel.nodes.length, sharedNodeCount: sharedNodes.size,
       maximumDisplacementMm: sharedResult.metrics.maximumDisplacementMm, totalReactionXN: sharedReactionX,
       relativeDisplacementDifferenceFromTie: Math.abs(sharedResult.metrics.maximumDisplacementMm! - tiedResult.metrics.maximumDisplacementMm!) / tiedResult.metrics.maximumDisplacementMm! },
+    rigidConnectors: {
+      remoteLoad: { forceN: [100, 0, 0], momentNmm: [0, 0, 250], supportReactionN: remoteLoadResult.reactions[0].forceN },
+      remoteSupport: { prescribedTranslationMm: [0, 0, 0], prescribedRotationRad: [0, 0, 0], reactionN: remoteSupportResult.reactions[0].forceN, reactionMomentNmm: remoteSupportResult.reactions[0].momentNmm },
+    },
   }, null, 2));
 } finally {
   await rm(directory, { recursive: true, force: true });
@@ -170,6 +194,28 @@ function createSharedTopologyRequest(): NeutralSimulationRequestV2 {
   request.studyId = 'sim4b-shared-topology-coupon'; request.name = 'Explicit conformal two-material coupon';
   request.mesh.globalSizeMm = 20; request.mesh.minimumSizeMm = 5;
   request.interactions = [{ ...request.interactions[0], id: 'shared-interface', name: 'Explicit shared topology', type: 'shared_topology' }];
+  reseal(request); return request;
+}
+
+function createRemoteLoadRequest(): NeutralSimulationRequestV2 {
+  const request = createBondedRequest();
+  request.studyId = 'sim4b-rigid-remote-load'; request.name = 'Rigid remote load point';
+  const connectorReference = { ...structuredClone(request.model.references.find(reference => reference.semanticReferenceId === 'load-aluminum')!), semanticReferenceId: 'connector-load-face', role: 'interaction' as const };
+  request.model.references = request.model.references.filter(reference => reference.semanticReferenceId !== 'load-aluminum');
+  request.model.references.push(connectorReference);
+  request.loads = [{ id: 'remote-load', name: 'Remote force and moment', type: 'remote_force', connectorId: 'load-connector', forceN: [100, 0, 0], momentNmm: [0, 0, 250], coordinateSystem: 'analysis' }];
+  request.interactions.push({ id: 'load-connector', name: 'Rigid end plate', type: 'rigid_connector', semanticReferenceIds: ['connector-load-face'], referencePointAnalysisMm: [80, 5, 5], coupling: 'rigid_6dof' });
+  reseal(request); return request;
+}
+
+function createRemoteSupportRequest(): NeutralSimulationRequestV2 {
+  const request = createBondedRequest();
+  request.studyId = 'sim4b-rigid-remote-support'; request.name = 'Rigid remote support point';
+  const connectorReference = { ...structuredClone(request.model.references.find(reference => reference.semanticReferenceId === 'support-steel')!), semanticReferenceId: 'connector-support-face', role: 'interaction' as const };
+  request.model.references = request.model.references.filter(reference => reference.semanticReferenceId !== 'support-steel');
+  request.model.references.push(connectorReference);
+  request.constraints = [{ id: 'remote-support', name: 'Fixed remote support', type: 'remote_displacement', connectorId: 'support-connector', translationMm: [0, 0, 0], rotationRad: [0, 0, 0], coordinateSystem: 'analysis' }];
+  request.interactions.push({ id: 'support-connector', name: 'Rigid support plate', type: 'rigid_connector', semanticReferenceIds: ['connector-support-face'], referencePointAnalysisMm: [0, 5, 5], coupling: 'rigid_6dof' });
   reseal(request); return request;
 }
 

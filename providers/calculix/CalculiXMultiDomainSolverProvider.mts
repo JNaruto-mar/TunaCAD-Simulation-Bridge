@@ -44,17 +44,17 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
-        materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force', 'pressure', 'gravity'], maximumLoads: 64,
-        maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement'], maximumConstraints: 64,
+        materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force'], maximumLoads: 64,
+        maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
-        multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
+        multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
       },
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
       durableReferenceMapping: 'supported', authority: 'engineering',
       qualification: {
         status: 'proof_of_concept', engineeringUsePermitted: false,
-        statement: 'Experimental SIM-4A CalculiX multi-domain solver with asynchronous lifecycle and per-domain normalized extrema.',
-        limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'Explicit bonded ties and shared topology are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain'],
+        statement: 'Experimental SIM-4B CalculiX multi-domain solver with explicit ties, shared topology, and rigid remote connectors.',
+        limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'Explicit bonded ties, shared topology, and rigid connectors are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim4a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
@@ -129,7 +129,8 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     try {
       const contents = await readUtf8FileBounded(join(run.directory, 'tunacadv2.dat'));
       if (isStopped(run)) return;
-      const parsed = parseCalculiXDatV2(contents, run.model, run.request.constraints.map((_value, index) => reactionName(index)), run.request.loads.some(load => load.type === 'gravity'));
+      const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
+      const parsed = parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity'));
       const normalized = normalize(run, parsed, this.id, this.version, this.runtimeVersion); validateNeutralSimulationResultV2(normalized.result, run.request);
       if (isStopped(run)) return;
       run.result = normalized.result; run.datasets = normalized.datasets;
@@ -178,11 +179,41 @@ export function parseCalculiXDatV2(text: string, model: NeutralFemModelV2, react
 }
 
 function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
-  const mesh = asV1Mesh(run.model); const constraintSets = buildConstraintSets(run.request.constraints as unknown as NeutralSimulationConstraint[], mesh);
+  const mesh = asV1Mesh(run.model);
+  const directConstraints = run.request.constraints.filter(constraint => constraint.type !== 'remote_displacement');
+  const directSets = buildConstraintSets(directConstraints as NeutralSimulationConstraint[], mesh);
+  const directSetById = new Map(directSets.map(set => [set.constraint.id, set]));
   const referenceDomains = new Map(run.request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId])); const applied = combinedLoads(run.request, run.model, mesh);
-  const reactions = run.request.constraints.map((constraint, index) => ({ constraintId: constraint.id, domainId: referenceDomains.get(constraint.semanticReferenceIds[0])!, semanticReferenceIds: [...constraint.semanticReferenceIds], forceN: subtract(parsed.reactions[reactionName(index)], sumAt(applied, constraintSets[index].reactionNodes)) }));
-  const appliedForce = sumMap(applied); const reactionForce = reactions.reduce<NeutralVector3>((sum, item) => add(sum, item.forceN), [0, 0, 0]); const residual = Math.hypot(...add(appliedForce, reactionForce));
+  const connectors = new Map(run.request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
+  const reactions = run.request.constraints.map((constraint, index) => {
+    if (constraint.type === 'remote_displacement') {
+      const connector = connectors.get(constraint.connectorId)!;
+      return {
+        constraintId: constraint.id, domainId: referenceDomains.get(connector.semanticReferenceIds[0])!, semanticReferenceIds: [...connector.semanticReferenceIds],
+        forceN: parsed.reactions[reactionName(index)], momentNmm: parsed.reactions[reactionMomentName(index)], connectorId: connector.id,
+        referencePointAnalysisMm: [...connector.referencePointAnalysisMm] as NeutralVector3,
+      };
+    }
+    return {
+      constraintId: constraint.id, domainId: referenceDomains.get(constraint.semanticReferenceIds[0])!, semanticReferenceIds: [...constraint.semanticReferenceIds],
+      forceN: subtract(parsed.reactions[reactionName(index)], sumAt(applied, directSetById.get(constraint.id)!.reactionNodes)),
+      momentNmm: null, connectorId: null, referencePointAnalysisMm: null,
+    };
+  });
+  const remoteAppliedForce = run.request.loads.filter(load => load.type === 'remote_force').reduce<NeutralVector3>((sum, load) => add(sum, load.forceN), [0, 0, 0]);
+  const appliedForce = add(sumMap(applied), remoteAppliedForce); const reactionForce = reactions.reduce<NeutralVector3>((sum, item) => add(sum, item.forceN), [0, 0, 0]); const residual = Math.hypot(...add(appliedForce, reactionForce));
   if (residual > Math.max(1e-6, Math.hypot(...appliedForce) * 1e-4)) throw new Error(`CalculiX v2 reaction/load equilibrium residual is ${residual} N.`);
+  if (run.request.constraints.every(constraint => constraint.type === 'remote_displacement')) {
+    const appliedMoment = [...applied.entries()].reduce<NeutralVector3>((sum, [node, force]) => add(sum, cross(run.model.nodes[node], force)), [0, 0, 0]);
+    for (const load of run.request.loads) if (load.type === 'remote_force') {
+      const connector = connectors.get(load.connectorId)!;
+      const contribution = add(cross(connector.referencePointAnalysisMm, load.forceN), load.momentNmm);
+      appliedMoment[0] += contribution[0]; appliedMoment[1] += contribution[1]; appliedMoment[2] += contribution[2];
+    }
+    const reactionMoment = reactions.reduce<NeutralVector3>((sum, reaction) => add(sum, add(cross(reaction.referencePointAnalysisMm!, reaction.forceN), reaction.momentNmm!)), [0, 0, 0]);
+    const momentResidual = Math.hypot(...add(appliedMoment, reactionMoment));
+    if (momentResidual > Math.max(1e-4, Math.hypot(...appliedMoment) * 1e-4)) throw new Error(`CalculiX v2 reaction/load moment-equilibrium residual is ${momentResidual} N*mm.`);
+  }
   const materialFor = (domainId: string) => { const assignment = run.request.materialAssignments.find(item => item.domainId === domainId)!; return run.request.materials.find(item => item.id === assignment.materialId)!; };
   const perDomain = run.model.domainRegions.map(domain => { const output = parsed.byDomain.get(domain.domainId)!; const material = materialFor(domain.domainId); return { domainId: domain.domainId, metrics: {
     maximumVonMisesStressMPa: output.maximumVonMisesStressMPa, maximumDisplacementMm: output.maximumDisplacementMm,
@@ -194,7 +225,7 @@ function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adap
   const factors = perDomain.map(domain => domain.metrics.minimumFactorOfSafety).filter((value): value is number => value !== null); const completedAt = new Date().toISOString();
   const result: NeutralSimulationResultV2 = { schema: 'tunacad-neutral-simulation-result/2.0', studyId: run.request.studyId, jobId: run.providerRunId, requestDigest: run.request.requestDigest, projectRevision: run.request.model.projectRevision, modelDigest: run.request.model.modelDigest,
     analysisType: 'linear_static', status: 'succeeded', authority: 'engineering', metrics: { maximumVonMisesStressMPa: Math.max(...perDomain.map(domain => domain.metrics.maximumVonMisesStressMPa)), maximumDisplacementMm: Math.max(...perDomain.map(domain => domain.metrics.maximumDisplacementMm)), minimumFactorOfSafety: factors.length ? Math.min(...factors) : null },
-    perDomain, reactions, criticalRegions, failedConstraints: [], warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-4A result; qualified-engineer review is mandatory.', severity: 'warning' }],
+    perDomain, reactions, criticalRegions, failedConstraints: [], warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-4B result; qualified-engineer review is mandatory.', severity: 'warning' }],
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true }, suggestedEngineeringIssues: ['Verify every domain assignment and independently constrained disconnected domain.'],
     provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId, submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
     review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental SIM-4A result. Not certified.` }, mutation: { occurred: false, projectRevisionBefore: run.request.model.projectRevision, projectRevisionAfter: run.request.model.projectRevision } };
@@ -277,13 +308,15 @@ function combinedLoads(request: NeutralSimulationRequestV2, model: NeutralFemMod
   for (const load of request.loads) if (load.type === 'gravity') {
     for (const domain of model.domainRegions) { const assignment = request.materialAssignments.find(item => item.domainId === domain.domainId)!; const material = request.materials.find(item => item.id === assignment.materialId)!;
       addMap(result, gravityNodalLoads({ ...mesh, volumeElements: { connectivity: domain.elementIndices.map(index => mesh.volumeElements.connectivity[index]), regionIds: domain.elementIndices.map(() => domain.volumeRegionId) } }, material.densityKgM3!, load.accelerationMmPerS2)); }
-  } else { const regions = load.semanticReferenceIds.map(id => model.boundaryRegions.find(region => region.semanticReferenceIds.includes(id))!); const facets = [...new Set(regions.flatMap(region => region.facetIndices))]; addMap(result, load.type === 'surface_force' ? consistentSurfaceLoads(mesh, facets, load.forceN) : pressureSurfaceLoads(mesh, facets, load.pressureMPa)); }
+  } else if (load.type !== 'remote_force') { const regions = load.semanticReferenceIds.map(id => model.boundaryRegions.find(region => region.semanticReferenceIds.includes(id))!); const facets = [...new Set(regions.flatMap(region => region.facetIndices))]; addMap(result, load.type === 'surface_force' ? consistentSurfaceLoads(mesh, facets, load.forceN) : pressureSurfaceLoads(mesh, facets, load.pressureMPa)); }
   return result;
 }
-function requireSingleDomainConstraints(request: NeutralSimulationRequestV2) { const owners = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId])); for (const constraint of request.constraints) if (new Set(constraint.semanticReferenceIds.map(id => owners.get(id))).size !== 1) throw error('SIMULATION_PROVIDER_CAPABILITY_MISMATCH', `Constraint "${constraint.id}" spans multiple domains.`); }
+function requireSingleDomainConstraints(request: NeutralSimulationRequestV2) { const owners = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId])); const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction])); for (const constraint of request.constraints) { const ids = constraint.type === 'remote_displacement' ? connectors.get(constraint.connectorId)?.semanticReferenceIds ?? [] : constraint.semanticReferenceIds; if (new Set(ids.map(id => owners.get(id))).size !== 1) throw error('SIMULATION_PROVIDER_CAPABILITY_MISMATCH', `Constraint "${constraint.id}" spans multiple domains.`); } }
 function hotspot(domainId: string, kind: 'stress' | 'displacement', value: number, unit: 'MPa' | 'mm', positionAnalysisMm: NeutralVector3): NeutralSimulationResultV2['criticalRegions'][number] { return { id: `${domainId}:${kind}-maximum`, domainId, kind, severity: 'warning', value, unit, positionAnalysisMm, semanticReferenceIds: [], featureIds: [], description: `Maximum CalculiX ${kind} for this domain.`, inspect: [domainId], mapping: 'analysis_location' }; }
 function reactionName(index: number) { return `REACTION_${String(index + 1).padStart(3, '0')}`; }
+function reactionMomentName(index: number) { return `REACTION_MOMENT_${String(index + 1).padStart(3, '0')}`; }
 function add(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function cross(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]; }
 function subtract(a: NeutralVector3, b: NeutralVector3): NeutralVector3 { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
 function addMap(target: Map<number, NeutralVector3>, source: Map<number, NeutralVector3>) { for (const [node, force] of source) target.set(node, add(target.get(node) ?? [0, 0, 0], force)); }
 function sumMap(loads: Map<number, NeutralVector3>) { return [...loads.values()].reduce<NeutralVector3>(add, [0, 0, 0]); }

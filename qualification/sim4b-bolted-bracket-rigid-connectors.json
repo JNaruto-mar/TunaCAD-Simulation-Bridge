@@ -1,0 +1,41 @@
+{
+  "schema": "tunacad-simulation-benchmark-fixture/1.0",
+  "fixtureId": "sim4b-bolted-bracket-rigid-connectors",
+  "status": "experimental",
+  "description": "Two-domain L-bracket surrogate with a bonded web, a rigid bolt-group support point, and an eccentric rigid remote load point.",
+  "geometry": {
+    "baseSizeMm": [40, 20, 5],
+    "webSizeMm": [5, 20, 40],
+    "webTranslationAnalysisMm": [35, 0, 5]
+  },
+  "material": {
+    "youngsModulusMPa": 210000,
+    "poissonRatio": 0.3,
+    "densityKgM3": 7850
+  },
+  "load": {
+    "referencePointAnalysisMm": [37.5, 10, 45],
+    "forceN": [1000, 0, 0],
+    "momentNmm": [0, 0, 0]
+  },
+  "support": {
+    "referencePointAnalysisMm": [20, 10, 0],
+    "translationMm": [0, 0, 0],
+    "rotationRad": [0, 0, 0]
+  },
+  "expected": {
+    "supportReactionForceN": [-1000, 0, 0],
+    "supportReactionMomentNmm": [0, -45000, 0],
+    "forceAbsoluteToleranceN": 0.5,
+    "momentAbsoluteToleranceNmm": 10,
+    "minimumNonzeroDisplacementMm": 0.000001
+  },
+  "assumptions": [
+    "small-displacement linear statics",
+    "isotropic linear elasticity",
+    "perfect bonded web-to-base interface",
+    "six-degree-of-freedom rigid bolt-group and load-point couplings",
+    "engineering review required"
+  ],
+  "command": "npm run test:sim4b-bracket"
+}

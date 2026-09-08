@@ -180,13 +180,35 @@ automated lanes as passed, but independent engineering review is still pending,
 so the pipeline remains `proof_of_concept` and engineering use is not permitted.
 The reviewer packet is `qualification/SIM4A_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
-SIM-4B supports explicitly declared nonconformal `bonded_tie` and conformal
-`shared_topology` interactions. A tie emits named CalculiX element surfaces and
+SIM-4B supports explicitly declared nonconformal `bonded_tie`, conformal
+`shared_topology`, and six-degree-of-freedom `rigid_connector` interactions. A
+tie emits named CalculiX element surfaces and
 `*TIE,ADJUST=NO`. Shared topology compacts duplicate interface nodes and emits
 no tie/contact card, but fails closed if independently generated surface meshes
 do not match exactly within the declared tolerance. Real two-material series
-coupons compare both load paths. Separable or frictional contact is not treated
-as either linear connection and remains unsupported until SIM-6.
+coupons compare both load paths. A rigid connector couples one explicit FACE
+group in one domain to a frozen analysis-space point using generated CalculiX
+reference/rotation nodes and `*RIGID BODY`. A `remote_force` can apply force in
+N and moment in N·mm; a `remote_displacement` independently prescribes three
+translations in mm and three rotations in radians, with `null` leaving a degree
+of freedom unconstrained. Unknown, unused, multiply supported, overlapping, or
+simultaneously loaded-and-supported connectors fail closed. Real provider
+fixtures cover remote loading and remote support with global force balance.
+Remote-support results carry force in N and moment in N·mm together with the
+exact connector ID and reference point; direct FACE supports deliberately
+return a null moment because they have no unique reduction point. When every
+support is remote, normalization verifies both global force and moment
+equilibrium. Separable or frictional contact is not treated as a linear
+connection and remains unsupported until SIM-6.
+
+The experimental bolted-bracket qualification fixture is defined independently
+in `qualification/sim4b-bolted-bracket-rigid-connectors.json`. It meshes a
+two-domain bonded L-bracket, applies an eccentric load through one rigid
+connector, and supports the base through a second connector representing a
+bolt group. The expected support resultants are `[-1000, 0, 0]` N and
+`[0, -45000, 0]` N·mm. The matching SIM-4B matrix remains proof-of-concept
+until independent engineering review. The reviewer packet is
+`qualification/SIM4B_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
 ```powershell
 npm run test:sim4a-contracts
@@ -195,6 +217,8 @@ $env:TUNACAD_CALCULIX_EXECUTABLE = 'C:\path\to\ccx.exe'
 npm run test:sim4a-providers
 npm run test:sim4a-matrix
 npm run test:sim4b-connections
+npm run test:sim4b-bracket
+npm run test:sim4b-matrix
 ```
 
 ## Repository ownership

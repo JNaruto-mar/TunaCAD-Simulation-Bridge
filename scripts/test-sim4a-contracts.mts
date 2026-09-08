@@ -102,6 +102,35 @@ const inferredInteraction: any = structuredClone(request);
 inferredInteraction.interactions = [{ type: 'bonded', source: 'domain-a', target: 'domain-b' }];
 expectCode('BRIDGE_V2_REQUEST_INVALID', () => validateNeutralSimulationRequestV2(inferredInteraction, now));
 
+const rigidRemoteLoad = reseal(candidate => {
+  candidate.model.references[1].role = 'interaction';
+  candidate.loads = [{ id: 'remote-load', name: 'Remote force and moment', type: 'remote_force', connectorId: 'connector-b', forceN: [1000, 0, 0], momentNmm: [0, 0, 2500], coordinateSystem: 'analysis' }];
+  candidate.interactions = [{ id: 'connector-b', name: 'Rigid load plate', type: 'rigid_connector', semanticReferenceIds: ['load-face'], referencePointAnalysisMm: [35, 5, 5], coupling: 'rigid_6dof' }];
+});
+assert.deepEqual(validateNeutralSimulationRequestV2(rigidRemoteLoad, now), rigidRemoteLoad);
+assert.deepEqual(admitV2SimulationRequest(rigidRemoteLoad, {
+  interfaceVersion: '2.0', analysisTypes: ['linear_static'], normalizedResults: true, asynchronous: true, cancellation: true,
+  fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress'], topology: 'triangle_soup' },
+  study: { multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, maximumDomains: 8, maximumOccurrences: 8,
+    maximumParts: 8, maximumBodies: 8, maximumMaterials: 8, maximumReferenceBindings: 32, materialModels: ['isotropic_linear_elastic'],
+    loadTypes: ['remote_force'], maximumLoads: 8, maximumReferencesPerLoad: 8, constraintTypes: ['fixed'], maximumConstraints: 8,
+    maximumReferencesPerConstraint: 8, contactModes: ['none'], interactionTypes: ['rigid_connector'], maximumInteractions: 8, maximumReferencesPerInteractionSide: 8 },
+} as any), { accepted: true });
+expectCode('BRIDGE_V2_CONNECTOR_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => {
+  candidate.model.references[1].role = 'interaction';
+  candidate.loads = [{ id: 'remote-load', name: 'Remote force', type: 'remote_force', connectorId: 'missing', forceN: [1, 0, 0], momentNmm: [0, 0, 0], coordinateSystem: 'analysis' }];
+  candidate.interactions = [{ id: 'connector-b', name: 'Rigid load plate', type: 'rigid_connector', semanticReferenceIds: ['load-face'], referencePointAnalysisMm: [35, 5, 5], coupling: 'rigid_6dof' }];
+}), now));
+expectCode('BRIDGE_V2_CONNECTOR_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => {
+  candidate.model.references.push({ ...structuredClone(candidate.model.references[1]), semanticReferenceId: 'unused-face', role: 'interaction' });
+  candidate.interactions = [{ id: 'unused', name: 'Unused connector', type: 'rigid_connector', semanticReferenceIds: ['unused-face'], referencePointAnalysisMm: [35, 5, 5], coupling: 'rigid_6dof' }];
+}), now));
+expectCode('BRIDGE_V2_CONNECTOR_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => {
+  candidate.model.references[1].role = 'interaction';
+  candidate.model.references.push({ ...structuredClone(candidate.model.references[1]), role: 'load' });
+  candidate.interactions = [{ id: 'connector-b', name: 'Rigid load plate', type: 'rigid_connector', semanticReferenceIds: ['load-face'], referencePointAnalysisMm: [35, 5, 5], coupling: 'rigid_6dof' }];
+}), now));
+
 const nodes = [
   [0, 0, 0], [10, 0, 0], [0, 10, 0], [0, 0, 10], [5, 0, 0], [5, 5, 0], [0, 5, 0], [0, 0, 5], [0, 5, 5], [5, 0, 5],
   [25, 0, 0], [35, 0, 0], [25, 10, 0], [25, 0, 10], [30, 0, 0], [30, 5, 0], [25, 5, 0], [25, 0, 5], [25, 5, 5], [30, 0, 5],
@@ -145,7 +174,7 @@ const result = {
     { domainId: 'domain-a', metrics: { maximumVonMisesStressMPa: 12, maximumDisplacementMm: 0.02, minimumFactorOfSafety: null }, fieldDatasetIds: ['stress-a', 'displacement-a'] },
     { domainId: 'domain-b', metrics: { maximumVonMisesStressMPa: 8, maximumDisplacementMm: 0.1, minimumFactorOfSafety: null }, fieldDatasetIds: ['stress-b', 'displacement-b'] },
   ],
-  reactions: [{ constraintId: 'support', forceN: [-1000, 0, 0], semanticReferenceIds: ['support-face'], domainId: 'domain-a' }],
+  reactions: [{ constraintId: 'support', forceN: [-1000, 0, 0], momentNmm: null, connectorId: null, referencePointAnalysisMm: null, semanticReferenceIds: ['support-face'], domainId: 'domain-a' }],
   criticalRegions: [{ id: 'hotspot-b', kind: 'stress', severity: 'warning', value: 8, unit: 'MPa', positionAnalysisMm: [30, 5, 5], semanticReferenceIds: ['load-face'], featureIds: ['extrude'], description: 'Fixture result mapping', inspect: ['domain-b'], mapping: 'analysis_location', domainId: 'domain-b' }],
   failedConstraints: [], warnings: [{ code: 'SIM4A_EXPERIMENTAL', message: 'Contract fixture only.', severity: 'warning' }],
   convergence: { status: 'converged', iterations: 1, residual: 0, providerDeclared: true }, suggestedEngineeringIssues: [],
@@ -154,6 +183,19 @@ const result = {
   mutation: { occurred: false, projectRevisionBefore: request.model.projectRevision, projectRevisionAfter: request.model.projectRevision },
 } as const;
 assert.deepEqual(validateNeutralSimulationResultV2(result, request), result);
+const rigidRemoteSupport = reseal(candidate => {
+  candidate.model.references[0].role = 'interaction';
+  candidate.constraints = [{ id: 'remote-support', name: 'Remote support', type: 'remote_displacement', connectorId: 'support-connector', translationMm: [0, 0, 0], rotationRad: [0, 0, 0], coordinateSystem: 'analysis' }];
+  candidate.interactions = [{ id: 'support-connector', name: 'Rigid support plate', type: 'rigid_connector', semanticReferenceIds: ['support-face'], referencePointAnalysisMm: [0, 5, 5], coupling: 'rigid_6dof' }];
+});
+const rigidReactionResult: any = structuredClone(result);
+rigidReactionResult.studyId = rigidRemoteSupport.studyId;
+rigidReactionResult.requestDigest = rigidRemoteSupport.requestDigest;
+rigidReactionResult.modelDigest = rigidRemoteSupport.model.modelDigest;
+rigidReactionResult.reactions = [{ constraintId: 'remote-support', forceN: [-1000, 0, 0], momentNmm: [0, -5000, 0], connectorId: 'support-connector', referencePointAnalysisMm: [0, 5, 5], semanticReferenceIds: ['support-face'], domainId: 'domain-a' }];
+assert.deepEqual(validateNeutralSimulationResultV2(rigidReactionResult, rigidRemoteSupport), rigidReactionResult);
+rigidReactionResult.reactions[0].momentNmm = null;
+expectCode('BRIDGE_V2_RESULT_REACTION_INVALID', () => validateNeutralSimulationResultV2(rigidReactionResult, rigidRemoteSupport));
 const duplicateResultDomain: any = structuredClone(result);
 duplicateResultDomain.perDomain[1].domainId = 'domain-a';
 expectCode('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID', () => validateNeutralSimulationResultV2(duplicateResultDomain, request));
@@ -164,4 +206,4 @@ const falselyPermitted: any = structuredClone(result);
 falselyPermitted.review.engineeringUsePermitted = true;
 expectCode('BRIDGE_V2_RESULT_AUTHORITY_INVALID', () => validateNeutralSimulationResultV2(falselyPermitted, request));
 
-console.log('SIM-4A v2 contracts preserve repeated-occurrence identity, rigid transforms, per-domain materials, digests, and multi-volume ownership while v1 providers fail closed.');
+console.log('V2 contracts preserve SIM-4A ownership and fail closed for SIM-4B rigid connector identity, use, domain ownership, and FACE overlap.');

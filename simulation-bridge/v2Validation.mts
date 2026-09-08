@@ -16,6 +16,7 @@ const finite = z.number().finite();
 const positive = finite.positive();
 const nonNegative = finite.nonnegative();
 const vector = z.tuple([finite, finite, finite]);
+const analysisPoint = z.tuple([finite.min(-1e9).max(1e9), finite.min(-1e9).max(1e9), finite.min(-1e9).max(1e9)]);
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const uniqueReferences = z.array(text).min(1).max(32)
   .refine(ids => new Set(ids).size === ids.length, 'References within one entry must be unique.');
@@ -85,6 +86,13 @@ const requestSchema = z.object({
     z.object({ id: text, name: text, type: z.literal('pressure'), semanticReferenceIds: uniqueReferences, pressureMPa: finite.refine(value => value !== 0 && Math.abs(value) <= 1e6) }).strict(),
     z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: vector, coordinateSystem: z.literal('analysis') }).strict()
       .refine(value => Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) > 1e-9 && Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) <= 1e9),
+    z.object({
+      id: text, name: text, type: z.literal('remote_force'), connectorId: text,
+      forceN: vector, momentNmm: vector, coordinateSystem: z.literal('analysis'),
+    }).strict().refine(value => (Math.hypot(...(value.forceN as [number, number, number])) > 1e-14
+      || Math.hypot(...(value.momentNmm as [number, number, number])) > 1e-14)
+      && Math.hypot(...(value.forceN as [number, number, number])) <= 1e12
+      && Math.hypot(...(value.momentNmm as [number, number, number])) <= 1e15),
   ])).max(64),
   constraints: z.array(z.discriminatedUnion('type', [
     z.object({ id: text, name: text, type: z.literal('fixed'), semanticReferenceIds: uniqueReferences }).strict(),
@@ -94,6 +102,12 @@ const requestSchema = z.object({
         .refine(value => value.some(component => component !== null)),
       coordinateSystem: z.literal('analysis'),
     }).strict(),
+    z.object({
+      id: text, name: text, type: z.literal('remote_displacement'), connectorId: text,
+      translationMm: z.tuple([finite.min(-1e6).max(1e6).nullable(), finite.min(-1e6).max(1e6).nullable(), finite.min(-1e6).max(1e6).nullable()]),
+      rotationRad: z.tuple([finite.min(-1).max(1).nullable(), finite.min(-1).max(1).nullable(), finite.min(-1).max(1).nullable()]),
+      coordinateSystem: z.literal('analysis'),
+    }).strict().refine(value => [...value.translationMm, ...value.rotationRad].some(component => component !== null)),
   ])).min(1).max(64),
   interactions: z.array(z.discriminatedUnion('type', [
     z.object({
@@ -105,6 +119,10 @@ const requestSchema = z.object({
       id: text, name: text, type: z.literal('shared_topology'),
       secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
       adjustment: z.literal('none'), positionToleranceMm: positive.max(1000),
+    }).strict(),
+    z.object({
+      id: text, name: text, type: z.literal('rigid_connector'), semanticReferenceIds: uniqueReferences,
+      referencePointAnalysisMm: analysisPoint, coupling: z.literal('rigid_6dof'),
     }).strict(),
   ])).max(32),
   mesh: meshRequest,
@@ -197,22 +215,44 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   }
   const required = [
     ...request.loads.flatMap(load => 'semanticReferenceIds' in load ? load.semanticReferenceIds.map(id => [`load:${id}`, id] as const) : []),
-    ...request.constraints.flatMap(constraint => constraint.semanticReferenceIds.map(id => [`constraint:${id}`, id] as const)),
-    ...request.interactions.flatMap(interaction => [...interaction.secondaryReferenceIds, ...interaction.primaryReferenceIds].map(id => [`interaction:${id}`, id] as const)),
+    ...request.constraints.flatMap(constraint => 'semanticReferenceIds' in constraint ? constraint.semanticReferenceIds.map(id => [`constraint:${id}`, id] as const) : []),
+    ...request.interactions.flatMap(interaction => (interaction.type === 'rigid_connector'
+      ? interaction.semanticReferenceIds
+      : [...interaction.secondaryReferenceIds, ...interaction.primaryReferenceIds]).map(id => [`interaction:${id}`, id] as const)),
   ];
   if (required.length !== references.size || required.some(([key]) => !references.has(key))) fail('BRIDGE_V2_REFERENCE_INVALID');
   const loaded = new Set(required.filter(([key]) => key.startsWith('load:')).map(([, id]) => id));
   if (required.some(([key, id]) => key.startsWith('constraint:') && loaded.has(id))) fail('BRIDGE_V2_REFERENCE_INVALID');
   for (const interaction of request.interactions) {
+    if (interaction.type === 'rigid_connector') {
+      const connectorDomains = new Set(interaction.semanticReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
+      if (connectorDomains.size !== 1 || connectorDomains.has(undefined)) fail('BRIDGE_V2_INTERACTION_INVALID');
+      continue;
+    }
     const secondaryDomains = new Set(interaction.secondaryReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
     const primaryDomains = new Set(interaction.primaryReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
     if (secondaryDomains.size !== 1 || primaryDomains.size !== 1 || [...secondaryDomains][0] === [...primaryDomains][0]
       || interaction.secondaryReferenceIds.some(id => interaction.primaryReferenceIds.includes(id))) fail('BRIDGE_V2_INTERACTION_INVALID');
   }
+  const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
+  const remoteLoads = request.loads.filter(load => load.type === 'remote_force');
+  const remoteConstraints = request.constraints.filter(constraint => constraint.type === 'remote_displacement');
+  if ([...remoteLoads, ...remoteConstraints].some(entry => !connectors.has(entry.connectorId))
+    || !unique(remoteConstraints.map(entry => entry.connectorId))
+    || remoteLoads.some(load => remoteConstraints.some(constraint => constraint.connectorId === load.connectorId))
+    || [...connectors.keys()].some(connectorId => !remoteLoads.some(load => load.connectorId === connectorId)
+      && !remoteConstraints.some(constraint => constraint.connectorId === connectorId))) fail('BRIDGE_V2_CONNECTOR_INVALID');
+  const directReferenceIds = new Set([
+    ...request.loads.flatMap(load => 'semanticReferenceIds' in load ? load.semanticReferenceIds : []),
+    ...request.constraints.flatMap(constraint => 'semanticReferenceIds' in constraint ? constraint.semanticReferenceIds : []),
+  ]);
+  if ([...connectors.values()].some(connector => connector.semanticReferenceIds.some(id => directReferenceIds.has(id)))) fail('BRIDGE_V2_CONNECTOR_INVALID');
   const entryIds = [...request.loads, ...request.constraints, ...request.interactions].map(entry => entry.id);
   if (!unique(entryIds)) fail('BRIDGE_V2_REQUEST_INVALID');
-  if (!request.loads.length && !request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
-    && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))) fail('BRIDGE_V2_REQUEST_INVALID');
+  if (!request.loads.length && !request.constraints.some(constraint => (constraint.type === 'prescribed_displacement'
+    && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))
+    || (constraint.type === 'remote_displacement' && [...constraint.translationMm, ...constraint.rotationRad]
+      .some(component => component !== null && Math.abs(component) > 1e-14)))) fail('BRIDGE_V2_REQUEST_INVALID');
   const maximumSize = Math.max(...domains.flatMap(domain => domain.shape.boundingBoxOwnerLocalMm.size));
   if (request.mesh.globalSizeMm < maximumSize / 200
     || (request.mesh.minimumSizeMm !== undefined && request.mesh.minimumSizeMm < request.mesh.globalSizeMm / 20)) fail('BRIDGE_V2_MESH_BUDGET_INVALID');
@@ -247,13 +287,16 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
       || ('semanticReferenceIds' in load && load.semanticReferenceIds.length > profile.study.maximumReferencesPerLoad))
     || request.constraints.length > profile.study.maximumConstraints
     || request.constraints.some(constraint => !profile.study.constraintTypes.includes(constraint.type)
-      || constraint.semanticReferenceIds.length > profile.study.maximumReferencesPerConstraint)
+      || ('semanticReferenceIds' in constraint && constraint.semanticReferenceIds.length > profile.study.maximumReferencesPerConstraint))
     || !profile.study.contactModes.includes('none')
-    || request.constraints.some(constraint => new Set(constraint.semanticReferenceIds.map(referenceId => referenceDomains.get(referenceId))).size !== 1)
+    || request.constraints.some(constraint => 'semanticReferenceIds' in constraint
+      && new Set(constraint.semanticReferenceIds.map(referenceId => referenceDomains.get(referenceId))).size !== 1)
     || request.interactions.length > profile.study.maximumInteractions
     || request.interactions.some(interaction => !profile.study.interactionTypes.includes(interaction.type)
-      || interaction.primaryReferenceIds.length > profile.study.maximumReferencesPerInteractionSide
-      || interaction.secondaryReferenceIds.length > profile.study.maximumReferencesPerInteractionSide)) {
+      || (interaction.type === 'rigid_connector'
+        ? interaction.semanticReferenceIds.length > profile.study.maximumReferencesPerInteractionSide
+        : interaction.primaryReferenceIds.length > profile.study.maximumReferencesPerInteractionSide
+          || interaction.secondaryReferenceIds.length > profile.study.maximumReferencesPerInteractionSide))) {
     return { accepted: false, code: 'PROVIDER_V2_CAPABILITY_UNSUPPORTED', message: 'The provider does not exactly support this SIM-4A study envelope.' };
   }
   return { accepted: true };
@@ -371,7 +414,10 @@ const resultSchema = z.object({
   projectRevision: text, modelDigest: hash, analysisType: z.literal('linear_static'), status: z.enum(['succeeded', 'failed', 'cancelled']),
   authority: z.enum(['engineering', 'architecture_mock']), metrics: resultMetrics,
   perDomain: z.array(z.object({ domainId: text, metrics: resultMetrics, fieldDatasetIds: z.array(text).max(64) }).strict()).min(2).max(128),
-  reactions: z.array(z.object({ constraintId: text, forceN: vector, semanticReferenceIds: z.array(text), domainId: text }).strict()).max(512),
+  reactions: z.array(z.object({
+    constraintId: text, forceN: vector, momentNmm: vector.nullable(), connectorId: text.nullable(),
+    referencePointAnalysisMm: analysisPoint.nullable(), semanticReferenceIds: z.array(text), domainId: text,
+  }).strict()).max(512),
   criticalRegions: z.array(z.object({
     id: text, kind: z.enum(['stress', 'displacement', 'constraint', 'mesh', 'provider']), severity: z.enum(['info', 'warning', 'critical']),
     value: finite.nullable(), unit: z.enum(['MPa', 'mm', 'N']).nullable(), positionAnalysisMm: vector.nullable(), semanticReferenceIds: z.array(text),
@@ -405,6 +451,21 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
   const datasetIds = result.perDomain.flatMap(domain => domain.fieldDatasetIds);
   if (!unique(datasetIds) || result.reactions.some(reaction => !domainIds.includes(reaction.domainId))
     || result.criticalRegions.some(region => !domainIds.includes(region.domainId))) fail('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID');
+  const constraints = new Map(request.constraints.map(constraint => [constraint.id, constraint]));
+  const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
+  const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
+  if (result.reactions.length !== constraints.size || !unique(result.reactions.map(reaction => reaction.constraintId))
+    || result.reactions.some(reaction => {
+      const constraint = constraints.get(reaction.constraintId);
+      if (!constraint) return true;
+      const expectedReferences = constraint.type === 'remote_displacement' ? connectors.get(constraint.connectorId)?.semanticReferenceIds ?? [] : constraint.semanticReferenceIds;
+      if (reaction.semanticReferenceIds.length !== expectedReferences.length || reaction.semanticReferenceIds.some(referenceId => !expectedReferences.includes(referenceId) || referenceDomains.get(referenceId) !== reaction.domainId)) return true;
+      if (constraint.type !== 'remote_displacement') return reaction.momentNmm !== null || reaction.connectorId !== null || reaction.referencePointAnalysisMm !== null;
+      const connector = connectors.get(constraint.connectorId);
+      return !connector || reaction.connectorId !== connector.id || reaction.momentNmm === null
+        || reaction.referencePointAnalysisMm?.some((value, index) => value !== connector.referencePointAnalysisMm[index]) !== false
+        || reaction.semanticReferenceIds.length !== connector.semanticReferenceIds.length;
+    })) fail('BRIDGE_V2_RESULT_REACTION_INVALID');
   if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
   return result;
 }

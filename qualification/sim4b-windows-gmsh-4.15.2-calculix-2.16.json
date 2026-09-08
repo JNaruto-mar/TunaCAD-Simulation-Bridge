@@ -1,0 +1,79 @@
+{
+  "schema": "tunacad-simulation-qualification-matrix/1.0",
+  "matrixId": "sim4b-windows-x64-gmsh-4.15.2-calculix-2.16",
+  "scope": "Experimental SIM-4B explicit rigid connectors, remote loads/supports, normalized connector force/moment resultants, and the two-domain bolted L-bracket surrogate.",
+  "environment": {
+    "os": "win32",
+    "architecture": "x64",
+    "nodeMajor": 24,
+    "gmshVersion": "4.15.2",
+    "calculixVersion": "2.16"
+  },
+  "qualification": {
+    "status": "proof_of_concept",
+    "engineeringUsePermitted": false,
+    "recordedAt": "2026-09-08"
+  },
+  "promotionPolicy": {
+    "requiredLaneIds": [
+      "rigid-connector-contract-admission",
+      "normalized-connector-moment-recovery",
+      "bolted-bracket-rigid-connectors",
+      "independent-engineering-review"
+    ],
+    "requiresAllPassed": true,
+    "requiresEngineeringReview": true
+  },
+  "lanes": [
+    {
+      "id": "rigid-connector-contract-admission",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "The strict v2 contract admits explicit six-DOF connector/load/support identity and rejects unknown, unused, overlapping, or simultaneously loaded-and-supported connectors.",
+      "command": "npm run test:sim4a-contracts",
+      "evidence": {
+        "interactionType": "rigid_connector",
+        "loadType": "remote_force",
+        "constraintType": "remote_displacement",
+        "stableFailure": "BRIDGE_V2_CONNECTOR_INVALID"
+      }
+    },
+    {
+      "id": "normalized-connector-moment-recovery",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "CalculiX reference- and rotation-node force resultants are normalized with exact connector and analysis-point identity; direct FACE constraints return null moments.",
+      "command": "npm run test:sim4b-connections",
+      "evidence": {
+        "forceUnit": "N",
+        "momentUnit": "N*mm",
+        "remoteSupportMomentField": "momentNmm",
+        "directFaceMoment": null
+      }
+    },
+    {
+      "id": "bolted-bracket-rigid-connectors",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "The two-domain bonded L-bracket with explicit bolt-group and eccentric-load connectors satisfies force and moment equilibrium within the fixture tolerances and produces finite displacement/stress fields.",
+      "command": "npm run test:sim4b-bracket",
+      "evidence": {
+        "fixture": "qualification/sim4b-bolted-bracket-rigid-connectors.json",
+        "expectedSupportReactionForceN": [-1000, 0, 0],
+        "expectedSupportReactionMomentNmm": [0, -45000, 0],
+        "forceAbsoluteToleranceN": 0.5,
+        "momentAbsoluteToleranceNmm": 10,
+        "connectorCount": 2,
+        "bondedTieCount": 1
+      }
+    },
+    {
+      "id": "independent-engineering-review",
+      "category": "governance",
+      "state": "pending",
+      "acceptance": "An independent qualified engineer approves the connector formulation, sign conventions, benchmark geometry, tolerances, assumptions, and evidence for the exact reviewed commit.",
+      "command": null,
+      "evidence": null
+    }
+  ]
+}

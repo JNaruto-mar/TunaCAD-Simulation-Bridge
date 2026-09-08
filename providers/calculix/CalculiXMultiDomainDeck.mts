@@ -2,6 +2,7 @@ import type {
   NeutralFemMesh,
   NeutralFemModelV2,
   NeutralSimulationConstraint,
+  NeutralSimulationConstraintV2,
   NeutralSimulationRequestV2,
   NeutralVector3,
 } from '../../src/simulation/externalSimulationContracts.ts';
@@ -27,16 +28,54 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   const domains = [...model.domainRegions].sort((a, b) => compareText(a.domainId, b.domainId));
   const domainSetNames = new Map(domains.map((domain, index) => [domain.domainId, `DOMAIN_${String(index + 1).padStart(3, '0')}`]));
   const nodeSetNames = new Map(domains.map((domain, index) => [domain.domainId, `DOMAIN_NODES_${String(index + 1).padStart(3, '0')}`]));
-  const constraints = request.constraints as unknown as NeutralSimulationConstraint[];
-  const constraintSets = buildConstraintSets(constraints, mesh);
+  const directConstraintEntries = request.constraints
+    .map((constraint, requestIndex) => ({ constraint, requestIndex }))
+    .filter((entry): entry is { constraint: Exclude<NeutralSimulationConstraintV2, { type: 'remote_displacement' }>; requestIndex: number } => entry.constraint.type !== 'remote_displacement');
+  const constraintSets = buildConstraintSets(directConstraintEntries.map(entry => entry.constraint) as NeutralSimulationConstraint[], mesh)
+    .map((set, index) => ({
+      ...set,
+      name: `${set.constraint.type === 'fixed' ? 'FIXED' : 'PRESCRIBED'}_${numberName(directConstraintEntries[index].requestIndex)}`,
+      reactionName: reactionName(directConstraintEntries[index].requestIndex),
+      requestIndex: directConstraintEntries[index].requestIndex,
+    }));
   const constrainedRegions = new Set(constraintSets.flatMap(set => set.regions.map(region => region.regionId)));
+  const rigidConnectors = request.interactions.filter(interaction => interaction.type === 'rigid_connector').sort((a, b) => compareText(a.id, b.id));
+  const connectorRecords = rigidConnectors.map((connector, index) => {
+    const regions = requireRegions(model, connector.semanticReferenceIds);
+    const facets = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    const nodes = [...new Set(facets.flatMap(facet => model.boundaryFacets.connectivity[facet]))].sort((a, b) => a - b);
+    if (!facets.length || nodes.length < 3 || regions.some(region => constrainedRegions.has(region.regionId))) {
+      throw deckError('SIMULATION_CONNECTOR_INVALID', `Rigid connector "${connector.id}" must own a non-empty FACE group that is not directly constrained.`);
+    }
+    return {
+      connector, facets, nodes, name: `RIGID_CONNECTOR_${numberName(index)}`,
+      referenceNode: model.nodes.length + index * 2 + 1,
+      rotationNode: model.nodes.length + index * 2 + 2,
+    };
+  });
+  const connectorsById = new Map(connectorRecords.map(record => [record.connector.id, record]));
+  const claimedConnectorFacets = new Map<number, string>();
+  const claimedConnectorNodes = new Map<number, string>();
+  for (const record of connectorRecords) {
+    for (const facet of record.facets) {
+      const owner = claimedConnectorFacets.get(facet);
+      if (owner) throw deckError('SIMULATION_CONNECTOR_FACE_OVERLAP', `Rigid connectors "${owner}" and "${record.connector.id}" overlap.`);
+      claimedConnectorFacets.set(facet, record.connector.id);
+    }
+    for (const node of record.nodes) {
+      const owner = claimedConnectorNodes.get(node);
+      if (owner) throw deckError('SIMULATION_CONNECTOR_NODE_OVERLAP', `Rigid connectors "${owner}" and "${record.connector.id}" share mesh nodes.`);
+      claimedConnectorNodes.set(node, record.connector.id);
+    }
+  }
   const nodalLoads = new Map<number, NeutralVector3>();
   const loads = [...request.loads].sort((a, b) => compareText(a.id, b.id));
   for (const load of loads) {
-    if (load.type === 'gravity') continue;
+    if (load.type === 'gravity' || load.type === 'remote_force') continue;
     const regions = requireRegions(model, load.semanticReferenceIds);
     if (regions.some(region => constrainedRegions.has(region.regionId))) throw deckError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A SIM-4A region cannot be loaded and constrained simultaneously.');
     const facetIndices = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    if (facetIndices.some(facet => claimedConnectorFacets.has(facet))) throw deckError('SIMULATION_CONNECTOR_FACE_OVERLAP', 'A rigid-connector FACE group cannot also receive a direct surface load.');
     addLoads(nodalLoads, load.type === 'surface_force'
       ? consistentSurfaceLoads(mesh, facetIndices, load.forceN)
       : pressureSurfaceLoads(mesh, facetIndices, load.pressureMPa));
@@ -47,7 +86,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   const gravityMagnitude = Math.hypot(...gravity);
   validateSharedTopology(request, model);
   const ties = request.interactions.filter(interaction => interaction.type === 'bonded_tie').sort((a, b) => compareText(a.id, b.id));
-  const claimedTieFacets = new Set<number>();
+  const claimedTieFacets = new Set<number>(claimedConnectorFacets.keys());
   const tieCards = ties.flatMap((tie, index) => {
     const number = String(index + 1).padStart(3, '0');
     const secondary = [...new Set(requireRegions(model, tie.secondaryReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
@@ -72,6 +111,13 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     `TunaCAD SIM-4A multi-domain linear-static study ${safeComment(request.studyId)}`,
     '*NODE, NSET=NALL',
     ...model.nodes.map((point, index) => `${index + 1},${point.map(solverNumber).join(',')}`),
+    ...(connectorRecords.length ? [
+      '*NODE',
+      ...connectorRecords.flatMap(record => [
+        `${record.referenceNode},${record.connector.referencePointAnalysisMm.map(solverNumber).join(',')}`,
+        `${record.rotationNode},${record.connector.referencePointAnalysisMm.map(solverNumber).join(',')}`,
+      ]),
+    ] : []),
     ...domains.flatMap(domain => {
       const setName = domainSetNames.get(domain.domainId)!;
       return [
@@ -85,6 +131,14 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
       `*NSET, NSET=${item.name}`, ...wrapIds(item.nodes.map(node => node + 1)),
       `*NSET, NSET=${item.reactionName}`, ...wrapIds(item.reactionNodes.map(node => node + 1)),
     ]),
+    ...connectorRecords.flatMap(record => [
+      `*NSET, NSET=${record.name}`, ...wrapIds(record.nodes.map(node => node + 1)),
+      `*RIGID BODY, NSET=${record.name}, REF NODE=${record.referenceNode}, ROT NODE=${record.rotationNode}`,
+    ]),
+    ...request.constraints.flatMap((constraint, index) => constraint.type === 'remote_displacement' ? [
+      `*NSET, NSET=${reactionName(index)}`, String(connectorsById.get(constraint.connectorId)!.referenceNode),
+      `*NSET, NSET=${reactionMomentName(index)}`, String(connectorsById.get(constraint.connectorId)!.rotationNode),
+    ] : []),
     ...materials.flatMap(material => [
       `*MATERIAL, NAME=${materialNames.get(material.id)!}`,
       '*ELASTIC', `${solverNumber(material.youngsModulusMPa)},${solverNumber(material.poissonRatio)}`,
@@ -94,13 +148,20 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...tieCards,
     '*STEP', '*STATIC', '*BOUNDARY',
     ...constraintSets.flatMap(item => boundaryLines(item.name, item.constraint)),
-    ...([...nodalLoads.entries()].length ? [
+    ...request.constraints.flatMap(constraint => constraint.type === 'remote_displacement'
+      ? remoteBoundaryLines(connectorsById.get(constraint.connectorId)!, constraint)
+      : []),
+    ...([...nodalLoads.entries()].length || loads.some(load => load.type === 'remote_force') ? [
       '*CLOAD',
       ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
+      ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
     ] : []),
     ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
-    ...constraintSets.flatMap(item => [`*NODE PRINT, NSET=${item.reactionName}, TOTALS=ONLY, GLOBAL=YES`, 'RF']),
+    ...request.constraints.flatMap((constraint, index) => [
+      `*NODE PRINT, NSET=${reactionName(index)}, TOTALS=ONLY, GLOBAL=YES`, 'RF',
+      ...(constraint.type === 'remote_displacement' ? [`*NODE PRINT, NSET=${reactionMomentName(index)}, TOTALS=ONLY, GLOBAL=YES`, 'RF'] : []),
+    ]),
     '*EL PRINT, ELSET=EALL', 'S',
     ...domains.flatMap(domain => [
       `*NODE PRINT, NSET=${nodeSetNames.get(domain.domainId)!}, GLOBAL=YES`, 'U',
@@ -181,6 +242,35 @@ function boundaryLines(name: string, constraint: NeutralSimulationConstraint): s
   return constraint.displacementMm.flatMap((value, axis) => value === null ? [] : [`${name},${axis + 1},${axis + 1},${solverNumber(value)}`]);
 }
 
+type RigidConnectorRecord = {
+  connector: Extract<NeutralSimulationRequestV2['interactions'][number], { type: 'rigid_connector' }>;
+  facets: number[];
+  nodes: number[];
+  name: string;
+  referenceNode: number;
+  rotationNode: number;
+};
+
+function remoteBoundaryLines(
+  record: RigidConnectorRecord,
+  constraint: Extract<NeutralSimulationConstraintV2, { type: 'remote_displacement' }>,
+): string[] {
+  return [
+    ...constraint.translationMm.flatMap((value, axis) => value === null ? [] : [`${record.referenceNode},${axis + 1},${axis + 1},${solverNumber(value)}`]),
+    ...constraint.rotationRad.flatMap((value, axis) => value === null ? [] : [`${record.rotationNode},${axis + 1},${axis + 1},${solverNumber(value)}`]),
+  ];
+}
+
+function remoteLoadLines(
+  record: RigidConnectorRecord,
+  load: Extract<NeutralSimulationRequestV2['loads'][number], { type: 'remote_force' }>,
+): string[] {
+  return [
+    ...load.forceN.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${record.referenceNode},${axis + 1},${solverNumber(value)}`] : []),
+    ...load.momentNmm.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${record.rotationNode},${axis + 1},${solverNumber(value)}`] : []),
+  ];
+}
+
 function addLoads(target: Map<number, NeutralVector3>, source: Map<number, NeutralVector3>): void {
   for (const [node, force] of source) {
     const prior = target.get(node) ?? [0, 0, 0];
@@ -208,5 +298,8 @@ function solverNumber(value: number): string {
 }
 
 function safeComment(value: string): string { return value.replace(/[^A-Za-z0-9 _.:-]/g, '').slice(0, 120); }
+function numberName(index: number): string { return String(index + 1).padStart(3, '0'); }
+function reactionName(index: number): string { return `REACTION_${numberName(index)}`; }
+function reactionMomentName(index: number): string { return `REACTION_MOMENT_${numberName(index)}`; }
 function compareText(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 function deckError(code: string, message: string): Error & { code: string } { return Object.assign(new Error(message), { code }); }
