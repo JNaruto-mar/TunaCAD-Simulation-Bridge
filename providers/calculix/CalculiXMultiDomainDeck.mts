@@ -106,10 +106,55 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   if (loads.some(load => load.type === 'gravity') && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
     throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a gravity-loaded SIM-4A model requires positive density.');
   }
+  if (request.analysis.type === 'modal' && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
+    throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a modal model requires positive density.');
+  }
   const allElements = model.volumeElements.connectivity.map((_, index) => index + 1);
+  const boundaryCards = [
+    '*BOUNDARY',
+    ...constraintSets.flatMap(item => boundaryLines(item.name, item.constraint)),
+    ...request.constraints.flatMap(constraint => constraint.type === 'remote_displacement'
+      ? remoteBoundaryLines(connectorsById.get(constraint.connectorId)!, constraint)
+      : []),
+  ];
+  const frequencyLine = request.analysis.type === 'modal'
+    ? request.analysis.settings.maximumFrequencyHz !== null
+      ? `${solverNumber(request.analysis.settings.requestedModeCount)},${solverNumber(request.analysis.settings.minimumFrequencyHz ?? 0)},${solverNumber(request.analysis.settings.maximumFrequencyHz)}`
+      : request.analysis.settings.minimumFrequencyHz !== null
+        ? `${solverNumber(request.analysis.settings.requestedModeCount)},${solverNumber(request.analysis.settings.minimumFrequencyHz)}`
+        : solverNumber(request.analysis.settings.requestedModeCount)
+    : null;
+  const analysisCards = request.analysis.type === 'modal' ? [
+    '*STEP',
+    '*FREQUENCY,SOLVER=ARPACK',
+    frequencyLine!,
+    ...boundaryCards,
+    '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
+    '*END STEP',
+  ] : [
+    '*STEP', '*STATIC', ...boundaryCards,
+    ...([...nodalLoads.entries()].length || loads.some(load => load.type === 'remote_force') ? [
+      '*CLOAD',
+      ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
+      ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
+    ] : []),
+    ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
+    '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
+    ...request.constraints.flatMap((constraint, index) => [
+      `*NODE PRINT, NSET=${reactionName(index)}, TOTALS=ONLY, GLOBAL=YES`, 'RF',
+      ...(constraint.type === 'remote_displacement' ? [`*NODE PRINT, NSET=${reactionMomentName(index)}, TOTALS=ONLY, GLOBAL=YES`, 'RF'] : []),
+    ]),
+    '*EL PRINT, ELSET=EALL', 'S',
+    ...domains.flatMap(domain => [
+      `*NODE PRINT, NSET=${nodeSetNames.get(domain.domainId)!}, GLOBAL=YES`, 'U',
+      `*EL PRINT, ELSET=${domainSetNames.get(domain.domainId)!}`, 'S',
+    ]),
+    ...(loads.some(load => load.type === 'gravity') ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
+    '*END STEP',
+  ];
   const lines = [
     '*HEADING',
-    `TunaCAD SIM-4A multi-domain linear-static study ${safeComment(request.studyId)}`,
+    `TunaCAD ${request.analysis.type === 'modal' ? 'SIM-5 constrained modal' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
     '*NODE, NSET=NALL',
     ...model.nodes.map((point, index) => `${index + 1},${point.map(solverNumber).join(',')}`),
     ...(connectorRecords.length ? [
@@ -147,29 +192,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ]),
     ...domains.map(domain => `*SOLID SECTION, ELSET=${domainSetNames.get(domain.domainId)!}, MATERIAL=${materialNames.get(domain.materialId)!}`),
     ...tieCards,
-    '*STEP', '*STATIC', '*BOUNDARY',
-    ...constraintSets.flatMap(item => boundaryLines(item.name, item.constraint)),
-    ...request.constraints.flatMap(constraint => constraint.type === 'remote_displacement'
-      ? remoteBoundaryLines(connectorsById.get(constraint.connectorId)!, constraint)
-      : []),
-    ...([...nodalLoads.entries()].length || loads.some(load => load.type === 'remote_force') ? [
-      '*CLOAD',
-      ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
-      ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
-    ] : []),
-    ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
-    '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
-    ...request.constraints.flatMap((constraint, index) => [
-      `*NODE PRINT, NSET=${reactionName(index)}, TOTALS=ONLY, GLOBAL=YES`, 'RF',
-      ...(constraint.type === 'remote_displacement' ? [`*NODE PRINT, NSET=${reactionMomentName(index)}, TOTALS=ONLY, GLOBAL=YES`, 'RF'] : []),
-    ]),
-    '*EL PRINT, ELSET=EALL', 'S',
-    ...domains.flatMap(domain => [
-      `*NODE PRINT, NSET=${nodeSetNames.get(domain.domainId)!}, GLOBAL=YES`, 'U',
-      `*EL PRINT, ELSET=${domainSetNames.get(domain.domainId)!}`, 'S',
-    ]),
-    ...(loads.some(load => load.type === 'gravity') ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
-    '*END STEP',
+    ...analysisCards,
   ];
   return `${lines.join('\n')}\n`;
 }

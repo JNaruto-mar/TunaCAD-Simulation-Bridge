@@ -14,6 +14,7 @@ export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
+export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
@@ -325,17 +326,13 @@ export interface NeutralRigidConnectorInteractionV2 {
 
 export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2;
 
-export interface NeutralSimulationRequestV2 {
+interface NeutralSimulationRequestV2Base {
   schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
   studyId: string;
   name: string;
   preparedAt: string;
   expiresAt: string;
   requestDigest: string;
-  analysis: {
-    type: 'linear_static';
-    assumptions: ['small_displacement', 'small_strain', 'static_loading'];
-  };
   model: {
     projectRevision: string;
     modelDigest: string;
@@ -350,8 +347,27 @@ export interface NeutralSimulationRequestV2 {
   constraints: NeutralSimulationConstraintV2[];
   interactions: NeutralSimulationInteractionV2[];
   mesh: NeutralMeshRequest;
-  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'factor_of_safety' | 'critical_regions'>;
 }
+
+export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
+  analysis: {
+    type: 'linear_static';
+    assumptions: ['small_displacement', 'small_strain', 'static_loading'];
+  };
+  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'factor_of_safety' | 'critical_regions'>;
+} | {
+  analysis: {
+    type: 'modal';
+    assumptions: ['linear_elasticity', 'undamped_free_vibration'];
+    settings: {
+      requestedModeCount: number;
+      minimumFrequencyHz: number | null;
+      maximumFrequencyHz: number | null;
+      massFormulation: 'consistent';
+    };
+  };
+  requestedResults: Array<'natural_frequencies' | 'mode_shapes' | 'participation_factors' | 'effective_modal_mass'>;
+});
 
 export interface NeutralMeshJobRequestV2 {
   schema: typeof NEUTRAL_MESH_REQUEST_V2_SCHEMA;
@@ -446,14 +462,14 @@ export interface NeutralFemModelV2 {
   };
 }
 
-export interface NeutralSimulationResultV2 {
+interface NeutralSimulationResultV2Base {
   schema: typeof NEUTRAL_SIMULATION_RESULT_V2_SCHEMA;
   studyId: string;
   jobId: string;
   requestDigest: string;
   projectRevision: string;
   modelDigest: string;
-  analysisType: 'linear_static';
+  analysisType: NeutralAnalysisTypeV2;
   status: 'succeeded' | 'failed' | 'cancelled';
   authority: NeutralResultAuthority;
   metrics: NeutralSimulationResult['metrics'];
@@ -492,19 +508,43 @@ export interface NeutralSimulationResultV2 {
   mutation: NeutralSimulationResult['mutation'];
 }
 
+export interface NeutralModalModeV2 {
+  modeNumber: number;
+  eigenvalueRad2PerS2: number;
+  angularFrequencyRadPerS: number;
+  frequencyHz: number;
+  imaginaryAngularFrequencyRadPerS: number;
+  participationFactors: [number, number, number, number, number, number];
+  effectiveModalMass: [number, number, number, number, number, number];
+  fieldDatasetIds: string[];
+}
+
+export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
+  analysisType: 'linear_static';
+} | {
+  analysisType: 'modal';
+  modal: {
+    massFormulation: 'consistent';
+    solverNormalization: 'mass';
+    visualizationNormalization: 'maximum_vector_magnitude_1';
+    requestedModeCount: number;
+    modes: NeutralModalModeV2[];
+    totalEffectiveModalMass: [number, number, number, number, number, number];
+    totalEffectiveMass: [number, number, number, number, number, number];
+    effectiveMassCoverage: [number, number, number, number, number, number];
+    rigidBodyModeDiagnostics: { thresholdHz: number; modeNumbers: number[] };
+  };
+});
+
 /** A small, immutable handle describing a solver-normalized visualization
  * field. Native solver files never cross the provider boundary. Triangle
  * pages deliberately repeat their vertices so every page can be rendered and
  * verified independently without hidden topology state. */
-export interface NeutralSimulationFieldDatasetV2 {
+interface NeutralSimulationFieldDatasetV2Base {
   schema: typeof NEUTRAL_SIMULATION_FIELD_DATASET_V2_SCHEMA;
   datasetId: string;
   jobId: string;
   domainId: string;
-  analysisType: 'linear_static';
-  step: { index: 0; label: 'static' };
-  component: 'displacement_magnitude' | 'von_mises_stress';
-  unit: 'mm' | 'MPa';
   location: 'boundary_facet';
   topology: 'triangle_soup';
   valueRange: {
@@ -528,6 +568,18 @@ export interface NeutralSimulationFieldDatasetV2 {
   datasetDigest: string;
 }
 
+export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Base & ({
+  analysisType: 'linear_static';
+  step: { index: 0; label: 'static' };
+  component: 'displacement_magnitude' | 'von_mises_stress';
+  unit: 'mm' | 'MPa';
+} | {
+  analysisType: 'modal';
+  step: { index: number; label: string; modeNumber: number; frequencyHz: number };
+  component: 'mode_shape_magnitude';
+  unit: 'normalized';
+});
+
 export interface NeutralSimulationFieldTriangleV2 {
   facetIndex: number;
   elementIndex: number;
@@ -547,12 +599,13 @@ export interface NeutralSimulationFieldPageV2 {
   triangles: NeutralSimulationFieldTriangleV2[];
 }
 
-export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProviderCapabilities, 'interfaceVersion' | 'study'> {
+export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProviderCapabilities, 'interfaceVersion' | 'analysisTypes' | 'study'> {
   interfaceVersion: typeof SIMULATION_PROVIDER_INTERFACE_V2_VERSION;
+  analysisTypes: readonly NeutralAnalysisTypeV2[];
   fieldResults: {
     paginated: true;
     maximumPageTriangles: number;
-    components: readonly ['displacement_magnitude', 'von_mises_stress'];
+    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude'>;
     topology: 'triangle_soup';
   };
   study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
@@ -566,6 +619,12 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
     interactionTypes: ReadonlyArray<NeutralSimulationInteractionV2['type']>;
     maximumInteractions: number;
     maximumReferencesPerInteractionSide: number;
+    modal?: {
+      maximumModes: number;
+      frequencyBounds: true;
+      massFormulations: readonly ['consistent'];
+      constrainedOnly: boolean;
+    };
   };
 }
 
@@ -844,7 +903,13 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static';
+  analysisType: 'linear_static' | 'modal';
+  modal?: {
+    requestedModeCount: number;
+    minimumFrequencyHz?: number | null;
+    maximumFrequencyHz?: number | null;
+    massFormulation?: 'consistent';
+  };
   domains: Array<{
     domainId: string;
     partId: string;

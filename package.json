@@ -26,6 +26,8 @@
     "test:sim4b-bracket": "node --experimental-strip-types scripts/test-sim4b-bolted-bracket.mts",
     "test:sim4b-failures": "node --experimental-strip-types scripts/test-sim4b-failure-modes.mts",
     "test:sim4b-matrix": "node --experimental-strip-types scripts/test-sim4b-matrix.mts",
+    "test:sim5-modal": "node --experimental-strip-types scripts/test-sim5-modal.mts",
+    "test:sim5-matrix": "node --experimental-strip-types scripts/test-sim5-matrix.mts",
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },

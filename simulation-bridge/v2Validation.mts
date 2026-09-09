@@ -52,10 +52,22 @@ const meshRequest = z.object({
 const requestSchema = z.object({
   schema: z.literal('tunacad-neutral-simulation-request/2.0'),
   studyId: text, name: text, preparedAt: z.iso.datetime(), expiresAt: z.iso.datetime(), requestDigest: hash,
-  analysis: z.object({
-    type: z.literal('linear_static'),
-    assumptions: z.tuple([z.literal('small_displacement'), z.literal('small_strain'), z.literal('static_loading')]),
-  }).strict(),
+  analysis: z.discriminatedUnion('type', [
+    z.object({
+      type: z.literal('linear_static'),
+      assumptions: z.tuple([z.literal('small_displacement'), z.literal('small_strain'), z.literal('static_loading')]),
+    }).strict(),
+    z.object({
+      type: z.literal('modal'),
+      assumptions: z.tuple([z.literal('linear_elasticity'), z.literal('undamped_free_vibration')]),
+      settings: z.object({
+        requestedModeCount: z.number().int().min(1).max(24),
+        minimumFrequencyHz: nonNegative.max(1e9).nullable(),
+        maximumFrequencyHz: positive.max(1e9).nullable(),
+        massFormulation: z.literal('consistent'),
+      }).strict(),
+    }).strict(),
+  ]),
   model: z.object({
     projectRevision: text, modelDigest: hash, coordinateSpace: z.literal('frozen_analysis'),
     domains: z.array(z.object({
@@ -66,7 +78,7 @@ const requestSchema = z.object({
         faceCount: z.number().int().positive().max(10000), edgeCount: z.number().int().positive().max(50000),
         volumeMm3: positive, surfaceAreaMm2: positive, boundingBoxOwnerLocalMm: box,
       }).strict(),
-    }).strict()).min(2).max(128),
+    }).strict()).min(1).max(128),
     references: z.array(z.object({
       semanticReferenceId: text, domainId: text, ownerPartId: text, ownerBodyId: text, occurrenceId: text,
       geometryKind: z.literal('FACE'), role: z.enum(['load', 'constraint', 'interaction']),
@@ -126,7 +138,8 @@ const requestSchema = z.object({
     }).strict(),
   ])).max(32),
   mesh: meshRequest,
-  requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions'])).min(1).max(5),
+  requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions',
+    'natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass'])).min(1).max(5),
 }).strict();
 
 function unique(values: string[]): boolean {
@@ -249,7 +262,20 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   if ([...connectors.values()].some(connector => connector.semanticReferenceIds.some(id => directReferenceIds.has(id)))) fail('BRIDGE_V2_CONNECTOR_INVALID');
   const entryIds = [...request.loads, ...request.constraints, ...request.interactions].map(entry => entry.id);
   if (!unique(entryIds)) fail('BRIDGE_V2_REQUEST_INVALID');
-  if (!request.loads.length && !request.constraints.some(constraint => (constraint.type === 'prescribed_displacement'
+  if (request.analysis.type === 'modal') {
+    const settings = request.analysis.settings;
+    if (request.loads.length || request.materials.some(entry => entry.densityKgM3 === undefined)
+      || (settings.minimumFrequencyHz !== null && settings.maximumFrequencyHz !== null
+        && settings.maximumFrequencyHz <= settings.minimumFrequencyHz)
+      || request.requestedResults.some(result => !['natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass'].includes(result))
+      || !request.requestedResults.includes('natural_frequencies') || !request.requestedResults.includes('mode_shapes')
+      || request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
+        ? constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14)
+        : constraint.type === 'remote_displacement'
+          && [...constraint.translationMm, ...constraint.rotationRad].some(component => component !== null && Math.abs(component) > 1e-14))) {
+      fail('BRIDGE_V2_MODAL_REQUEST_INVALID');
+    }
+  } else if (!request.loads.length && !request.constraints.some(constraint => (constraint.type === 'prescribed_displacement'
     && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))
     || (constraint.type === 'remote_displacement' && [...constraint.translationMm, ...constraint.rotationRad]
       .some(component => component !== null && Math.abs(component) > 1e-14)))) fail('BRIDGE_V2_REQUEST_INVALID');
@@ -273,7 +299,12 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
   const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
   if (!profile.analysisTypes.includes(request.analysis.type) || !profile.normalizedResults || !profile.asynchronous || !profile.cancellation
     || !profile.fieldResults?.paginated || profile.fieldResults.maximumPageTriangles < 1 || profile.fieldResults.maximumPageTriangles > 512
-    || profile.fieldResults.topology !== 'triangle_soup' || !profile.fieldResults.components.includes('displacement_magnitude') || !profile.fieldResults.components.includes('von_mises_stress')
+    || profile.fieldResults.topology !== 'triangle_soup'
+    || (request.analysis.type === 'linear_static' && (!profile.fieldResults.components.includes('displacement_magnitude') || !profile.fieldResults.components.includes('von_mises_stress')))
+    || (request.analysis.type === 'modal' && (!profile.fieldResults.components.includes('mode_shape_magnitude') || !profile.study.modal
+      || request.analysis.settings.requestedModeCount > profile.study.modal.maximumModes
+      || !profile.study.modal.frequencyBounds || !profile.study.modal.massFormulations.includes(request.analysis.settings.massFormulation)
+      || !profile.study.modal.constrainedOnly))
     || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
     || request.model.domains.length > profile.study.maximumOccurrences
@@ -319,7 +350,7 @@ const femSchema = z.object({
     domainId: text, partId: text, bodyId: text, occurrenceId: text, domainDigest: hash, geometryDigest: hash,
     materialId: text, volumeRegionId: text, transformToAnalysis: matrix,
     elementIndices: z.array(z.number().int().nonnegative()).min(1), nodeIndices: z.array(z.number().int().nonnegative()).min(4),
-  }).strict()).min(2).max(128),
+  }).strict()).min(1).max(128),
   boundaryRegions: z.array(z.object({
     regionId: text, domainId: text, semanticReferenceIds: z.array(text).min(1), sourceFeatureIds: z.array(text),
     facetIndices: z.array(z.number().int().nonnegative()).min(1), matchedCadFaceOwnerLocal: face,
@@ -332,7 +363,7 @@ const femSchema = z.object({
     perDomain: z.array(z.object({
       domainId: text, nodeCount: z.number().int().positive(), elementCount: z.number().int().positive(), cadVolumeMm3: positive,
       meshVolumeMm3: positive, volumeRelativeError: nonNegative, minimum: finite.min(0).max(1), average: finite.min(0).max(1), invalidElementCount: z.literal(0),
-    }).strict()).min(2),
+    }).strict()).min(1),
   }).strict(),
   provenance: z.object({
     meshProviderInterfaceVersion: z.literal('2.0'), adapterId: text, adapterVersion: text, engine: text, engineVersion: text,
@@ -409,11 +440,24 @@ export function admitV2MeshRequest(capabilities: MeshProviderCapabilities | Mesh
 const resultMetrics = z.object({
   maximumVonMisesStressMPa: nonNegative.nullable(), maximumDisplacementMm: nonNegative.nullable(), minimumFactorOfSafety: nonNegative.nullable(),
 }).strict();
+const modalSix = z.tuple([finite, finite, finite, finite, finite, finite]);
+const modalResult = z.object({
+  massFormulation: z.literal('consistent'), solverNormalization: z.literal('mass'),
+  visualizationNormalization: z.literal('maximum_vector_magnitude_1'), requestedModeCount: z.number().int().min(1).max(24),
+  modes: z.array(z.object({
+    modeNumber: z.number().int().positive(), eigenvalueRad2PerS2: nonNegative, angularFrequencyRadPerS: nonNegative,
+    frequencyHz: nonNegative, imaginaryAngularFrequencyRadPerS: nonNegative,
+    participationFactors: modalSix, effectiveModalMass: modalSix, fieldDatasetIds: z.array(text).min(1).max(128),
+  }).strict()).min(1).max(24),
+  totalEffectiveModalMass: modalSix, totalEffectiveMass: modalSix,
+  effectiveMassCoverage: z.tuple([nonNegative, nonNegative, nonNegative, nonNegative, nonNegative, nonNegative]),
+  rigidBodyModeDiagnostics: z.object({ thresholdHz: nonNegative, modeNumbers: z.array(z.number().int().positive()).max(6) }).strict(),
+}).strict();
 const resultSchema = z.object({
   schema: z.literal('tunacad-neutral-simulation-result/2.0'), studyId: text, jobId: text, requestDigest: hash,
-  projectRevision: text, modelDigest: hash, analysisType: z.literal('linear_static'), status: z.enum(['succeeded', 'failed', 'cancelled']),
+  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal']), status: z.enum(['succeeded', 'failed', 'cancelled']),
   authority: z.enum(['engineering', 'architecture_mock']), metrics: resultMetrics,
-  perDomain: z.array(z.object({ domainId: text, metrics: resultMetrics, fieldDatasetIds: z.array(text).max(64) }).strict()).min(2).max(128),
+  perDomain: z.array(z.object({ domainId: text, metrics: resultMetrics, fieldDatasetIds: z.array(text).max(512) }).strict()).min(1).max(128),
   reactions: z.array(z.object({
     constraintId: text, forceN: vector, momentNmm: vector.nullable(), connectorId: text.nullable(),
     referencePointAnalysisMm: analysisPoint.nullable(), semanticReferenceIds: z.array(text), domainId: text,
@@ -427,6 +471,7 @@ const resultSchema = z.object({
   warnings: z.array(z.object({ code: text, message: text, severity: z.enum(['info', 'warning', 'critical']) }).strict()),
   convergence: z.object({ status: z.enum(['converged', 'not_converged', 'not_evaluated']), iterations: z.number().int().nonnegative().nullable(), residual: nonNegative.nullable(), providerDeclared: z.boolean() }).strict(),
   suggestedEngineeringIssues: z.array(text),
+  modal: modalResult.optional(),
   provenance: z.object({
     providerInterfaceVersion: z.literal('2.0'), adapterId: text, adapterVersion: text, providerRunId: text,
     submittedAt: z.iso.datetime(), completedAt: z.iso.datetime(), normalizedAt: z.iso.datetime(),
@@ -451,6 +496,22 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
   const datasetIds = result.perDomain.flatMap(domain => domain.fieldDatasetIds);
   if (!unique(datasetIds) || result.reactions.some(reaction => !domainIds.includes(reaction.domainId))
     || result.criticalRegions.some(region => !domainIds.includes(region.domainId))) fail('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID');
+  if (result.analysisType !== request.analysis.type) fail('BRIDGE_V2_RESULT_IDENTITY_INVALID');
+  if (request.analysis.type === 'modal') {
+    if (result.analysisType !== 'modal' || !('modal' in result) || !result.modal
+      || result.modal.requestedModeCount !== request.analysis.settings.requestedModeCount
+      || result.reactions.length || result.criticalRegions.length
+      || Object.values(result.metrics).some(value => value !== null)
+      || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
+      || datasetIds.length !== result.modal.modes.length * domainIds.length
+      || result.modal.modes.some((mode, index) => mode.modeNumber !== index + 1 || mode.frequencyHz < 0
+        || mode.fieldDatasetIds.length !== domainIds.length || mode.fieldDatasetIds.some(id => !datasetIds.includes(id))
+        || result.perDomain.some(domain => domain.fieldDatasetIds.filter(id => mode.fieldDatasetIds.includes(id)).length !== 1))
+      || !unique(result.modal.modes.flatMap(mode => mode.fieldDatasetIds))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
+    if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
+    return result;
+  }
+  if ('modal' in result && result.modal !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
   const constraints = new Map(request.constraints.map(constraint => [constraint.id, constraint]));
   const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
   const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
@@ -478,9 +539,12 @@ const fieldTriangle = z.object({
 }).strict();
 const fieldDataset = z.object({
   schema: z.literal('tunacad-neutral-simulation-field-dataset/2.0'),
-  datasetId: text, jobId: text, domainId: text, analysisType: z.literal('linear_static'),
-  step: z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
-  component: z.enum(['displacement_magnitude', 'von_mises_stress']), unit: z.enum(['mm', 'MPa']),
+  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal']),
+  step: z.union([
+    z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
+    z.object({ index: z.number().int().positive(), label: text, modeNumber: z.number().int().positive(), frequencyHz: nonNegative }).strict(),
+  ]),
+  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude']), unit: z.enum(['mm', 'MPa', 'normalized']),
   location: z.literal('boundary_facet'), topology: z.literal('triangle_soup'),
   valueRange: z.object({ minimum: nonNegative, maximum: nonNegative, minimumPositionAnalysisMm: vector, maximumPositionAnalysisMm: vector }).strict(),
   deformation: z.object({ vectorsIncluded: z.literal(true), trueScale: z.literal(1), recommendedScale: positive }).strict(),
@@ -501,7 +565,9 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
   if (page.cursor !== String(page.triangleOffset) || page.triangleCount !== page.triangles.length
     || page.triangleCount > page.dataset.maximumPageTriangles || page.triangleOffset + page.triangleCount > page.dataset.totalTriangles
     || page.nextCursor !== (page.triangleOffset + page.triangleCount < page.dataset.totalTriangles ? String(page.triangleOffset + page.triangleCount) : null)
-    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' ? 'mm' : 'MPa')
+    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' ? 'mm' : page.dataset.component === 'von_mises_stress' ? 'MPa' : 'normalized')
+    || (page.dataset.analysisType === 'modal') !== (page.dataset.component === 'mode_shape_magnitude')
+    || (page.dataset.analysisType === 'modal') !== ('modeNumber' in page.dataset.step)
     || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
     || digest(page.triangles) !== page.chunkDigest) fail('BRIDGE_V2_FIELD_PAGE_INVALID');
   return page;

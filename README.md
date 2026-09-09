@@ -37,7 +37,7 @@ allowed browser origin is `https://tunacad.com`. For local TunaCAD development,
 set `TUNACAD_SIMULATION_ORIGIN` to the exact localhost origin before starting
 the Bridge.
 
-## Current analysis envelope
+## Current version 1 analysis envelope
 
 - one Part and one valid connected solid;
 - one homogeneous isotropic linear-elastic material;
@@ -104,6 +104,8 @@ npm run test:face-groups
 npm run test:sim3-benchmarks
 npm run test:sim3-matrix
 npm run test:sim4a-matrix
+npm run test:sim5-modal
+npm run test:sim5-matrix
 ```
 
 ## Qualification matrix
@@ -168,7 +170,7 @@ passes Gmsh 4.15.2 and CalculiX 2.16 with exact global reaction balance.
 
 The Bridge now advertises independent v1 and v2 provider capabilities. Its v2
 path validates exact provider admission before approval, obtains one local-host
-approval, then accepts 2–16 ordered STEP domains with 16 MiB per-domain and
+approval, then accepts 1–16 ordered STEP domains with 16 MiB per-domain and
 64 MiB aggregate limits. The asynchronous CalculiX adapter uses the hardened
 process quotas, cancellation, cleanup and bounded result parser, and normalizes
 global plus per-domain extrema, reaction ownership, hotspots and field-dataset
@@ -178,6 +180,30 @@ TunaCAD uses the same MCP lifecycle tools for v1 and v2 and rechecks the CAD
 revision around every domain export. The formal SIM-4A matrix records all
 automated lanes as passed, but independent engineering review is still pending,
 so the pipeline remains `proof_of_concept` and engineering use is not permitted.
+
+## SIM-5 constrained modal increment
+
+The first SIM-5 vertical slice adds v2 `modal` requests with 1–24 requested
+modes, optional lower/upper frequency bounds, consistent mass, required
+material density, no loads, and homogeneous fixed or zero-displacement
+restraints. CalculiX `*FREQUENCY` output is normalized into natural
+frequencies, six-axis participation factors, effective modal masses, and
+rigid-body-mode diagnostics. Bounded FRD eigenvectors become per-domain,
+digest-verified `mode_shape_magnitude` pages with deterministic maximum-vector
+normalization for browser animation; this normalization is explicitly not a
+physical displacement amplitude.
+
+The real constrained steel-cantilever fixture and its proof-of-concept matrix
+run with:
+
+```powershell
+npm run test:sim5-modal
+npm run test:sim5-matrix
+```
+
+Free-free diagnostics, plate frequencies, eigenvalue mesh convergence,
+multi-domain modal coupling, linear buckling, and independent engineering
+review remain before SIM-5 qualification.
 The reviewer packet is `qualification/SIM4A_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
 SIM-4B supports explicitly declared nonconformal `bonded_tie`, conformal

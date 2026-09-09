@@ -40,26 +40,27 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     this.executable = resolve(options.executable); this.runtimeVersion = options.runtimeVersion;
     const maximumDomains = options.maximumDomains ?? 16;
     this.capabilities = {
-      interfaceVersion: '2.0', analysisTypes: ['linear_static'],
-      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress'], topology: 'triangle_soup' },
+      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal'],
+      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
         materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force'], maximumLoads: 64,
         maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
         multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
+        modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: true },
       },
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
       durableReferenceMapping: 'supported', authority: 'engineering',
       qualification: {
         status: 'proof_of_concept', engineeringUsePermitted: false,
-        statement: 'Experimental SIM-4B CalculiX multi-domain solver with explicit ties, shared topology, and rigid remote connectors.',
-        limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'Explicit bonded ties, shared topology, and rigid connectors are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
-        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim4a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
+        statement: 'Experimental SIM-4B linear-static and SIM-5 constrained-modal CalculiX solver.',
+        limitations: ['Windows development-host evidence only', 'Modal analysis is limited to undamped, linear-elastic, constrained modes with consistent mass', 'Explicit bonded ties, shared topology, and rigid connectors are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim5-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['free-free-rigid-modes', 'plate-analytical-frequency', 'eigenvalue-mesh-convergence', 'multi-domain-modal-coupling', 'euler-column-linear-buckling', 'independent-engineering-review'] },
       },
       execution: {
         topology: 'local_adapter', credentials: 'none', geometryLeavesDevice: false,
-        privacyDisclosure: 'Only validated SIM-4A neutral data is written to a temporary CalculiX deck and deleted after normalization.',
+        privacyDisclosure: 'Only validated neutral FEM data is written to a temporary CalculiX deck and deleted after normalization.',
         queueTimeoutMs: 5_000, executionTimeoutMs: 120_000, totalTimeoutMs: 125_000, rawArtifactRetentionMs: 0, normalizedResultRetentionMs: 20 * 60_000,
         resourceLimits: {
           maximumInputGeometryBytes: null, maximumWorkingDirectoryBytes: LOCAL_PROVIDER_RESOURCE_LIMITS.maximumWorkingDirectoryBytes,
@@ -129,9 +130,13 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     try {
       const contents = await readUtf8FileBounded(join(run.directory, 'tunacadv2.dat'));
       if (isStopped(run)) return;
-      const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
-      const parsed = parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity'));
-      const normalized = normalize(run, parsed, this.id, this.version, this.runtimeVersion); validateNeutralSimulationResultV2(normalized.result, run.request);
+      const normalized = run.request.analysis.type === 'modal'
+        ? normalizeModal(run, parseCalculiXModalDatV2(contents), parseCalculiXModalFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
+        : (() => {
+          const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
+          return normalize(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity')), this.id, this.version, this.runtimeVersion);
+        })();
+      validateNeutralSimulationResultV2(normalized.result, run.request);
       if (isStopped(run)) return;
       run.result = normalized.result; run.datasets = normalized.datasets;
       run.status = { providerRunId: run.providerRunId, status: 'succeeded', progress: 1, phase: 'normalized_v2', updatedAt: new Date().toISOString() };
@@ -177,6 +182,169 @@ export function parseCalculiXDatV2(text: string, model: NeutralFemModelV2, react
     || (expectVolume && !(totalVolumeMm3 && totalVolumeMm3 > 0))) throw new Error('CalculiX did not produce complete finite per-domain SIM-4A output.');
   return { byDomain, reactions, totalVolumeMm3, displacements, vonMisesByElement };
 }
+
+type ModalSix = [number, number, number, number, number, number];
+interface ModalDatMode {
+  modeNumber: number; eigenvalueRad2PerS2: number; angularFrequencyRadPerS: number;
+  frequencyHz: number; imaginaryAngularFrequencyRadPerS: number;
+  participationFactors: ModalSix; effectiveModalMass: ModalSix;
+}
+
+/** Parse the bounded, text-mode CalculiX frequency summary without accepting
+ * incomplete rows. CalculiX writes the six components in X/Y/Z translation
+ * followed by X/Y/Z rotation order. */
+export function parseCalculiXModalDatV2(text: string): { modes: ModalDatMode[]; totalEffectiveModalMass: ModalSix; totalEffectiveMass: ModalSix } {
+  if (text.split(/\r?\n/).length > 2_000_000) throw new Error('CalculiX modal result contains too many records.');
+  const eigen = new Map<number, Omit<ModalDatMode, 'participationFactors' | 'effectiveModalMass'>>();
+  const participation = new Map<number, ModalSix>();
+  const effective = new Map<number, ModalSix>();
+  let section: 'eigen' | 'participation' | 'effective' | 'total-mass' | null = null;
+  let totalEffectiveModalMass: ModalSix | null = null; let totalEffectiveMass: ModalSix | null = null;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX modal result contains an oversized record.');
+    const heading = raw.replace(/\s+/g, ' ').trim().toUpperCase();
+    if (heading === 'E I G E N V A L U E O U T P U T') { section = 'eigen'; continue; }
+    if (heading === 'P A R T I C I P A T I O N F A C T O R S') { section = 'participation'; continue; }
+    if (heading === 'E F F E C T I V E M O D A L M A S S') { section = 'effective'; continue; }
+    if (heading === 'T O T A L E F F E C T I V E M A S S') { section = 'total-mass'; continue; }
+    const values = numericFields(raw);
+    if (section === 'eigen' && values.length === 5 && Number.isInteger(values[0]) && values[0] > 0) {
+      eigen.set(values[0], { modeNumber: values[0], eigenvalueRad2PerS2: values[1], angularFrequencyRadPerS: values[2], frequencyHz: values[3], imaginaryAngularFrequencyRadPerS: values[4] });
+    } else if (section === 'participation' && values.length === 7 && Number.isInteger(values[0])) participation.set(values[0], values.slice(1) as ModalSix);
+    else if (section === 'effective' && /^\s*TOTAL\b/i.test(raw) && values.length === 6) totalEffectiveModalMass = values as ModalSix;
+    else if (section === 'effective' && values.length === 7 && Number.isInteger(values[0])) effective.set(values[0], values.slice(1) as ModalSix);
+    else if (section === 'total-mass' && values.length === 6) totalEffectiveMass = values as ModalSix;
+  }
+  const modes = [...eigen.values()].sort((a, b) => a.modeNumber - b.modeNumber).map(mode => ({
+    ...mode,
+    participationFactors: participation.get(mode.modeNumber) ?? missingModal(`participation factors for mode ${mode.modeNumber}`),
+    effectiveModalMass: effective.get(mode.modeNumber) ?? missingModal(`effective modal mass for mode ${mode.modeNumber}`),
+  }));
+  if (!modes.length || !totalEffectiveModalMass || !totalEffectiveMass || modes.some(mode => mode.eigenvalueRad2PerS2 < 0 || mode.frequencyHz < 0 || mode.angularFrequencyRadPerS < 0
+    || mode.imaginaryAngularFrequencyRadPerS > Math.max(1e-8, mode.angularFrequencyRadPerS * 1e-8))) {
+    throw new Error('CalculiX did not produce a complete finite modal summary.');
+  }
+  return { modes, totalEffectiveModalMass, totalEffectiveMass };
+}
+
+/** Read only modal DISP records from CalculiX FRD. The parser handles adjacent
+ * signed exponential fields (a normal fixed-width FRD representation). */
+export function parseCalculiXModalFrdV2(text: string): Map<number, Map<number, NeutralVector3>> {
+  if (text.split(/\r?\n/).length > 4_000_000) throw new Error('CalculiX modal field result contains too many records.');
+  const shapes = new Map<number, Map<number, NeutralVector3>>();
+  let modeNumber: number | null = null; let reading = false;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX modal field result contains an oversized record.');
+    const modeMatch = /^\s*1PMODE\s+(\d+)/.exec(raw);
+    if (modeMatch) { modeNumber = Number(modeMatch[1]); reading = false; continue; }
+    if (/^\s*-4\s+DISP\b/.test(raw)) {
+      if (!modeNumber) throw new Error('CalculiX modal field has DISP data without a mode number.');
+      shapes.set(modeNumber, new Map()); reading = true; continue;
+    }
+    if (reading && /^\s*-3\b/.test(raw)) { reading = false; continue; }
+    if (!reading || !/^\s*-1\b/.test(raw) || !modeNumber) continue;
+    const values = numericFields(raw);
+    if (values.length !== 5 || values[0] !== -1 || !Number.isInteger(values[1]) || values[1] <= 0) throw new Error('CalculiX modal FRD contains a malformed displacement record.');
+    shapes.get(modeNumber)!.set(values[1] - 1, values.slice(2) as NeutralVector3);
+  }
+  if (!shapes.size || [...shapes.values()].some(shape => !shape.size)) throw new Error('CalculiX did not produce modal displacement fields.');
+  return shapes;
+}
+
+function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDatV2>, rawShapes: Map<number, Map<number, NeutralVector3>>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
+  if (run.request.analysis.type !== 'modal') throw new Error('Modal normalization received a non-modal request.');
+  if (parsed.modes.length > run.request.analysis.settings.requestedModeCount) throw new Error('CalculiX returned more modes than requested.');
+  const shapes = new Map<number, Map<number, NeutralVector3>>();
+  for (const mode of parsed.modes) {
+    const raw = rawShapes.get(mode.modeNumber);
+    if (!raw || run.model.nodes.some((_, node) => !raw.has(node))) throw new Error(`CalculiX omitted mode-shape nodes for mode ${mode.modeNumber}.`);
+    let anchorNode = -1; let maximum = -Infinity;
+    for (const [node, vector] of [...raw.entries()].sort(([a], [b]) => a - b)) {
+      const magnitude = Math.hypot(...vector);
+      if (magnitude > maximum) { maximum = magnitude; anchorNode = node; }
+    }
+    if (!(maximum > 0) || anchorNode < 0) throw new Error(`CalculiX mode ${mode.modeNumber} has a zero or invalid eigenvector.`);
+    const anchor = raw.get(anchorNode)!; const dominant = anchor.reduce((best, value, index) => Math.abs(value) > Math.abs(anchor[best]) ? index : best, 0);
+    const sign = anchor[dominant] < 0 ? -1 : 1;
+    shapes.set(mode.modeNumber, new Map([...raw].map(([node, vector]) => [node, vector.map(value => sign * value / maximum) as NeutralVector3])));
+  }
+  const datasets = buildModalFieldDatasets(run, parsed.modes, shapes);
+  const perDomain = run.model.domainRegions.map(domain => ({
+    domainId: domain.domainId,
+    metrics: { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null },
+    fieldDatasetIds: parsed.modes.map(mode => modalDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)),
+  }));
+  const highestFrequency = Math.max(...parsed.modes.map(mode => mode.frequencyHz));
+  const thresholdHz = Math.max(1e-6, highestFrequency * 1e-6);
+  const completedAt = new Date().toISOString();
+  const modes = parsed.modes.map(mode => ({ ...mode, fieldDatasetIds: run.model.domainRegions.map(domain => modalDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)) }));
+  const result: NeutralSimulationResultV2 = {
+    schema: 'tunacad-neutral-simulation-result/2.0', studyId: run.request.studyId, jobId: run.providerRunId,
+    requestDigest: run.request.requestDigest, projectRevision: run.request.model.projectRevision, modelDigest: run.request.model.modelDigest,
+    analysisType: 'modal', status: 'succeeded', authority: 'engineering',
+    metrics: { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null },
+    perDomain, reactions: [], criticalRegions: [], failedConstraints: [],
+    warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-5 constrained-modal result; qualified-engineer review is mandatory.', severity: 'warning' }],
+    convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Verify frequency convergence, boundary conditions, density, and effective-mass coverage.'],
+    modal: {
+      massFormulation: 'consistent', solverNormalization: 'mass', visualizationNormalization: 'maximum_vector_magnitude_1',
+      requestedModeCount: run.request.analysis.settings.requestedModeCount, modes,
+      totalEffectiveModalMass: parsed.totalEffectiveModalMass, totalEffectiveMass: parsed.totalEffectiveMass,
+      effectiveMassCoverage: parsed.totalEffectiveModalMass.map((value, axis) => parsed.totalEffectiveMass[axis] > 0 ? value / parsed.totalEffectiveMass[axis] : 0) as ModalSix,
+      rigidBodyModeDiagnostics: { thresholdHz, modeNumbers: modes.filter(mode => mode.frequencyHz <= thresholdHz).map(mode => mode.modeNumber) },
+    },
+    provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId, submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental constrained-modal result. Not certified.` },
+    mutation: { occurred: false, projectRevisionBefore: run.request.model.projectRevision, projectRevisionAfter: run.request.model.projectRevision },
+  };
+  return { result, datasets };
+}
+
+function buildModalFieldDatasets(run: Run, modes: ModalDatMode[], shapes: Map<number, Map<number, NeutralVector3>>) {
+  const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
+  for (const mode of modes) for (const domain of run.model.domainRegions) {
+    const shape = shapes.get(mode.modeNumber)!;
+    const triangles = renderTriangles(run, domain.domainId, shape).map(triangle => ({
+      ...triangle, values: triangle.displacementsMm.map(vector => Math.hypot(...vector)) as [number, number, number],
+    }));
+    const datasetId = modalDatasetId(run.providerRunId, domain.domainId, mode.modeNumber);
+    const references = run.model.boundaryRegions.filter(region => region.domainId === domain.domainId).flatMap(region => region.semanticReferenceIds);
+    const descriptor: NeutralSimulationFieldDatasetV2 = {
+      schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId, jobId: run.providerRunId, domainId: domain.domainId,
+      analysisType: 'modal', step: { index: mode.modeNumber, label: `Mode ${mode.modeNumber}`, modeNumber: mode.modeNumber, frequencyHz: mode.frequencyHz },
+      component: 'mode_shape_magnitude', unit: 'normalized', location: 'boundary_facet', topology: 'triangle_soup',
+      valueRange: fieldExtrema(triangles), deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: boundingDiagonal(domain.nodeIndices.map(index => run.model.nodes[index])) * 0.08 },
+      mapping: { domain: 'exact', cadRegions: 'partial', semanticReferenceIds: [...new Set(references)].sort(compareText) },
+      totalTriangles: triangles.length, maximumPageTriangles: 128, datasetDigest: digest(triangles),
+    };
+    datasets.set(datasetId, { descriptor, triangles });
+  }
+  return datasets;
+}
+
+function renderTriangles(run: Run, domainId: string, vectors: Map<number, NeutralVector3>): NeutralSimulationFieldTriangleV2[] {
+  const elementByFace = new Map<string, number>();
+  run.model.volumeElements.connectivity.forEach((cell, elementIndex) => {
+    const corners = cell.slice(0, 4);
+    for (const face of [[corners[0], corners[2], corners[1]], [corners[0], corners[1], corners[3]], [corners[1], corners[2], corners[3]], [corners[2], corners[0], corners[3]]]) elementByFace.set([...face].sort((a, b) => a - b).join(':'), elementIndex);
+  });
+  return run.model.boundaryFacets.connectivity.flatMap((facet, facetIndex) => {
+    if (run.model.boundaryFacets.domainIds[facetIndex] !== domainId) return [];
+    const elementIndex = elementByFace.get(facet.slice(0, 3).sort((a, b) => a - b).join(':'));
+    if (elementIndex === undefined) throw new Error(`Boundary facet ${facetIndex} has no owning volume element.`);
+    return (facet.length === 6 ? [[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]] : [[0, 1, 2]]).map(indices => {
+      const nodes = indices.map(index => facet[index]);
+      return { facetIndex, elementIndex, positionsAnalysisMm: nodes.map(node => run.model.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3], displacementsMm: nodes.map(node => vectors.get(node) ?? missingField(`node ${node}`)) as [NeutralVector3, NeutralVector3, NeutralVector3], values: [0, 0, 0] };
+    });
+  });
+}
+
+function numericFields(line: string): number[] {
+  return [...line.matchAll(/[-+]?(?:\d+\.\d*|\.\d+|\d+)(?:[EeDd][-+]?\d+)?/g)].map(match => Number(match[0].replace(/[dD]/g, 'E'))).filter(Number.isFinite);
+}
+function missingModal(label: string): never { throw new Error(`CalculiX omitted ${label}.`); }
+function modalDatasetId(runId: string, domainId: string, modeNumber: number): string { return `${runId}:${domainId}:mode:${String(modeNumber).padStart(3, '0')}`; }
 
 function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
   const mesh = asV1Mesh(run.model);

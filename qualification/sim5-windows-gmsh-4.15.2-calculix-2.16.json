@@ -1,0 +1,22 @@
+{
+  "schema": "tunacad-simulation-qualification-matrix/1.0",
+  "matrixId": "sim5-windows-x64-gmsh-4.15.2-calculix-2.16",
+  "scope": "Experimental SIM-5 constrained modal analysis and later linear-buckling qualification on the Windows x64 Gmsh/CalculiX pipeline.",
+  "environment": { "os": "win32", "architecture": "x64", "nodeMajor": 24, "gmshVersion": "4.15.2", "calculixVersion": "2.16" },
+  "qualification": { "status": "proof_of_concept", "engineeringUsePermitted": false, "recordedAt": "2026-09-09" },
+  "promotionPolicy": {
+    "requiredLaneIds": ["constrained-cantilever-frequency", "normalized-mode-field-transport", "free-free-rigid-modes", "plate-analytical-frequency", "eigenvalue-mesh-convergence", "multi-domain-modal-coupling", "euler-column-linear-buckling", "independent-engineering-review"],
+    "requiresAllPassed": true,
+    "requiresEngineeringReview": true
+  },
+  "lanes": [
+    { "id": "constrained-cantilever-frequency", "category": "mechanics", "state": "passed", "acceptance": "A density-backed fixed steel cantilever uses consistent mass and frequency bounds; its first mode agrees with the Euler-Bernoulli reference within 18%.", "command": "npm run test:sim5-modal", "evidence": { "referenceFrequencyHz": 417.75829722204014, "calculatedFrequencyHz": 420.2946, "relativeDifference": 0.006071220595319035, "maximumRelativeDifference": 0.18 } },
+    { "id": "normalized-mode-field-transport", "category": "mechanics", "state": "passed", "acceptance": "Every returned mode has per-domain digest-verified paginated triangle fields with deterministic maximum-vector normalization and solver mass-normalization provenance.", "command": "npm run test:sim5-modal", "evidence": { "solverNormalization": "mass", "visualizationNormalization": "maximum_vector_magnitude_1", "component": "mode_shape_magnitude", "unit": "normalized" } },
+    { "id": "free-free-rigid-modes", "category": "mechanics", "state": "pending", "acceptance": "A free-free solid recovers and diagnoses six rigid-body modes before elastic modes.", "command": null, "evidence": null },
+    { "id": "plate-analytical-frequency", "category": "mechanics", "state": "pending", "acceptance": "A plate fixture agrees with a declared analytical frequency solution and boundary assumptions.", "command": null, "evidence": null },
+    { "id": "eigenvalue-mesh-convergence", "category": "mechanics", "state": "pending", "acceptance": "Coarse, medium, and fine meshes demonstrate stable eigenvalue convergence under declared tolerances.", "command": null, "evidence": null },
+    { "id": "multi-domain-modal-coupling", "category": "mechanics", "state": "pending", "acceptance": "Explicit bonded/shared multi-domain models preserve modal ownership and coupling behavior.", "command": null, "evidence": null },
+    { "id": "euler-column-linear-buckling", "category": "mechanics", "state": "pending", "acceptance": "A declared compressive preload and eigenvalue factors agree with an Euler-column comparison.", "command": null, "evidence": null },
+    { "id": "independent-engineering-review", "category": "governance", "state": "pending", "acceptance": "An independent qualified engineer approves the formulations, fixtures, tolerances, assumptions, and exact reviewed commit.", "command": null, "evidence": null }
+  ]
+}
