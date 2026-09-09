@@ -22,7 +22,9 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   if (model.element.geometryOrder !== 2 || model.element.solutionOrder !== 2 || model.volumeElements.connectivity.some(cell => cell.length !== 10)) {
     throw deckError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The SIM-4A CalculiX deck requires complete second-order C3D10 tetrahedra.');
   }
-  validateStructuralStabilityV2(request, model);
+  if (!(request.analysis.type === 'modal' && request.constraints.length === 0 && model.domainRegions.length === 1)) {
+    validateStructuralStabilityV2(request, model);
+  }
   const mesh = asV1Mesh(model);
   const materials = [...request.materials].sort((a, b) => compareText(a.id, b.id));
   const materialNames = new Map(materials.map((material, index) => [material.id, `MATERIAL_${String(index + 1).padStart(3, '0')}`]));
@@ -110,13 +112,13 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a modal model requires positive density.');
   }
   const allElements = model.volumeElements.connectivity.map((_, index) => index + 1);
-  const boundaryCards = [
-    '*BOUNDARY',
+  const boundaryLinesV2 = [
     ...constraintSets.flatMap(item => boundaryLines(item.name, item.constraint)),
     ...request.constraints.flatMap(constraint => constraint.type === 'remote_displacement'
       ? remoteBoundaryLines(connectorsById.get(constraint.connectorId)!, constraint)
       : []),
   ];
+  const boundaryCards = boundaryLinesV2.length ? ['*BOUNDARY', ...boundaryLinesV2] : [];
   const frequencyLine = request.analysis.type === 'modal'
     ? request.analysis.settings.maximumFrequencyHz !== null
       ? `${solverNumber(request.analysis.settings.requestedModeCount)},${solverNumber(request.analysis.settings.minimumFrequencyHz ?? 0)},${solverNumber(request.analysis.settings.maximumFrequencyHz)}`
@@ -124,6 +126,11 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
         ? `${solverNumber(request.analysis.settings.requestedModeCount)},${solverNumber(request.analysis.settings.minimumFrequencyHz)}`
         : solverNumber(request.analysis.settings.requestedModeCount)
     : null;
+  const concentratedLoadCards = [...nodalLoads.entries()].length || loads.some(load => load.type === 'remote_force') ? [
+    '*CLOAD',
+    ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
+    ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
+  ] : [];
   const analysisCards = request.analysis.type === 'modal' ? [
     '*STEP',
     '*FREQUENCY,SOLVER=ARPACK',
@@ -131,13 +138,17 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...boundaryCards,
     '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
     '*END STEP',
+  ] : request.analysis.type === 'linear_buckling' ? [
+    '*STEP',
+    '*BUCKLE',
+    solverNumber(request.analysis.settings.requestedModeCount),
+    ...boundaryCards,
+    ...concentratedLoadCards,
+    '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
+    '*END STEP',
   ] : [
     '*STEP', '*STATIC', ...boundaryCards,
-    ...([...nodalLoads.entries()].length || loads.some(load => load.type === 'remote_force') ? [
-      '*CLOAD',
-      ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
-      ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
-    ] : []),
+    ...concentratedLoadCards,
     ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
     ...request.constraints.flatMap((constraint, index) => [
@@ -154,7 +165,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   ];
   const lines = [
     '*HEADING',
-    `TunaCAD ${request.analysis.type === 'modal' ? 'SIM-5 constrained modal' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
+    `TunaCAD ${request.analysis.type === 'modal' ? request.constraints.length ? 'SIM-5 constrained modal' : 'SIM-5 free-free modal' : request.analysis.type === 'linear_buckling' ? 'SIM-5 linear eigenvalue buckling' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
     '*NODE, NSET=NALL',
     ...model.nodes.map((point, index) => `${index + 1},${point.map(solverNumber).join(',')}`),
     ...(connectorRecords.length ? [

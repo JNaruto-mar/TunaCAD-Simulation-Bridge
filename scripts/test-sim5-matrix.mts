@@ -16,4 +16,6 @@ for (const entry of matrix.lanes) entry.state === 'passed'
   ? (assert.ok(entry.command), assert.ok(entry.evidence && Object.keys(entry.evidence).length))
   : assert.equal(entry.evidence, null);
 assert.ok(matrix.promotionPolicy.requiredLaneIds.some(id => byId.get(id)?.state === 'pending'));
+assert.ok(matrix.lanes.filter(entry => entry.category === 'mechanics').every(entry => entry.state === 'passed'), 'Every automated SIM-5 mechanics lane must pass.');
+assert.deepEqual(matrix.lanes.filter(entry => entry.state === 'pending').map(entry => entry.id), ['independent-engineering-review']);
 console.log('SIM-5 qualification matrix is valid and remains proof_of_concept.');

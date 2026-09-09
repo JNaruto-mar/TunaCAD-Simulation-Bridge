@@ -67,6 +67,14 @@ const requestSchema = z.object({
         massFormulation: z.literal('consistent'),
       }).strict(),
     }).strict(),
+    z.object({
+      type: z.literal('linear_buckling'),
+      assumptions: z.tuple([z.literal('linear_elasticity'), z.literal('small_displacement_preload'), z.literal('eigenvalue_buckling')]),
+      settings: z.object({
+        requestedModeCount: z.number().int().min(1).max(12),
+        preloadCase: z.object({ id: text, name: text, loadIds: z.array(text).min(1).max(64).refine(unique), scaleFactor: z.literal(1) }).strict(),
+      }).strict(),
+    }).strict(),
   ]),
   model: z.object({
     projectRevision: text, modelDigest: hash, coordinateSpace: z.literal('frozen_analysis'),
@@ -84,7 +92,7 @@ const requestSchema = z.object({
       geometryKind: z.literal('FACE'), role: z.enum(['load', 'constraint', 'interaction']),
       sourceFeatureId: text.nullable(), resolutionState: z.literal('valid'), resolvedAtProjectRevision: text,
       faceOwnerLocal: face,
-    }).strict()).min(1).max(512),
+    }).strict()).max(512),
   }).strict(),
   units: z.object({
     geometry: z.literal('mm'), force: z.literal('N'), stress: z.literal('MPa'), displacement: z.literal('mm'),
@@ -120,7 +128,7 @@ const requestSchema = z.object({
       rotationRad: z.tuple([finite.min(-1).max(1).nullable(), finite.min(-1).max(1).nullable(), finite.min(-1).max(1).nullable()]),
       coordinateSystem: z.literal('analysis'),
     }).strict().refine(value => [...value.translationMm, ...value.rotationRad].some(component => component !== null)),
-  ])).min(1).max(64),
+  ])).max(64),
   interactions: z.array(z.discriminatedUnion('type', [
     z.object({
       id: text, name: text, type: z.literal('bonded_tie'),
@@ -139,7 +147,7 @@ const requestSchema = z.object({
   ])).max(32),
   mesh: meshRequest,
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions',
-    'natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass'])).min(1).max(5),
+    'natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass', 'buckling_load_factors', 'buckling_mode_shapes'])).min(1).max(5),
 }).strict();
 
 function unique(values: string[]): boolean {
@@ -275,7 +283,15 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
           && [...constraint.translationMm, ...constraint.rotationRad].some(component => component !== null && Math.abs(component) > 1e-14))) {
       fail('BRIDGE_V2_MODAL_REQUEST_INVALID');
     }
-  } else if (!request.loads.length && !request.constraints.some(constraint => (constraint.type === 'prescribed_displacement'
+  } else if (request.analysis.type === 'linear_buckling') {
+    const preloadIds = request.analysis.settings.preloadCase.loadIds;
+    if (request.model.domains.length !== 1 || request.interactions.length || !request.loads.length || !request.constraints.length
+      || request.loads.some(load => load.type !== 'surface_force') || request.constraints.some(constraint => constraint.type !== 'fixed')
+      || preloadIds.length !== request.loads.length || preloadIds.some(loadId => !request.loads.some(load => load.id === loadId))
+      || request.requestedResults.length !== 2 || !request.requestedResults.includes('buckling_load_factors') || !request.requestedResults.includes('buckling_mode_shapes')) {
+      fail('BRIDGE_V2_BUCKLING_REQUEST_INVALID');
+    }
+  } else if (!request.constraints.length || !request.loads.length && !request.constraints.some(constraint => (constraint.type === 'prescribed_displacement'
     && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))
     || (constraint.type === 'remote_displacement' && [...constraint.translationMm, ...constraint.rotationRad]
       .some(component => component !== null && Math.abs(component) > 1e-14)))) fail('BRIDGE_V2_REQUEST_INVALID');
@@ -304,7 +320,14 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
     || (request.analysis.type === 'modal' && (!profile.fieldResults.components.includes('mode_shape_magnitude') || !profile.study.modal
       || request.analysis.settings.requestedModeCount > profile.study.modal.maximumModes
       || !profile.study.modal.frequencyBounds || !profile.study.modal.massFormulations.includes(request.analysis.settings.massFormulation)
-      || !profile.study.modal.constrainedOnly))
+      || (!request.constraints.length && (profile.study.modal.constrainedOnly
+        || !Number.isInteger(profile.study.modal.maximumFreeFreeDomains)
+        || request.model.domains.length > profile.study.modal.maximumFreeFreeDomains))))
+    || (request.analysis.type === 'linear_buckling' && (!profile.fieldResults.components.includes('buckling_mode_shape_magnitude') || !profile.study.buckling
+      || request.analysis.settings.requestedModeCount > profile.study.buckling.maximumModes
+      || request.model.domains.length > profile.study.buckling.maximumDomains || !profile.study.buckling.preloadCaseRequired
+      || request.loads.some(load => !profile.study.buckling!.loadTypes.includes(load.type as 'surface_force'))
+      || request.constraints.some(constraint => !profile.study.buckling!.constraintTypes.includes(constraint.type as 'fixed'))))
     || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
     || request.model.domains.length > profile.study.maximumOccurrences
@@ -451,11 +474,20 @@ const modalResult = z.object({
   }).strict()).min(1).max(24),
   totalEffectiveModalMass: modalSix, totalEffectiveMass: modalSix,
   effectiveMassCoverage: z.tuple([nonNegative, nonNegative, nonNegative, nonNegative, nonNegative, nonNegative]),
-  rigidBodyModeDiagnostics: z.object({ thresholdHz: nonNegative, modeNumbers: z.array(z.number().int().positive()).max(6) }).strict(),
+  rigidBodyModeDiagnostics: z.object({
+    thresholdHz: nonNegative, expectedModeCount: z.union([z.literal(0), z.literal(6)]),
+    detectedModeCount: z.number().int().min(0).max(6), modeNumbers: z.array(z.number().int().positive()).max(6),
+    status: z.enum(['complete', 'incomplete']),
+  }).strict(),
+}).strict();
+const bucklingResult = z.object({
+  preloadCaseId: text, requestedModeCount: z.number().int().min(1).max(12), solverNormalization: z.literal('eigenvector'),
+  visualizationNormalization: z.literal('maximum_vector_magnitude_1'), prediction: z.literal('linear_eigenvalue_not_nonlinear_collapse'),
+  modes: z.array(z.object({ modeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive, fieldDatasetIds: z.array(text).min(1).max(128) }).strict()).min(1).max(12),
 }).strict();
 const resultSchema = z.object({
   schema: z.literal('tunacad-neutral-simulation-result/2.0'), studyId: text, jobId: text, requestDigest: hash,
-  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal']), status: z.enum(['succeeded', 'failed', 'cancelled']),
+  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling']), status: z.enum(['succeeded', 'failed', 'cancelled']),
   authority: z.enum(['engineering', 'architecture_mock']), metrics: resultMetrics,
   perDomain: z.array(z.object({ domainId: text, metrics: resultMetrics, fieldDatasetIds: z.array(text).max(512) }).strict()).min(1).max(128),
   reactions: z.array(z.object({
@@ -472,6 +504,7 @@ const resultSchema = z.object({
   convergence: z.object({ status: z.enum(['converged', 'not_converged', 'not_evaluated']), iterations: z.number().int().nonnegative().nullable(), residual: nonNegative.nullable(), providerDeclared: z.boolean() }).strict(),
   suggestedEngineeringIssues: z.array(text),
   modal: modalResult.optional(),
+  buckling: bucklingResult.optional(),
   provenance: z.object({
     providerInterfaceVersion: z.literal('2.0'), adapterId: text, adapterVersion: text, providerRunId: text,
     submittedAt: z.iso.datetime(), completedAt: z.iso.datetime(), normalizedAt: z.iso.datetime(),
@@ -504,14 +537,35 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || Object.values(result.metrics).some(value => value !== null)
       || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
       || datasetIds.length !== result.modal.modes.length * domainIds.length
-      || result.modal.modes.some((mode, index) => mode.modeNumber !== index + 1 || mode.frequencyHz < 0
+      || !unique(result.modal.modes.map(mode => mode.modeNumber))
+      || result.modal.modes.some((mode, index) => mode.modeNumber > request.analysis.settings.requestedModeCount
+        || (index > 0 && mode.modeNumber <= result.modal.modes[index - 1].modeNumber) || mode.frequencyHz < 0
         || mode.fieldDatasetIds.length !== domainIds.length || mode.fieldDatasetIds.some(id => !datasetIds.includes(id))
         || result.perDomain.some(domain => domain.fieldDatasetIds.filter(id => mode.fieldDatasetIds.includes(id)).length !== 1))
       || !unique(result.modal.modes.flatMap(mode => mode.fieldDatasetIds))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
+    const diagnostics = result.modal.rigidBodyModeDiagnostics;
+    const expectedRigidModes = request.constraints.length ? 0 : 6;
+    if (diagnostics.expectedModeCount !== expectedRigidModes || diagnostics.detectedModeCount !== diagnostics.modeNumbers.length
+      || diagnostics.status !== (diagnostics.detectedModeCount === expectedRigidModes ? 'complete' : 'incomplete')
+      || !unique(diagnostics.modeNumbers) || diagnostics.modeNumbers.some(modeNumber => result.modal.modes.some(mode => mode.modeNumber === modeNumber))
+      || (!request.constraints.length && (diagnostics.status !== 'complete' || diagnostics.modeNumbers.some((modeNumber, index) => modeNumber !== index + 1)
+        || result.modal.modes.some(mode => mode.modeNumber <= 6)))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
     return result;
   }
-  if ('modal' in result && result.modal !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
+  if (request.analysis.type === 'linear_buckling') {
+    if (result.analysisType !== 'linear_buckling' || !('buckling' in result) || !result.buckling || ('modal' in result && result.modal !== undefined)
+      || result.buckling.preloadCaseId !== request.analysis.settings.preloadCase.id
+      || result.buckling.requestedModeCount !== request.analysis.settings.requestedModeCount || result.reactions.length || result.criticalRegions.length
+      || Object.values(result.metrics).some(value => value !== null) || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
+      || datasetIds.length !== result.buckling.modes.length * domainIds.length || !unique(result.buckling.modes.map(mode => mode.modeNumber))
+      || result.buckling.modes.some((mode, index) => mode.modeNumber !== index + 1 || mode.modeNumber > request.analysis.settings.requestedModeCount
+        || mode.fieldDatasetIds.length !== domainIds.length || mode.fieldDatasetIds.some(id => !datasetIds.includes(id)))
+      || !result.warnings.some(warning => warning.code === 'SIMULATION_LINEAR_BUCKLING_LIMITATION')) fail('BRIDGE_V2_BUCKLING_RESULT_INVALID');
+    if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
+    return result;
+  }
+  if (('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)) fail('BRIDGE_V2_RESULT_INVALID');
   const constraints = new Map(request.constraints.map(constraint => [constraint.id, constraint]));
   const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
   const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
@@ -539,12 +593,13 @@ const fieldTriangle = z.object({
 }).strict();
 const fieldDataset = z.object({
   schema: z.literal('tunacad-neutral-simulation-field-dataset/2.0'),
-  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal']),
+  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling']),
   step: z.union([
     z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
     z.object({ index: z.number().int().positive(), label: text, modeNumber: z.number().int().positive(), frequencyHz: nonNegative }).strict(),
+    z.object({ index: z.number().int().positive(), label: text, bucklingModeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive }).strict(),
   ]),
-  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude']), unit: z.enum(['mm', 'MPa', 'normalized']),
+  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude']), unit: z.enum(['mm', 'MPa', 'normalized']),
   location: z.literal('boundary_facet'), topology: z.literal('triangle_soup'),
   valueRange: z.object({ minimum: nonNegative, maximum: nonNegative, minimumPositionAnalysisMm: vector, maximumPositionAnalysisMm: vector }).strict(),
   deformation: z.object({ vectorsIncluded: z.literal(true), trueScale: z.literal(1), recommendedScale: positive }).strict(),
@@ -568,6 +623,8 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
     || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' ? 'mm' : page.dataset.component === 'von_mises_stress' ? 'MPa' : 'normalized')
     || (page.dataset.analysisType === 'modal') !== (page.dataset.component === 'mode_shape_magnitude')
     || (page.dataset.analysisType === 'modal') !== ('modeNumber' in page.dataset.step)
+    || (page.dataset.analysisType === 'linear_buckling') !== (page.dataset.component === 'buckling_mode_shape_magnitude')
+    || (page.dataset.analysisType === 'linear_buckling') !== ('bucklingModeNumber' in page.dataset.step)
     || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
     || digest(page.triangles) !== page.chunkDigest) fail('BRIDGE_V2_FIELD_PAGE_INVALID');
   return page;

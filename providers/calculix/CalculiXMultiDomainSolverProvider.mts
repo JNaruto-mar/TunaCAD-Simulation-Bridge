@@ -40,23 +40,24 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     this.executable = resolve(options.executable); this.runtimeVersion = options.runtimeVersion;
     const maximumDomains = options.maximumDomains ?? 16;
     this.capabilities = {
-      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal'],
-      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude'], topology: 'triangle_soup' },
+      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling'],
+      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
         materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force'], maximumLoads: 64,
         maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
         multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
-        modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: true },
+        modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 },
+        buckling: { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] },
       },
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
       durableReferenceMapping: 'supported', authority: 'engineering',
       qualification: {
         status: 'proof_of_concept', engineeringUsePermitted: false,
-        statement: 'Experimental SIM-4B linear-static and SIM-5 constrained-modal CalculiX solver.',
-        limitations: ['Windows development-host evidence only', 'Modal analysis is limited to undamped, linear-elastic, constrained modes with consistent mass', 'Explicit bonded ties, shared topology, and rigid connectors are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
-        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim5-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['free-free-rigid-modes', 'plate-analytical-frequency', 'eigenvalue-mesh-convergence', 'multi-domain-modal-coupling', 'euler-column-linear-buckling', 'independent-engineering-review'] },
+        statement: 'Experimental SIM-4B linear-static and SIM-5 constrained/free-free modal and linear-eigenvalue buckling CalculiX solver.',
+        limitations: ['Windows development-host evidence only', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Explicit bonded ties, shared topology, and rigid connectors are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim5-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
         topology: 'local_adapter', credentials: 'none', geometryLeavesDevice: false,
@@ -132,7 +133,9 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       if (isStopped(run)) return;
       const normalized = run.request.analysis.type === 'modal'
         ? normalizeModal(run, parseCalculiXModalDatV2(contents), parseCalculiXModalFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
-        : (() => {
+        : run.request.analysis.type === 'linear_buckling'
+          ? normalizeBuckling(run, parseCalculiXBucklingDatV2(contents), parseCalculiXBucklingFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
+          : (() => {
           const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
           return normalize(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity')), this.id, this.version, this.runtimeVersion);
         })();
@@ -251,9 +254,67 @@ export function parseCalculiXModalFrdV2(text: string): Map<number, Map<number, N
   return shapes;
 }
 
+interface BucklingDatMode { modeNumber: number; eigenvalueLoadFactor: number }
+
+/** Parse only the bounded CalculiX buckling-factor table. Negative and zero
+ * factors are rejected by this first provider envelope because it qualifies a
+ * compressive reference load in the declared direction, not reverse loading. */
+export function parseCalculiXBucklingDatV2(text: string): { modes: BucklingDatMode[] } {
+  if (text.split(/\r?\n/).length > 2_000_000) throw new Error('CalculiX buckling result contains too many records.');
+  const modes: BucklingDatMode[] = [];
+  let reading = false;
+  const number = '[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[EeDd][-+]?\\d+)?';
+  const row = new RegExp(`^\\s*(\\d+)\\s+(${number})\\s*$`);
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX buckling result contains an oversized record.');
+    const heading = raw.replace(/\s+/g, ' ').trim().toUpperCase();
+    if (heading === 'B U C K L I N G F A C T O R O U T P U T') { reading = true; continue; }
+    if (!reading) continue;
+    const match = row.exec(raw);
+    if (!match) continue;
+    const modeNumber = Number(match[1]);
+    const eigenvalueLoadFactor = Number(match[2].replace(/[dD]/g, 'E'));
+    if (modeNumber !== modes.length + 1 || !(eigenvalueLoadFactor > 0) || !Number.isFinite(eigenvalueLoadFactor) || modes.length >= 12) {
+      throw new Error('CalculiX returned an invalid or non-deterministic buckling-factor sequence.');
+    }
+    modes.push({ modeNumber, eigenvalueLoadFactor });
+  }
+  if (!modes.length) throw new Error('CalculiX did not produce positive linear-buckling factors.');
+  return { modes };
+}
+
+/** CalculiX identifies buckling eigenvectors by positive 100CL load factors,
+ * rather than the 1PMODE records used by frequency analyses. */
+export function parseCalculiXBucklingFrdV2(text: string): { shapes: Map<number, Map<number, NeutralVector3>>; factors: number[] } {
+  if (text.split(/\r?\n/).length > 4_000_000) throw new Error('CalculiX buckling field result contains too many records.');
+  const shapes = new Map<number, Map<number, NeutralVector3>>();
+  const factors: number[] = [];
+  const float = '([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[EeDd][-+]?\\d+)?)';
+  const classRecord = new RegExp(`^\\s*100CL\\s+\\d+\\s+${float}`);
+  let currentFactor = 0; let activeMode: number | null = null; let reading = false;
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX buckling field result contains an oversized record.');
+    const classMatch = classRecord.exec(raw);
+    if (classMatch) { currentFactor = Number(classMatch[1].replace(/[dD]/g, 'E')); reading = false; activeMode = null; continue; }
+    if (/^\s*-4\s+DISP\b/.test(raw)) {
+      reading = false; activeMode = null;
+      if (!(currentFactor > 0) || !Number.isFinite(currentFactor)) continue;
+      activeMode = factors.length + 1; factors.push(currentFactor); shapes.set(activeMode, new Map()); reading = true; continue;
+    }
+    if (reading && /^\s*-3\b/.test(raw)) { reading = false; continue; }
+    if (!reading || activeMode === null || !/^\s*-1\b/.test(raw)) continue;
+    const values = numericFields(raw);
+    if (values.length !== 5 || values[0] !== -1 || !Number.isInteger(values[1]) || values[1] <= 0) throw new Error('CalculiX buckling FRD contains a malformed displacement record.');
+    shapes.get(activeMode)!.set(values[1] - 1, values.slice(2) as NeutralVector3);
+  }
+  if (!shapes.size || shapes.size !== factors.length || [...shapes.values()].some(shape => !shape.size)) throw new Error('CalculiX did not produce buckling displacement fields.');
+  return { shapes, factors };
+}
+
 function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDatV2>, rawShapes: Map<number, Map<number, NeutralVector3>>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
   if (run.request.analysis.type !== 'modal') throw new Error('Modal normalization received a non-modal request.');
-  if (parsed.modes.length > run.request.analysis.settings.requestedModeCount) throw new Error('CalculiX returned more modes than requested.');
+  if (parsed.modes.length > run.request.analysis.settings.requestedModeCount
+    || parsed.modes.some(mode => mode.modeNumber > run.request.analysis.settings.requestedModeCount)) throw new Error('CalculiX returned a mode outside the requested range.');
   const shapes = new Map<number, Map<number, NeutralVector3>>();
   for (const mode of parsed.modes) {
     const raw = rawShapes.get(mode.modeNumber);
@@ -274,8 +335,15 @@ function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDa
     metrics: { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null },
     fieldDatasetIds: parsed.modes.map(mode => modalDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)),
   }));
-  const highestFrequency = Math.max(...parsed.modes.map(mode => mode.frequencyHz));
-  const thresholdHz = Math.max(1e-6, highestFrequency * 1e-6);
+  const firstElasticFrequency = parsed.modes.find(mode => mode.frequencyHz > 0)?.frequencyHz ?? Math.max(...parsed.modes.map(mode => mode.frequencyHz));
+  const thresholdHz = Math.max(1e-6, firstElasticFrequency * 1e-4);
+  const omittedLeadingModeNumbers = run.request.constraints.length ? [] : Array.from({ length: Math.max(0, parsed.modes[0].modeNumber - 1) }, (_, index) => index + 1);
+  const reportedRigidModeNumbers = parsed.modes.filter(mode => mode.frequencyHz <= thresholdHz).map(mode => mode.modeNumber);
+  const rigidModeNumbers = [...new Set([...omittedLeadingModeNumbers, ...reportedRigidModeNumbers])].sort((a, b) => a - b);
+  const expectedRigidModeCount: 0 | 6 = run.request.constraints.length ? 0 : 6;
+  if (rigidModeNumbers.length > 6 || (!run.request.constraints.length && (rigidModeNumbers.length !== 6 || rigidModeNumbers.some((modeNumber, index) => modeNumber !== index + 1)))) {
+    throw new Error(`CalculiX free-free rigid-body classification is incomplete or ambiguous (${rigidModeNumbers.join(', ') || 'none'}).`);
+  }
   const completedAt = new Date().toISOString();
   const modes = parsed.modes.map(mode => ({ ...mode, fieldDatasetIds: run.model.domainRegions.map(domain => modalDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)) }));
   const result: NeutralSimulationResultV2 = {
@@ -284,7 +352,7 @@ function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDa
     analysisType: 'modal', status: 'succeeded', authority: 'engineering',
     metrics: { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null },
     perDomain, reactions: [], criticalRegions: [], failedConstraints: [],
-    warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-5 constrained-modal result; qualified-engineer review is mandatory.', severity: 'warning' }],
+    warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: `Experimental SIM-5 ${run.request.constraints.length ? 'constrained' : 'free-free'} modal result; qualified-engineer review is mandatory.`, severity: 'warning' }],
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
     suggestedEngineeringIssues: ['Verify frequency convergence, boundary conditions, density, and effective-mass coverage.'],
     modal: {
@@ -292,10 +360,69 @@ function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDa
       requestedModeCount: run.request.analysis.settings.requestedModeCount, modes,
       totalEffectiveModalMass: parsed.totalEffectiveModalMass, totalEffectiveMass: parsed.totalEffectiveMass,
       effectiveMassCoverage: parsed.totalEffectiveModalMass.map((value, axis) => parsed.totalEffectiveMass[axis] > 0 ? value / parsed.totalEffectiveMass[axis] : 0) as ModalSix,
-      rigidBodyModeDiagnostics: { thresholdHz, modeNumbers: modes.filter(mode => mode.frequencyHz <= thresholdHz).map(mode => mode.modeNumber) },
+      rigidBodyModeDiagnostics: {
+        thresholdHz, expectedModeCount: expectedRigidModeCount, detectedModeCount: rigidModeNumbers.length,
+        modeNumbers: rigidModeNumbers, status: rigidModeNumbers.length === expectedRigidModeCount ? 'complete' : 'incomplete',
+      },
     },
     provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId, submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
-    review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental constrained-modal result. Not certified.` },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental modal result. Not certified.` },
+    mutation: { occurred: false, projectRevisionBefore: run.request.model.projectRevision, projectRevisionAfter: run.request.model.projectRevision },
+  };
+  return { result, datasets };
+}
+
+function normalizeBuckling(run: Run, parsed: ReturnType<typeof parseCalculiXBucklingDatV2>, rawFields: ReturnType<typeof parseCalculiXBucklingFrdV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
+  if (run.request.analysis.type !== 'linear_buckling') throw new Error('Buckling normalization received a non-buckling request.');
+  if (parsed.modes.length > run.request.analysis.settings.requestedModeCount || parsed.modes.length !== rawFields.factors.length) {
+    throw new Error('CalculiX returned a buckling-mode count outside the requested range.');
+  }
+  const shapes = new Map<number, Map<number, NeutralVector3>>();
+  for (const mode of parsed.modes) {
+    const raw = rawFields.shapes.get(mode.modeNumber);
+    const fieldFactor = rawFields.factors[mode.modeNumber - 1];
+    if (!raw || run.model.nodes.some((_, node) => !raw.has(node))
+      || Math.abs(fieldFactor - mode.eigenvalueLoadFactor) > Math.max(1e-8, Math.abs(mode.eigenvalueLoadFactor) * 1e-5)) {
+      throw new Error(`CalculiX omitted or mismatched buckling field data for mode ${mode.modeNumber}.`);
+    }
+    let anchorNode = -1; let maximum = -Infinity;
+    for (const [node, vector] of [...raw.entries()].sort(([a], [b]) => a - b)) {
+      const magnitude = Math.hypot(...vector);
+      if (magnitude > maximum) { maximum = magnitude; anchorNode = node; }
+    }
+    if (!(maximum > 0) || anchorNode < 0) throw new Error(`CalculiX buckling mode ${mode.modeNumber} has a zero or invalid eigenvector.`);
+    const anchor = raw.get(anchorNode)!; const dominant = anchor.reduce((best, value, index) => Math.abs(value) > Math.abs(anchor[best]) ? index : best, 0);
+    const sign = anchor[dominant] < 0 ? -1 : 1;
+    shapes.set(mode.modeNumber, new Map([...raw].map(([node, vector]) => [node, vector.map(value => sign * value / maximum) as NeutralVector3])));
+  }
+  const datasets = buildBucklingFieldDatasets(run, parsed.modes, shapes);
+  const perDomain = run.model.domainRegions.map(domain => ({
+    domainId: domain.domainId,
+    metrics: { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null },
+    fieldDatasetIds: parsed.modes.map(mode => bucklingDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)),
+  }));
+  const completedAt = new Date().toISOString();
+  const modes = parsed.modes.map(mode => ({ ...mode, fieldDatasetIds: run.model.domainRegions.map(domain => bucklingDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)) }));
+  const result: NeutralSimulationResultV2 = {
+    schema: 'tunacad-neutral-simulation-result/2.0', studyId: run.request.studyId, jobId: run.providerRunId,
+    requestDigest: run.request.requestDigest, projectRevision: run.request.model.projectRevision, modelDigest: run.request.model.modelDigest,
+    analysisType: 'linear_buckling', status: 'succeeded', authority: 'engineering',
+    metrics: { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null },
+    perDomain, reactions: [], criticalRegions: [], failedConstraints: [],
+    warnings: [
+      { code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-5 linear-buckling result; qualified-engineer review is mandatory.', severity: 'warning' },
+      { code: 'SIMULATION_LINEAR_BUCKLING_LIMITATION', message: 'Eigenvalue load factors predict idealized linear bifurcation from the declared reference load. They do not predict nonlinear collapse, imperfections, plasticity, or contact changes.', severity: 'warning' },
+    ],
+    convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Verify eigenvalue mesh convergence and evaluate geometric/material imperfections with nonlinear analysis before using a collapse load.'],
+    buckling: {
+      preloadCaseId: run.request.analysis.settings.preloadCase.id,
+      requestedModeCount: run.request.analysis.settings.requestedModeCount,
+      solverNormalization: 'eigenvector', visualizationNormalization: 'maximum_vector_magnitude_1',
+      prediction: 'linear_eigenvalue_not_nonlinear_collapse', modes,
+    },
+    provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId, submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental linear-buckling result. Not certified.` },
     mutation: { occurred: false, projectRevisionBefore: run.request.model.projectRevision, projectRevisionAfter: run.request.model.projectRevision },
   };
   return { result, datasets };
@@ -314,6 +441,28 @@ function buildModalFieldDatasets(run: Run, modes: ModalDatMode[], shapes: Map<nu
       schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId, jobId: run.providerRunId, domainId: domain.domainId,
       analysisType: 'modal', step: { index: mode.modeNumber, label: `Mode ${mode.modeNumber}`, modeNumber: mode.modeNumber, frequencyHz: mode.frequencyHz },
       component: 'mode_shape_magnitude', unit: 'normalized', location: 'boundary_facet', topology: 'triangle_soup',
+      valueRange: fieldExtrema(triangles), deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: boundingDiagonal(domain.nodeIndices.map(index => run.model.nodes[index])) * 0.08 },
+      mapping: { domain: 'exact', cadRegions: 'partial', semanticReferenceIds: [...new Set(references)].sort(compareText) },
+      totalTriangles: triangles.length, maximumPageTriangles: 128, datasetDigest: digest(triangles),
+    };
+    datasets.set(datasetId, { descriptor, triangles });
+  }
+  return datasets;
+}
+
+function buildBucklingFieldDatasets(run: Run, modes: BucklingDatMode[], shapes: Map<number, Map<number, NeutralVector3>>) {
+  const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
+  for (const mode of modes) for (const domain of run.model.domainRegions) {
+    const shape = shapes.get(mode.modeNumber)!;
+    const triangles = renderTriangles(run, domain.domainId, shape).map(triangle => ({
+      ...triangle, values: triangle.displacementsMm.map(vector => Math.hypot(...vector)) as [number, number, number],
+    }));
+    const datasetId = bucklingDatasetId(run.providerRunId, domain.domainId, mode.modeNumber);
+    const references = run.model.boundaryRegions.filter(region => region.domainId === domain.domainId).flatMap(region => region.semanticReferenceIds);
+    const descriptor: NeutralSimulationFieldDatasetV2 = {
+      schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId, jobId: run.providerRunId, domainId: domain.domainId,
+      analysisType: 'linear_buckling', step: { index: mode.modeNumber, label: `Buckling mode ${mode.modeNumber}`, bucklingModeNumber: mode.modeNumber, eigenvalueLoadFactor: mode.eigenvalueLoadFactor },
+      component: 'buckling_mode_shape_magnitude', unit: 'normalized', location: 'boundary_facet', topology: 'triangle_soup',
       valueRange: fieldExtrema(triangles), deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: boundingDiagonal(domain.nodeIndices.map(index => run.model.nodes[index])) * 0.08 },
       mapping: { domain: 'exact', cadRegions: 'partial', semanticReferenceIds: [...new Set(references)].sort(compareText) },
       totalTriangles: triangles.length, maximumPageTriangles: 128, datasetDigest: digest(triangles),
@@ -345,6 +494,7 @@ function numericFields(line: string): number[] {
 }
 function missingModal(label: string): never { throw new Error(`CalculiX omitted ${label}.`); }
 function modalDatasetId(runId: string, domainId: string, modeNumber: number): string { return `${runId}:${domainId}:mode:${String(modeNumber).padStart(3, '0')}`; }
+function bucklingDatasetId(runId: string, domainId: string, modeNumber: number): string { return `${runId}:${domainId}:buckling:${String(modeNumber).padStart(3, '0')}`; }
 
 function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
   const mesh = asV1Mesh(run.model);

@@ -45,7 +45,9 @@ try {
   if (result.analysisType !== 'modal') throw new Error('Expected modal result.');
   assert.ok(result.modal.modes.length >= 1 && result.modal.modes.length <= 6);
   assert.ok(result.modal.modes.every(mode => mode.frequencyHz <= 2000), 'The upper frequency bound must filter returned modes.');
-  assert.equal(result.modal.rigidBodyModeDiagnostics.modeNumbers.length, 0, 'A fixed cantilever must not contain rigid-body modes.');
+  assert.deepEqual(result.modal.rigidBodyModeDiagnostics, {
+    thresholdHz: result.modal.rigidBodyModeDiagnostics.thresholdHz, expectedModeCount: 0, detectedModeCount: 0, modeNumbers: [], status: 'complete',
+  }, 'A fixed cantilever must not contain rigid-body modes.');
   const beta1 = 1.875104068711961;
   const expectedHz = beta1 ** 2 / (2 * Math.PI * 0.1 ** 2) * Math.sqrt(210e9 * (0.01 * 0.005 ** 3 / 12) / (7850 * 0.01 * 0.005));
   const relativeError = Math.abs(result.modal.modes[0].frequencyHz - expectedHz) / expectedHz;
@@ -62,7 +64,33 @@ try {
     cursor = page.nextCursor ?? undefined;
   } while (cursor !== undefined);
   assert.ok(Math.max(...magnitudes) > 0.999 && Math.max(...magnitudes) <= 1.000001, 'Visualization eigenvector must use deterministic max-vector normalization.');
-  console.log(JSON.stringify({ expectedFirstFrequencyHz: expectedHz, calculatedFirstFrequencyHz: result.modal.modes[0].frequencyHz, relativeError, modes: result.modal.modes.map(mode => mode.frequencyHz), effectiveMassCoverage: result.modal.effectiveMassCoverage }, null, 2));
+
+  const freeFreeRequest = modalRequest();
+  freeFreeRequest.studyId = 'sim5-free-free-cantilever';
+  freeFreeRequest.name = 'Free-free steel beam modes';
+  freeFreeRequest.model.references = [];
+  freeFreeRequest.constraints = [];
+  freeFreeRequest.analysis.settings.requestedModeCount = 12;
+  freeFreeRequest.analysis.settings.maximumFrequencyHz = null;
+  reseal(freeFreeRequest);
+  validateNeutralSimulationRequestV2(freeFreeRequest);
+  const constrainedOnly: any = structuredClone(solver.capabilities); constrainedOnly.study.modal.constrainedOnly = true;
+  assert.equal(admitV2SimulationRequest(freeFreeRequest, constrainedOnly).accepted, false, 'Free-free modal transfer must fail against a constrained-only provider.');
+  assert.deepEqual(admitV2SimulationRequest(freeFreeRequest, solver.capabilities), { accepted: true });
+  const freeFreeModel = await mesher.mesh(freeFreeRequest, { descriptor: freeFreeRequest.model, async exportDomain() { return step; } });
+  const freeFreeDeck = createCalculiXInputDeckV2(freeFreeRequest, freeFreeModel);
+  assert.doesNotMatch(freeFreeDeck, /^\*BOUNDARY$/m);
+  const freeFreeSubmission = await solver.submit(freeFreeRequest, freeFreeModel);
+  const freeFreeResult = await waitForResult(solver, freeFreeSubmission.providerRunId);
+  assert.equal(freeFreeResult.analysisType, 'modal');
+  if (freeFreeResult.analysisType !== 'modal') throw new Error('Expected free-free modal result.');
+  assert.deepEqual(freeFreeResult.modal.rigidBodyModeDiagnostics.modeNumbers, [1, 2, 3, 4, 5, 6], 'A free-free solid must diagnose exactly six leading rigid-body modes.');
+  assert.equal(freeFreeResult.modal.rigidBodyModeDiagnostics.expectedModeCount, 6);
+  assert.equal(freeFreeResult.modal.rigidBodyModeDiagnostics.detectedModeCount, 6);
+  assert.equal(freeFreeResult.modal.rigidBodyModeDiagnostics.status, 'complete');
+  assert.ok(freeFreeResult.modal.modes[0]?.modeNumber === 7 && freeFreeResult.modal.modes[0].frequencyHz > freeFreeResult.modal.rigidBodyModeDiagnostics.thresholdHz, 'The first elastic mode must follow the six rigid-body modes.');
+  console.log(JSON.stringify({ expectedFirstFrequencyHz: expectedHz, calculatedFirstFrequencyHz: result.modal.modes[0].frequencyHz, relativeError, modes: result.modal.modes.map(mode => mode.frequencyHz), effectiveMassCoverage: result.modal.effectiveMassCoverage,
+    freeFree: { rigidBodyModeDiagnostics: freeFreeResult.modal.rigidBodyModeDiagnostics, firstElasticModeNumber: freeFreeResult.modal.modes[0].modeNumber, firstElasticFrequencyHz: freeFreeResult.modal.modes[0].frequencyHz } }, null, 2));
 } finally {
   await rm(directory, { recursive: true, force: true });
 }

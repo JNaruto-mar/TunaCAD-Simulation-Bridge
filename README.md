@@ -105,6 +105,9 @@ npm run test:sim3-benchmarks
 npm run test:sim3-matrix
 npm run test:sim4a-matrix
 npm run test:sim5-modal
+npm run test:sim5-modal-qualification
+npm run test:sim5-multidomain-modal
+npm run test:sim5-linear-buckling
 npm run test:sim5-matrix
 ```
 
@@ -140,6 +143,18 @@ gravity with an analytical distributed-body-force comparison, and axial plus
 multi-component prescribed displacement with `EAδ/L` and superposition. All
 automated lanes pass, but this matrix remains proof-of-concept and is not
 advertised as qualified provider evidence while independent review is pending.
+
+The SIM-5 v2 envelope supports homogeneously restrained modal studies,
+single-domain free-free modal studies, explicit bonded multi-domain modal
+coupling, and single-domain linear-eigenvalue buckling under a declared
+surface-force preload. Free-free results explicitly classify the six
+leading rigid-body modes that CalculiX omits from field output, preserve the
+solver's mode numbering, and reject ambiguous rigid-mode classifications. The
+real qualification fixtures cover a beam analytical comparison, free-free
+rigid modes, and a three-level fully clamped square-plate refinement sequence
+against the declared Kirchhoff-Love solution. They also cover a bonded
+two-domain cantilever and a fixed-free Euler column. All automated SIM-5 lanes
+pass; independent engineering review remains pending.
 
 ## SIM-4A version 2 contract foundation
 
@@ -181,30 +196,44 @@ revision around every domain export. The formal SIM-4A matrix records all
 automated lanes as passed, but independent engineering review is still pending,
 so the pipeline remains `proof_of_concept` and engineering use is not permitted.
 
-## SIM-5 constrained modal increment
+## SIM-5 modal and linear-buckling increment
 
 The first SIM-5 vertical slice adds v2 `modal` requests with 1–24 requested
 modes, optional lower/upper frequency bounds, consistent mass, required
-material density, no loads, and homogeneous fixed or zero-displacement
-restraints. CalculiX `*FREQUENCY` output is normalized into natural
+material density, no loads, and either homogeneous fixed/zero-displacement
+restraints or an empty constraint set for a single-domain free-free study. The
+capability profile exposes this limit as `maximumFreeFreeDomains: 1`, so larger
+free-free models fail admission before geometry transfer.
+CalculiX `*FREQUENCY` output is normalized into natural
 frequencies, six-axis participation factors, effective modal masses, and
 rigid-body-mode diagnostics. Bounded FRD eigenvectors become per-domain,
 digest-verified `mode_shape_magnitude` pages with deterministic maximum-vector
 normalization for browser animation; this normalization is explicitly not a
 physical displacement amplitude.
 
-The real constrained steel-cantilever fixture and its proof-of-concept matrix
-run with:
+The additive `linear_buckling` request declares 1–12 modes and one unit-scale
+preload case that exactly names every submitted load. The first provider
+envelope is intentionally limited to one domain, fixed FACE supports,
+surface-force preload, and no interactions. CalculiX `*BUCKLE` factors and FRD
+eigenvectors become digest-verified `buckling_mode_shape_magnitude` pages. A
+mandatory warning states that these idealized bifurcation factors are not
+nonlinear collapse predictions and do not include imperfections, plasticity,
+or contact changes.
+
+The real constrained steel-cantilever, free-free beam, and clamped-plate
+refinement fixtures and their proof-of-concept matrix run with:
 
 ```powershell
 npm run test:sim5-modal
+npm run test:sim5-modal-qualification
+npm run test:sim5-multidomain-modal
+npm run test:sim5-linear-buckling
 npm run test:sim5-matrix
 ```
 
-Free-free diagnostics, plate frequencies, eigenvalue mesh convergence,
-multi-domain modal coupling, linear buckling, and independent engineering
-review remain before SIM-5 qualification.
-The reviewer packet is `qualification/SIM4A_INDEPENDENT_ENGINEERING_REVIEW.md`.
+All automated mechanics lanes pass. Independent engineering review remains
+before SIM-5 qualification. The reviewer packet is
+`qualification/SIM5_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
 SIM-4B supports explicitly declared nonconformal `bonded_tie`, conformal
 `shared_topology`, and six-degree-of-freedom `rigid_connector` interactions. A

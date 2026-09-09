@@ -14,7 +14,7 @@ export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
-export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal';
+export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
@@ -367,6 +367,16 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
     };
   };
   requestedResults: Array<'natural_frequencies' | 'mode_shapes' | 'participation_factors' | 'effective_modal_mass'>;
+} | {
+  analysis: {
+    type: 'linear_buckling';
+    assumptions: ['linear_elasticity', 'small_displacement_preload', 'eigenvalue_buckling'];
+    settings: {
+      requestedModeCount: number;
+      preloadCase: { id: string; name: string; loadIds: string[]; scaleFactor: 1 };
+    };
+  };
+  requestedResults: Array<'buckling_load_factors' | 'buckling_mode_shapes'>;
 });
 
 export interface NeutralMeshJobRequestV2 {
@@ -519,6 +529,12 @@ export interface NeutralModalModeV2 {
   fieldDatasetIds: string[];
 }
 
+export interface NeutralBucklingModeV2 {
+  modeNumber: number;
+  eigenvalueLoadFactor: number;
+  fieldDatasetIds: string[];
+}
+
 export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
   analysisType: 'linear_static';
 } | {
@@ -532,7 +548,23 @@ export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
     totalEffectiveModalMass: [number, number, number, number, number, number];
     totalEffectiveMass: [number, number, number, number, number, number];
     effectiveMassCoverage: [number, number, number, number, number, number];
-    rigidBodyModeDiagnostics: { thresholdHz: number; modeNumbers: number[] };
+    rigidBodyModeDiagnostics: {
+      thresholdHz: number;
+      expectedModeCount: 0 | 6;
+      detectedModeCount: number;
+      modeNumbers: number[];
+      status: 'complete' | 'incomplete';
+    };
+  };
+} | {
+  analysisType: 'linear_buckling';
+  buckling: {
+    preloadCaseId: string;
+    requestedModeCount: number;
+    solverNormalization: 'eigenvector';
+    visualizationNormalization: 'maximum_vector_magnitude_1';
+    prediction: 'linear_eigenvalue_not_nonlinear_collapse';
+    modes: NeutralBucklingModeV2[];
   };
 });
 
@@ -578,6 +610,11 @@ export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Bas
   step: { index: number; label: string; modeNumber: number; frequencyHz: number };
   component: 'mode_shape_magnitude';
   unit: 'normalized';
+} | {
+  analysisType: 'linear_buckling';
+  step: { index: number; label: string; bucklingModeNumber: number; eigenvalueLoadFactor: number };
+  component: 'buckling_mode_shape_magnitude';
+  unit: 'normalized';
 });
 
 export interface NeutralSimulationFieldTriangleV2 {
@@ -605,7 +642,7 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
   fieldResults: {
     paginated: true;
     maximumPageTriangles: number;
-    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude'>;
+    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude'>;
     topology: 'triangle_soup';
   };
   study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
@@ -624,6 +661,14 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       frequencyBounds: true;
       massFormulations: readonly ['consistent'];
       constrainedOnly: boolean;
+      maximumFreeFreeDomains: number;
+    };
+    buckling?: {
+      maximumModes: number;
+      maximumDomains: number;
+      preloadCaseRequired: true;
+      loadTypes: readonly ['surface_force'];
+      constraintTypes: readonly ['fixed'];
     };
   };
 }
@@ -903,12 +948,16 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static' | 'modal';
+  analysisType: 'linear_static' | 'modal' | 'linear_buckling';
   modal?: {
     requestedModeCount: number;
     minimumFrequencyHz?: number | null;
     maximumFrequencyHz?: number | null;
     massFormulation?: 'consistent';
+  };
+  buckling?: {
+    requestedModeCount: number;
+    preloadCase: { id: string; name: string; loadIds: string[]; scaleFactor?: 1 };
   };
   domains: Array<{
     domainId: string;

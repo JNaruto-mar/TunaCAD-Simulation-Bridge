@@ -1,10 +1,21 @@
 # Optional external CalculiX SolverProvider
 
-`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A deck generation. It
-creates deterministic per-domain C3D10 element/node sets, per-material elastic
-and density cards, per-domain solid sections, analysis-coordinate loads and
-constraints, and per-domain result print requests. It emits no tie, contact, or
-rigid-body behavior.
+`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5 deck generation.
+It creates deterministic per-domain C3D10 element/node sets, per-material
+elastic and density cards, per-domain solid sections, analysis-coordinate
+loads and constraints, and per-domain result print requests. It emits explicit
+ties and rigid connectors only when requested, but no separable or frictional
+contact.
+
+The SIM-5 path emits consistent-mass `*FREQUENCY` studies for homogeneously
+restrained models and single-domain free-free models. Free-free normalization
+classifies CalculiX's six solver-omitted singular modes, preserves the first
+elastic mode number (7), and never fabricates a rigid-mode field vector.
+It also emits `*BUCKLE` for a single-domain, fixed-support, surface-force
+preload envelope. Positive eigenvalue factors and bounded FRD eigenvectors are
+cross-checked and normalized for visualization. They predict idealized linear
+bifurcation only—not nonlinear collapse, imperfections, plasticity, or changing
+contact.
 
 This Node-only adapter consumes TunaCAD's unchanged neutral FEM mesh and writes
 a bounded linear-static C3D10 input deck for a user-installed CalculiX `ccx`
