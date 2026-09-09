@@ -1,7 +1,7 @@
 {
   "schema": "tunacad-simulation-qualification-matrix/1.0",
   "matrixId": "sim4b-windows-x64-gmsh-4.15.2-calculix-2.16",
-  "scope": "Experimental SIM-4B explicit rigid connectors, remote loads/supports, normalized connector force/moment resultants, and the two-domain bolted L-bracket surrogate.",
+  "scope": "Experimental SIM-4B explicit rigid connectors, remote loads/supports, normalized connector force/moment resultants, the two-domain bolted L-bracket surrogate, and deterministic disconnected/underconstrained failure admission.",
   "environment": {
     "os": "win32",
     "architecture": "x64",
@@ -12,13 +12,14 @@
   "qualification": {
     "status": "proof_of_concept",
     "engineeringUsePermitted": false,
-    "recordedAt": "2026-09-08"
+    "recordedAt": "2026-09-09"
   },
   "promotionPolicy": {
     "requiredLaneIds": [
       "rigid-connector-contract-admission",
       "normalized-connector-moment-recovery",
       "bolted-bracket-rigid-connectors",
+      "disconnected-underconstrained-failures",
       "independent-engineering-review"
     ],
     "requiresAllPassed": true,
@@ -65,6 +66,22 @@
         "momentAbsoluteToleranceNmm": 10,
         "connectorCount": 2,
         "bondedTieCount": 1
+      }
+    },
+    {
+      "id": "disconnected-underconstrained-failures",
+      "category": "mechanics",
+      "state": "passed",
+      "acceptance": "The explicit domain-interaction graph and six-rigid-body-mode restraint rank reject an unsupported disconnected component and a connected bracket with one free rotation before CalculiX launch, preserve stable failure codes through the asynchronous provider lifecycle, and quarantine results.",
+      "command": "npm run test:sim4b-failures",
+      "evidence": {
+        "disconnectedFailure": "SIMULATION_MODEL_DISCONNECTED",
+        "underconstrainedFailure": "SIMULATION_MODEL_UNDERCONSTRAINED",
+        "requiredRigidBodyRank": 6,
+        "failurePhase": "failed",
+        "resultQuarantined": true,
+        "solverLaunchBlocked": true,
+        "independentlySupportedDisconnectedDomains": "admitted"
       }
     },
     {

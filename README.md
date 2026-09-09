@@ -210,6 +210,15 @@ bolt group. The expected support resultants are `[-1000, 0, 0]` N and
 until independent engineering review. The reviewer packet is
 `qualification/SIM4B_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
+Before CalculiX launch, the v2 deck now forms connected components exclusively
+from explicit bonded-tie and shared-topology interactions. It evaluates the
+six rigid-body restraint modes of every component from direct and remote
+constraints. An independently unsupported component fails with
+`SIMULATION_MODEL_DISCONNECTED`; a single connected component with a free
+rigid mode fails with `SIMULATION_MODEL_UNDERCONSTRAINED`. Independently fully
+restrained disconnected domains remain valid. Both failures retain their code
+through the asynchronous composed-provider lifecycle and expose no result.
+
 ```powershell
 npm run test:sim4a-contracts
 $env:TUNACAD_GMSH_EXECUTABLE = 'C:\path\to\gmsh.exe'
@@ -218,6 +227,7 @@ npm run test:sim4a-providers
 npm run test:sim4a-matrix
 npm run test:sim4b-connections
 npm run test:sim4b-bracket
+npm run test:sim4b-failures
 npm run test:sim4b-matrix
 ```
 

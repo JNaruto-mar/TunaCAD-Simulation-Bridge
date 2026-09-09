@@ -16,6 +16,9 @@ The reviewer must independently assess:
 - the choice to return `momentNmm: null` for direct FACE constraints without a
   unique reduction point; and
 - the fail-closed connector admission and malformed loaded-support fixture.
+- the explicit interaction-graph component construction, six-rigid-body-mode
+  restraint-rank calculation, and stable disconnected/underconstrained failure
+  classifications.
 
 Run the evidence on Windows x64 with Node 24, Gmsh 4.15.2, and CalculiX 2.16:
 
@@ -23,6 +26,7 @@ Run the evidence on Windows x64 with Node 24, Gmsh 4.15.2, and CalculiX 2.16:
 npm run test:sim4a-contracts
 npm run test:sim4b-connections
 npm run test:sim4b-bracket
+npm run test:sim4b-failures
 npm run test:sim4b-matrix
 ```
 

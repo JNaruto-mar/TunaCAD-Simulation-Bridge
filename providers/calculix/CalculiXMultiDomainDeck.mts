@@ -22,6 +22,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   if (model.element.geometryOrder !== 2 || model.element.solutionOrder !== 2 || model.volumeElements.connectivity.some(cell => cell.length !== 10)) {
     throw deckError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The SIM-4A CalculiX deck requires complete second-order C3D10 tetrahedra.');
   }
+  validateStructuralStabilityV2(request, model);
   const mesh = asV1Mesh(model);
   const materials = [...request.materials].sort((a, b) => compareText(a.id, b.id));
   const materialNames = new Map(materials.map((material, index) => [material.id, `MATERIAL_${String(index + 1).padStart(3, '0')}`]));
@@ -171,6 +172,108 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     '*END STEP',
   ];
   return `${lines.join('\n')}\n`;
+}
+
+/** Fail before solver launch when an explicit multi-domain connection graph
+ * contains an independently unsupported component, or when one connected
+ * assembly leaves a rigid-body mode free. The rank calculation considers only
+ * declared constraints; touching geometry and assembly proximity add no rows. */
+export function validateStructuralStabilityV2(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): void {
+  const domainIds = model.domainRegions.map(domain => domain.domainId).sort(compareText);
+  const parent = new Map(domainIds.map(domainId => [domainId, domainId]));
+  const find = (domainId: string): string => {
+    const current = parent.get(domainId);
+    if (!current) throw deckError('SIMULATION_MODEL_DISCONNECTED', `Unknown structural domain "${domainId}".`);
+    if (current === domainId) return current;
+    const root = find(current); parent.set(domainId, root); return root;
+  };
+  const union = (left: string, right: string): void => {
+    const leftRoot = find(left); const rightRoot = find(right);
+    if (leftRoot === rightRoot) return;
+    const [root, child] = [leftRoot, rightRoot].sort(compareText);
+    parent.set(child, root);
+  };
+  const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
+  for (const interaction of request.interactions) {
+    if (interaction.type === 'rigid_connector') continue;
+    const secondary = referenceDomains.get(interaction.secondaryReferenceIds[0]);
+    const primary = referenceDomains.get(interaction.primaryReferenceIds[0]);
+    if (!secondary || !primary) throw deckError('SIMULATION_MODEL_DISCONNECTED', `Interaction "${interaction.id}" has unresolved domain ownership.`);
+    union(secondary, primary);
+  }
+  const components = new Map<string, string[]>();
+  for (const domainId of domainIds) {
+    const root = find(domainId); const members = components.get(root) ?? []; members.push(domainId); components.set(root, members);
+  }
+  const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
+  const failures: Array<{ domains: string[]; rank: number }> = [];
+  for (const domains of [...components.values()].map(items => items.sort(compareText)).sort((a, b) => compareText(a[0], b[0]))) {
+    const domainSet = new Set(domains);
+    const componentNodes = [...new Set(model.domainRegions.filter(domain => domainSet.has(domain.domainId)).flatMap(domain => domain.nodeIndices))];
+    const origin = centroid(componentNodes.map(node => model.nodes[node]));
+    const rows: number[][] = [];
+    for (const constraint of request.constraints) {
+      if (constraint.type === 'remote_displacement') {
+        const connector = connectors.get(constraint.connectorId);
+        if (!connector || !domainSet.has(referenceDomains.get(connector.semanticReferenceIds[0]) ?? '')) continue;
+        const point = subtractPoint(connector.referencePointAnalysisMm, origin);
+        constraint.translationMm.forEach((value, axis) => { if (value !== null) rows.push(rigidTranslationRow(point, axis)); });
+        constraint.rotationRad.forEach((value, axis) => { if (value !== null) rows.push([0, 0, 0, axis === 0 ? 1 : 0, axis === 1 ? 1 : 0, axis === 2 ? 1 : 0]); });
+        continue;
+      }
+      const regions = requireRegions(model, constraint.semanticReferenceIds).filter(region => domainSet.has(region.domainId));
+      const nodes = [...new Set(regions.flatMap(region => region.facetIndices.flatMap(facet => model.boundaryFacets.connectivity[facet])))];
+      const restrained = constraint.type === 'fixed' ? [true, true, true] : constraint.displacementMm.map(value => value !== null);
+      for (const node of nodes) restrained.forEach((active, axis) => { if (active) rows.push(rigidTranslationRow(subtractPoint(model.nodes[node], origin), axis)); });
+    }
+    const rank = matrixRank(rows, 6);
+    if (rank < 6) failures.push({ domains, rank });
+  }
+  if (!failures.length) return;
+  const detail = failures.map(failure => `[${failure.domains.join(', ')}] rank ${failure.rank}/6`).join('; ');
+  if (components.size > 1) {
+    throw deckError('SIMULATION_MODEL_DISCONNECTED', `The explicit interaction graph leaves independently unsupported domain component(s): ${detail}. Every disconnected component must be fully restrained or explicitly connected.`);
+  }
+  throw deckError('SIMULATION_MODEL_UNDERCONSTRAINED', `The connected structural model has free rigid-body modes: ${detail}. Add independent restraints until the rigid-body restraint rank is 6/6.`);
+}
+
+function rigidTranslationRow(point: NeutralVector3, axis: number): number[] {
+  if (axis === 0) return [1, 0, 0, 0, point[2], -point[1]];
+  if (axis === 1) return [0, 1, 0, -point[2], 0, point[0]];
+  return [0, 0, 1, point[1], -point[0], 0];
+}
+
+function matrixRank(input: number[][], columns: number): number {
+  const rows = input.map(row => {
+    const scale = Math.hypot(...row);
+    return scale > 0 ? row.map(value => value / scale) : [...row];
+  });
+  let rank = 0;
+  for (let column = 0; column < columns && rank < rows.length; column += 1) {
+    let pivot = rank;
+    for (let row = rank + 1; row < rows.length; row += 1) if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+    if (Math.abs(rows[pivot][column]) <= 1e-9) continue;
+    [rows[rank], rows[pivot]] = [rows[pivot], rows[rank]];
+    const divisor = rows[rank][column];
+    for (let index = column; index < columns; index += 1) rows[rank][index] /= divisor;
+    for (let row = 0; row < rows.length; row += 1) {
+      if (row === rank) continue;
+      const factor = rows[row][column];
+      for (let index = column; index < columns; index += 1) rows[row][index] -= factor * rows[rank][index];
+    }
+    rank += 1;
+  }
+  return rank;
+}
+
+function centroid(points: NeutralVector3[]): NeutralVector3 {
+  if (!points.length) throw deckError('SIMULATION_MODEL_DISCONNECTED', 'A structural domain component contains no mesh nodes.');
+  const sum = points.reduce<NeutralVector3>((total, point) => [total[0] + point[0], total[1] + point[1], total[2] + point[2]], [0, 0, 0]);
+  return [sum[0] / points.length, sum[1] / points.length, sum[2] / points.length];
+}
+
+function subtractPoint(point: NeutralVector3, origin: NeutralVector3): NeutralVector3 {
+  return [point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]];
 }
 
 function validateSharedTopology(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): void {

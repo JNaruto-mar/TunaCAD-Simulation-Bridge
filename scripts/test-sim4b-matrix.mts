@@ -51,6 +51,14 @@ assert.deepEqual(bracketLane.evidence?.expectedSupportReactionForceN, fixture.ex
 assert.deepEqual(bracketLane.evidence?.expectedSupportReactionMomentNmm, fixture.expected.supportReactionMomentNmm);
 assert.equal(bracketLane.evidence?.forceAbsoluteToleranceN, fixture.expected.forceAbsoluteToleranceN);
 assert.equal(bracketLane.evidence?.momentAbsoluteToleranceNmm, fixture.expected.momentAbsoluteToleranceNmm);
+const failureLane = byId.get('disconnected-underconstrained-failures')!;
+assert.equal(failureLane.command, 'npm run test:sim4b-failures');
+assert.equal(failureLane.evidence?.disconnectedFailure, 'SIMULATION_MODEL_DISCONNECTED');
+assert.equal(failureLane.evidence?.underconstrainedFailure, 'SIMULATION_MODEL_UNDERCONSTRAINED');
+assert.equal(failureLane.evidence?.requiredRigidBodyRank, 6);
+assert.equal(failureLane.evidence?.resultQuarantined, true);
+assert.equal(failureLane.evidence?.solverLaunchBlocked, true);
+assert.equal(failureLane.evidence?.independentlySupportedDisconnectedDomains, 'admitted');
 const review = byId.get('independent-engineering-review');
 if (review?.state === 'passed') reviewEvidence.parse(review.evidence);
 const pending = matrix.promotionPolicy.requiredLaneIds.filter(id => byId.get(id)?.state !== 'passed');
