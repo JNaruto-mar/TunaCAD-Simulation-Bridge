@@ -235,6 +235,41 @@ All automated mechanics lanes pass. Independent engineering review remains
 before SIM-5 qualification. The reviewer packet is
 `qualification/SIM5_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
+## SIM-6A frictionless contact foundation
+
+The additive v2 `static_contact` envelope implements the first SIM-6 increment:
+exactly two domains, explicit secondary and primary FACE groups, frictionless
+node-to-surface penalty contact, small sliding, linear pressure-overclosure,
+no initial adjustment, and bounded automatic quasi-static increments. Contact
+is never inferred from touching CAD or assembly mates. Admission rejects a
+provider without the exact contact profile, and geometry checks require opposed
+surface normals, nonpenetrating initial clearance within the declared search
+distance, and bounded tangential offset.
+
+Before launching CalculiX, the deck adapter checks a 12-degree-of-freedom
+two-body rigid-mode rank. Direct restraints contribute their actual components;
+frictionless contact contributes relative normal restraint only. The generated
+deck uses named face-based `*SURFACE` groups, `*CONTACT PAIR` with
+`TYPE=NODE TO SURFACE, SMALL SLIDING`, linear `*SURFACE BEHAVIOR`, a bounded
+`*STATIC` step, and final `CDIS,CSTR` contact output. Bounded normalization
+returns structural fields plus interface status, maximum pressure, minimum
+normal gap/penetration, integrated force on the secondary side, ordered
+converged increments, and digest-verified contact-pressure/normal-gap pages.
+
+Run the contract/deck/parser lane with:
+
+```powershell
+npm run test:sim6-contact
+```
+
+This is a contract and adapter foundation, not a qualified mechanics release.
+Real patch equilibrium, opening/closing, penetration and mesh-refinement
+trends, non-convergence/cancellation, and independent engineering review remain
+pending in `qualification/sim6a-windows-gmsh-4.15.2-calculix-2.16.json`.
+Friction, finite sliding, initial adjustment/interference, large deformation,
+and plasticity remain unsupported. The reviewer packet is
+`qualification/SIM6A_INDEPENDENT_ENGINEERING_REVIEW.md`.
+
 SIM-4B supports explicitly declared nonconformal `bonded_tie`, conformal
 `shared_topology`, and six-degree-of-freedom `rigid_connector` interactions. A
 tie emits named CalculiX element surfaces and

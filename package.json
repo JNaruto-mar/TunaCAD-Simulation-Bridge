@@ -31,6 +31,7 @@
     "test:sim5-multidomain-modal": "node --experimental-strip-types scripts/test-sim5-multidomain-modal.mts",
     "test:sim5-linear-buckling": "node --experimental-strip-types scripts/test-sim5-linear-buckling.mts",
     "test:sim5-matrix": "node --experimental-strip-types scripts/test-sim5-matrix.mts",
+    "test:sim6-contact": "node --experimental-strip-types scripts/test-sim6-contact.mts",
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },

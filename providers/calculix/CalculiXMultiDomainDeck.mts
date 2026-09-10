@@ -22,7 +22,9 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   if (model.element.geometryOrder !== 2 || model.element.solutionOrder !== 2 || model.volumeElements.connectivity.some(cell => cell.length !== 10)) {
     throw deckError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The SIM-4A CalculiX deck requires complete second-order C3D10 tetrahedra.');
   }
-  if (!(request.analysis.type === 'modal' && request.constraints.length === 0 && model.domainRegions.length === 1)) {
+  if (request.analysis.type === 'static_contact') {
+    validateContactStabilityV2(request, model);
+  } else if (!(request.analysis.type === 'modal' && request.constraints.length === 0 && model.domainRegions.length === 1)) {
     validateStructuralStabilityV2(request, model);
   }
   const mesh = asV1Mesh(model);
@@ -105,6 +107,28 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
       `${secondaryName},${primaryName}`,
     ];
   });
+  const contacts = request.interactions.filter(interaction => interaction.type === 'frictionless_contact').sort((a, b) => compareText(a.id, b.id));
+  const claimedContactFacets = new Set<number>(claimedTieFacets);
+  const contactCards = contacts.flatMap((contact, index) => {
+    const number = String(index + 1).padStart(3, '0');
+    const secondary = [...new Set(requireRegions(model, contact.secondaryReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    const primary = [...new Set(requireRegions(model, contact.primaryReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    if (!secondary.length || !primary.length || secondary.some(facet => primary.includes(facet))
+      || [...secondary, ...primary].some(facet => claimedContactFacets.has(facet))) {
+      throw deckError('SIMULATION_CONTACT_FACE_OVERLAP', 'Frictionless-contact FACE groups must be non-empty and cannot overlap or be reused.');
+    }
+    [...secondary, ...primary].forEach(facet => claimedContactFacets.add(facet));
+    const secondaryName = `CONTACT_SECONDARY_${number}`; const primaryName = `CONTACT_PRIMARY_${number}`; const interactionName = `CONTACT_BEHAVIOR_${number}`;
+    return [
+      `*SURFACE, NAME=${secondaryName}, TYPE=ELEMENT`, ...calculixSurfaceFaces(model, secondary),
+      `*SURFACE, NAME=${primaryName}, TYPE=ELEMENT`, ...calculixSurfaceFaces(model, primary),
+      `*CONTACT PAIR, INTERACTION=${interactionName}, TYPE=NODE TO SURFACE, SMALL SLIDING`,
+      `${secondaryName},${primaryName}`,
+      `*SURFACE INTERACTION, NAME=${interactionName}`,
+      '*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=LINEAR',
+      [contact.normalBehavior.stiffnessMPaPerMm, contact.normalBehavior.tensionCutoffMPa, contact.normalBehavior.searchDistanceFactor].map(solverNumber).join(','),
+    ];
+  });
   if (loads.some(load => load.type === 'gravity') && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
     throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a gravity-loaded SIM-4A model requires positive density.');
   }
@@ -146,6 +170,26 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...concentratedLoadCards,
     '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
     '*END STEP',
+  ] : request.analysis.type === 'static_contact' ? [
+    `*STEP, INC=${request.analysis.settings.maximumIncrements}`,
+    '*STATIC',
+    `${solverNumber(request.analysis.settings.initialIncrement)},1,${solverNumber(request.analysis.settings.minimumIncrement)},${solverNumber(request.analysis.settings.maximumIncrement)}`,
+    ...boundaryCards,
+    ...concentratedLoadCards,
+    ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
+    '*NODE PRINT, NSET=NALL, GLOBAL=YES, FREQUENCY=1000000', 'U',
+    ...request.constraints.flatMap((constraint, index) => [
+      `*NODE PRINT, NSET=${reactionName(index)}, TOTALS=ONLY, GLOBAL=YES, FREQUENCY=1000000`, 'RF',
+      ...(constraint.type === 'remote_displacement' ? [`*NODE PRINT, NSET=${reactionMomentName(index)}, TOTALS=ONLY, GLOBAL=YES, FREQUENCY=1000000`, 'RF'] : []),
+    ]),
+    '*EL PRINT, ELSET=EALL, FREQUENCY=1000000', 'S',
+    ...domains.flatMap(domain => [
+      `*NODE PRINT, NSET=${nodeSetNames.get(domain.domainId)!}, GLOBAL=YES, FREQUENCY=1000000`, 'U',
+      `*EL PRINT, ELSET=${domainSetNames.get(domain.domainId)!}, FREQUENCY=1000000`, 'S',
+    ]),
+    '*NODE FILE, NSET=NALL, GLOBAL=YES, FREQUENCY=1000000', 'U',
+    '*CONTACT FILE, FREQUENCY=1000000', 'CDIS,CSTR',
+    '*END STEP',
   ] : [
     '*STEP', '*STATIC', ...boundaryCards,
     ...concentratedLoadCards,
@@ -165,7 +209,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   ];
   const lines = [
     '*HEADING',
-    `TunaCAD ${request.analysis.type === 'modal' ? request.constraints.length ? 'SIM-5 constrained modal' : 'SIM-5 free-free modal' : request.analysis.type === 'linear_buckling' ? 'SIM-5 linear eigenvalue buckling' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
+    `TunaCAD ${request.analysis.type === 'modal' ? request.constraints.length ? 'SIM-5 constrained modal' : 'SIM-5 free-free modal' : request.analysis.type === 'linear_buckling' ? 'SIM-5 linear eigenvalue buckling' : request.analysis.type === 'static_contact' ? 'SIM-6A frictionless small-sliding contact' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
     '*NODE, NSET=NALL',
     ...model.nodes.map((point, index) => `${index + 1},${point.map(solverNumber).join(',')}`),
     ...(connectorRecords.length ? [
@@ -203,6 +247,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ]),
     ...domains.map(domain => `*SOLID SECTION, ELSET=${domainSetNames.get(domain.domainId)!}, MATERIAL=${materialNames.get(domain.materialId)!}`),
     ...tieCards,
+    ...contactCards,
     ...analysisCards,
   ];
   return `${lines.join('\n')}\n`;
@@ -271,10 +316,101 @@ export function validateStructuralStabilityV2(request: NeutralSimulationRequestV
   throw deckError('SIMULATION_MODEL_UNDERCONSTRAINED', `The connected structural model has free rigid-body modes: ${detail}. Add independent restraints until the rigid-body restraint rank is 6/6.`);
 }
 
+/** Contact only restrains relative motion in the declared surface-normal
+ * direction. Check the two bodies as independent rigid bodies and add those
+ * unilateral normal rows to the explicit support rows. This is deliberately
+ * conservative: proximity, friction, and an applied load never count as a
+ * restraint. */
+export function validateContactStabilityV2(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): void {
+  if (request.analysis.type !== 'static_contact') return;
+  const domainIds = model.domainRegions.map(domain => domain.domainId).sort(compareText);
+  const domainIndex = new Map(domainIds.map((domainId, index) => [domainId, index]));
+  const domainOrigins = new Map(domainIds.map(domainId => {
+    const region = model.domainRegions.find(candidate => candidate.domainId === domainId);
+    if (!region) throw deckError('SIMULATION_MODEL_DISCONNECTED', `Unknown contact domain "${domainId}".`);
+    return [domainId, centroid(region.nodeIndices.map(node => model.nodes[node]))] as const;
+  }));
+  const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
+  const referenceFaces = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.faceOwnerLocal]));
+  const requestDomains = new Map(request.model.domains.map(domain => [domain.domainId, domain]));
+  const columns = domainIds.length * 6;
+  const rows: number[][] = [];
+  const addDomainRow = (domainId: string, row: number[]): void => {
+    const index = domainIndex.get(domainId);
+    if (index === undefined) throw deckError('SIMULATION_MODEL_DISCONNECTED', `Unknown contact domain "${domainId}".`);
+    const global = Array<number>(columns).fill(0);
+    row.forEach((value, column) => { global[index * 6 + column] = value; });
+    rows.push(global);
+  };
+  for (const constraint of request.constraints) {
+    if (constraint.type === 'remote_displacement') {
+      throw deckError('SIMULATION_CONTACT_CONSTRAINT_UNSUPPORTED', 'SIM-6A contact accepts direct FACE constraints only.');
+    }
+    for (const region of requireRegions(model, constraint.semanticReferenceIds)) {
+      const origin = domainOrigins.get(region.domainId)!;
+      const nodes = [...new Set(region.facetIndices.flatMap(facet => model.boundaryFacets.connectivity[facet]))];
+      const restrained = constraint.type === 'fixed' ? [true, true, true] : constraint.displacementMm.map(value => value !== null);
+      for (const node of nodes) restrained.forEach((active, axis) => {
+        if (active) addDomainRow(region.domainId, rigidTranslationRow(subtractPoint(model.nodes[node], origin), axis));
+      });
+    }
+  }
+  for (const contact of request.interactions) {
+    if (contact.type !== 'frictionless_contact') continue;
+    const secondaryDomainId = referenceDomains.get(contact.secondaryReferenceIds[0]);
+    const primaryDomainId = referenceDomains.get(contact.primaryReferenceIds[0]);
+    if (!secondaryDomainId || !primaryDomainId || secondaryDomainId === primaryDomainId) {
+      throw deckError('SIMULATION_CONTACT_GEOMETRY_INVALID', `Contact interaction "${contact.id}" has invalid domain ownership.`);
+    }
+    const secondaryOrigin = domainOrigins.get(secondaryDomainId)!;
+    const primaryOrigin = domainOrigins.get(primaryDomainId)!;
+    const secondaryTransform = requestDomains.get(secondaryDomainId)?.transformToAnalysis;
+    if (!secondaryTransform) throw deckError('SIMULATION_CONTACT_GEOMETRY_INVALID', `Contact interaction "${contact.id}" has no secondary transform.`);
+    for (const referenceId of contact.secondaryReferenceIds) {
+      const normalOwnerLocal = referenceFaces.get(referenceId)?.outwardDirection;
+      if (!normalOwnerLocal) throw deckError('SIMULATION_CONTACT_GEOMETRY_INVALID', `Contact FACE "${referenceId}" has no outward normal.`);
+      const normal = transformedUnitDirection(secondaryTransform, normalOwnerLocal);
+      const regions = requireRegions(model, [referenceId]);
+      const nodes = [...new Set(regions.flatMap(region => region.facetIndices.flatMap(facet => model.boundaryFacets.connectivity[facet])))];
+      for (const node of nodes) {
+        const point = model.nodes[node];
+        const secondaryRow = rigidNormalRow(subtractPoint(point, secondaryOrigin), normal);
+        const primaryRow = rigidNormalRow(subtractPoint(point, primaryOrigin), normal).map(value => -value);
+        const global = Array<number>(columns).fill(0);
+        const secondaryIndex = domainIndex.get(secondaryDomainId)! * 6;
+        const primaryIndex = domainIndex.get(primaryDomainId)! * 6;
+        secondaryRow.forEach((value, column) => { global[secondaryIndex + column] += value; });
+        primaryRow.forEach((value, column) => { global[primaryIndex + column] += value; });
+        rows.push(global);
+      }
+    }
+  }
+  const rank = matrixRank(rows, columns);
+  if (rank < columns) {
+    throw deckError('SIMULATION_MODEL_UNDERCONSTRAINED', `The SIM-6A contact model has free rigid-body modes: rank ${rank}/${columns}. Add direct restraints; frictionless contact contributes normal restraint only.`);
+  }
+}
+
 function rigidTranslationRow(point: NeutralVector3, axis: number): number[] {
   if (axis === 0) return [1, 0, 0, 0, point[2], -point[1]];
   if (axis === 1) return [0, 1, 0, -point[2], 0, point[0]];
   return [0, 0, 1, point[1], -point[0], 0];
+}
+
+function rigidNormalRow(point: NeutralVector3, normal: NeutralVector3): number[] {
+  const rows = [0, 1, 2].map(axis => rigidTranslationRow(point, axis));
+  return Array.from({ length: 6 }, (_, column) => normal.reduce((sum, value, axis) => sum + value * rows[axis][column], 0));
+}
+
+function transformedUnitDirection(matrix: readonly number[], direction: NeutralVector3): NeutralVector3 {
+  const transformed: NeutralVector3 = [
+    matrix[0] * direction[0] + matrix[1] * direction[1] + matrix[2] * direction[2],
+    matrix[4] * direction[0] + matrix[5] * direction[1] + matrix[6] * direction[2],
+    matrix[8] * direction[0] + matrix[9] * direction[1] + matrix[10] * direction[2],
+  ];
+  const magnitude = Math.hypot(...transformed);
+  if (!(magnitude > 1e-12)) throw deckError('SIMULATION_CONTACT_GEOMETRY_INVALID', 'A contact FACE normal is degenerate after transformation.');
+  return transformed.map(value => value / magnitude) as NeutralVector3;
 }
 
 function matrixRank(input: number[][], columns: number): number {

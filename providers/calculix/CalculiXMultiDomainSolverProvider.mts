@@ -40,24 +40,25 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     this.executable = resolve(options.executable); this.runtimeVersion = options.runtimeVersion;
     const maximumDomains = options.maximumDomains ?? 16;
     this.capabilities = {
-      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling'],
-      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude'], topology: 'triangle_soup' },
+      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling', 'static_contact'],
+      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
         materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force'], maximumLoads: 64,
         maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
-        multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
+        multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector', 'frictionless_contact'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
         modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 },
         buckling: { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] },
+        contact: { maximumDomains: 2, maximumInteractions: 8, interactionTypes: ['frictionless_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless'], initialAdjustments: ['none'], nonlinearIncrementReporting: true },
       },
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
       durableReferenceMapping: 'supported', authority: 'engineering',
       qualification: {
         status: 'proof_of_concept', engineeringUsePermitted: false,
-        statement: 'Experimental SIM-4B linear-static and SIM-5 constrained/free-free modal and linear-eigenvalue buckling CalculiX solver.',
-        limitations: ['Windows development-host evidence only', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Explicit bonded ties, shared topology, and rigid connectors are experimental; separable/frictional contact is unsupported', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
-        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim5-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
+        statement: 'Experimental SIM-4B linear-static, SIM-5 modal/buckling, and SIM-6A frictionless small-sliding contact CalculiX solver.',
+        limitations: ['Windows development-host evidence only', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain, small-displacement, frictionless node-to-surface penalty behavior with no initial adjustment; frictional and large-sliding contact are unsupported', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim6a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['real-patch-equilibrium', 'opening-and-closing', 'penetration-and-refinement-trends', 'nonconvergence-and-cancellation', 'independent-engineering-review'] },
       },
       execution: {
         topology: 'local_adapter', credentials: 'none', geometryLeavesDevice: false,
@@ -135,6 +136,9 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
         ? normalizeModal(run, parseCalculiXModalDatV2(contents), parseCalculiXModalFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
         : run.request.analysis.type === 'linear_buckling'
           ? normalizeBuckling(run, parseCalculiXBucklingDatV2(contents), parseCalculiXBucklingFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
+          : run.request.analysis.type === 'static_contact'
+            ? normalizeContact(run, parseCalculiXDatV2(contents, run.model, run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]), run.request.loads.some(load => load.type === 'gravity')),
+              parseCalculiXContactFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), parseCalculiXContactStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta'))), this.id, this.version, this.runtimeVersion)
           : (() => {
           const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
           return normalize(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity')), this.id, this.version, this.runtimeVersion);
@@ -184,6 +188,52 @@ export function parseCalculiXDatV2(text: string, model: NeutralFemModelV2, react
   if (reactionSets.some(name => !reactions[name]) || [...byDomain.values()].some(item => item.maximumDisplacementNode < 0 || item.maximumStressElement < 0 || !Number.isFinite(item.maximumDisplacementMm) || !Number.isFinite(item.maximumVonMisesStressMPa))
     || (expectVolume && !(totalVolumeMm3 && totalVolumeMm3 > 0))) throw new Error('CalculiX did not produce complete finite per-domain SIM-4A output.');
   return { byDomain, reactions, totalVolumeMm3, displacements, vonMisesByElement };
+}
+
+export interface CalculiXContactNodeOutput { normalGapMm: number; tangentialSlipMm: number; pressureMPa: number }
+
+/** Read the final CONTACTR block produced by `*CONTACT FILE`. CalculiX stores
+ * COPEN, two tangential relative displacements, CPRESS and two shear stresses
+ * in that order. This frictionless slice consumes COPEN, both tangential
+ * relative-displacement components, and CPRESS. */
+export function parseCalculiXContactFrdV2(text: string): Map<number, CalculiXContactNodeOutput> {
+  if (text.split(/\r?\n/).length > 4_000_000) throw new Error('CalculiX contact field result contains too many records.');
+  let active = false; let current = new Map<number, CalculiXContactNodeOutput>(); let latest = new Map<number, CalculiXContactNodeOutput>();
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX contact field result contains an oversized record.');
+    if (/^\s*-4\s+CONTACT(?:R)?\b/i.test(raw)) { active = true; current = new Map(); continue; }
+    if (active && /^\s*-3\b/.test(raw)) { if (current.size) latest = current; active = false; continue; }
+    if (!active || !/^\s*-1\b/.test(raw)) continue;
+    const values = numericFields(raw);
+    if (values.length !== 8 || values[0] !== -1 || !Number.isInteger(values[1]) || values[1] <= 0) throw new Error('CalculiX contact FRD contains a malformed CONTACTR record.');
+    const normalGapMm = values[2]; const tangentialSlipMm = Math.hypot(values[3], values[4]); const pressureMPa = values[5];
+    if (normalGapMm > 1e-10 || pressureMPa < -1e-10) throw new Error('CalculiX contact FRD contains an invalid gap or pressure sign.');
+    current.set(values[1] - 1, { normalGapMm: Math.min(0, normalGapMm), tangentialSlipMm, pressureMPa: Math.max(0, pressureMPa) });
+  }
+  if (active && current.size) latest = current;
+  if (!latest.size) throw new Error('CalculiX did not produce a final CONTACTR field.');
+  return latest;
+}
+
+/** Parse bounded successful-increment records from the CalculiX status file. */
+export function parseCalculiXContactStaV2(text: string) {
+  if (text.split(/\r?\n/).length > 100_000) throw new Error('CalculiX contact status contains too many records.');
+  const increments: Array<{ increment: number; attempt: number; iterations: number; stepTime: number; incrementSize: number }> = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX contact status contains an oversized record.');
+    const fields = raw.trim().split(/\s+/);
+    if (fields.length !== 7 || fields.slice(0, 4).some(field => !/^\d+$/.test(field))) continue;
+    const values = fields.map(field => Number(field.replace(/[dD]/g, 'E')));
+    if (values.some(value => !Number.isFinite(value)) || values[0] !== 1 || values[1] < 1 || values[2] < 1 || values[3] < 1) continue;
+    const iterations = values[3]; const stepTime = values[5]; const incrementSize = values[6];
+    if (!Number.isInteger(iterations) || iterations < 1 || !Number.isFinite(stepTime) || stepTime < 0 || !Number.isFinite(incrementSize) || incrementSize <= 0) continue;
+    increments.push({ increment: values[1], attempt: values[2], iterations, stepTime, incrementSize });
+  }
+  if (!increments.length || Math.abs(increments.at(-1)!.stepTime - 1) > 1e-8
+    || increments.some((entry, index) => index > 0 && (entry.increment <= increments[index - 1].increment || entry.stepTime <= increments[index - 1].stepTime))) {
+    throw new Error('CalculiX did not report a complete, ordered contact increment history.');
+  }
+  return increments;
 }
 
 type ModalSix = [number, number, number, number, number, number];
@@ -495,6 +545,158 @@ function numericFields(line: string): number[] {
 function missingModal(label: string): never { throw new Error(`CalculiX omitted ${label}.`); }
 function modalDatasetId(runId: string, domainId: string, modeNumber: number): string { return `${runId}:${domainId}:mode:${String(modeNumber).padStart(3, '0')}`; }
 function bucklingDatasetId(runId: string, domainId: string, modeNumber: number): string { return `${runId}:${domainId}:buckling:${String(modeNumber).padStart(3, '0')}`; }
+
+function normalizeContact(
+  run: Run,
+  parsed: ReturnType<typeof parseCalculiXDatV2>,
+  contactNodes: Map<number, CalculiXContactNodeOutput>,
+  increments: ReturnType<typeof parseCalculiXContactStaV2>,
+  adapterId: string,
+  adapterVersion: string,
+  runtimeVersion: string,
+) {
+  if (run.request.analysis.type !== 'static_contact') throw new Error('Contact normalization received a non-contact request.');
+  if (increments.length > run.request.analysis.settings.maximumIncrements) throw new Error('CalculiX exceeded the requested contact increment limit.');
+  const base = normalize(run, parsed, adapterId, adapterVersion, runtimeVersion);
+  const contact = buildContactFieldDatasets(run, parsed, contactNodes);
+  for (const [datasetId, dataset] of base.datasets) base.datasets.set(datasetId, {
+    ...dataset,
+    descriptor: { ...dataset.descriptor, analysisType: 'static_contact', step: { index: 0, label: 'final_contact_increment' } } as NeutralSimulationFieldDatasetV2,
+  });
+  for (const [datasetId, dataset] of contact.datasets) base.datasets.set(datasetId, dataset);
+  const perDomain = base.result.perDomain.map(domain => ({
+    ...domain,
+    fieldDatasetIds: [...domain.fieldDatasetIds, ...contact.interfaces.filter(entry => entry.secondaryDomainId === domain.domainId).flatMap(entry => [entry.pressureDatasetId, entry.normalGapDatasetId])],
+  }));
+  const totalIterations = increments.reduce((sum, entry) => sum + entry.iterations, 0);
+  const result: NeutralSimulationResultV2 = {
+    ...base.result,
+    analysisType: 'static_contact',
+    perDomain,
+    warnings: [
+      { code: 'SIMULATION_CONTACT_POC', message: 'Experimental SIM-6A frictionless small-sliding penalty-contact result; qualified-engineer review is mandatory.', severity: 'warning' },
+      { code: 'SIMULATION_CONTACT_OPENING_LIMIT', message: 'CalculiX CONTACTR stores positive clearance as zero; an inactive zero field means open or exactly touching and is reported as open_or_touching.', severity: 'warning' },
+    ],
+    convergence: { status: 'converged', iterations: totalIterations, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Review contact-side choice, penalty stiffness, mesh refinement, interface pressure, penetration, and increment cutbacks.'],
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental SIM-6A contact result. Not certified.` },
+    contact: { formulation: 'node_to_surface_penalty', sliding: 'small', interfaces: contact.interfaces, increments },
+  };
+  return { result, datasets: base.datasets };
+}
+
+function buildContactFieldDatasets(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, contactNodes: Map<number, CalculiXContactNodeOutput>) {
+  const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
+  const references = new Map(run.request.model.references.map(reference => [reference.semanticReferenceId, reference]));
+  const elementByFace = boundaryElementMap(run.model);
+  const interfaces = run.request.interactions.filter(interaction => interaction.type === 'frictionless_contact').map(interaction => {
+    const secondaryRegions = interaction.secondaryReferenceIds.map(referenceId => requireBoundaryRegion(run.model, referenceId));
+    const primaryRegions = interaction.primaryReferenceIds.map(referenceId => requireBoundaryRegion(run.model, referenceId));
+    const secondaryDomainId = secondaryRegions[0].domainId; const primaryDomainId = primaryRegions[0].domainId;
+    const secondaryFacets = [...new Set(secondaryRegions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+    const secondaryNodes = [...new Set(secondaryFacets.flatMap(facet => run.model.boundaryFacets.connectivity[facet]))];
+    if (secondaryNodes.some(node => !contactNodes.has(node))) throw new Error(`CalculiX omitted contact output for interaction "${interaction.id}".`);
+    const pressureValues = new Map(secondaryNodes.map(node => [node, contactNodes.get(node)!.pressureMPa]));
+    const gapValues = new Map(secondaryNodes.map(node => [node, contactNodes.get(node)!.normalGapMm]));
+    const pressureTriangles = contactTriangles(run, secondaryFacets, pressureValues, parsed.displacements, elementByFace);
+    const gapTriangles = contactTriangles(run, secondaryFacets, gapValues, parsed.displacements, elementByFace);
+    const pressureDatasetId = `${run.providerRunId}:${interaction.id}:contact-pressure`;
+    const normalGapDatasetId = `${run.providerRunId}:${interaction.id}:normal-gap`;
+    for (const [datasetId, component, unit, triangles] of [
+      [pressureDatasetId, 'contact_pressure', 'MPa', pressureTriangles],
+      [normalGapDatasetId, 'normal_gap', 'mm', gapTriangles],
+    ] as const) {
+      const descriptor: NeutralSimulationFieldDatasetV2 = {
+        schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId, jobId: run.providerRunId, domainId: secondaryDomainId,
+        analysisType: 'static_contact', step: { index: 0, label: 'final_contact_increment' }, component, unit,
+        location: 'boundary_facet', topology: 'triangle_soup', valueRange: fieldExtrema(triangles),
+        deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: contactDeformationScale(run, parsed, secondaryDomainId) },
+        mapping: { domain: 'exact', cadRegions: 'exact', semanticReferenceIds: [...interaction.secondaryReferenceIds].sort(compareText) },
+        totalTriangles: triangles.length, maximumPageTriangles: 128, datasetDigest: digest(triangles),
+      };
+      datasets.set(datasetId, { descriptor, triangles });
+    }
+    let forceOnSecondaryN: NeutralVector3 = [0, 0, 0];
+    for (const region of secondaryRegions) {
+      const referenceId = interaction.secondaryReferenceIds.find(id => region.semanticReferenceIds.includes(id));
+      const reference = referenceId ? references.get(referenceId) : null;
+      if (!reference?.faceOwnerLocal.outwardDirection) throw new Error(`Contact reference "${referenceId ?? interaction.id}" has no outward normal evidence.`);
+      const domain = run.request.model.domains.find(entry => entry.domainId === region.domainId)!;
+      const normal = transformDirection(domain.transformToAnalysis, reference.faceOwnerLocal.outwardDirection);
+      for (const facet of region.facetIndices) for (const triangle of facetSubtriangles(run.model.boundaryFacets.connectivity[facet])) {
+        const points = triangle.map(node => run.model.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3];
+        const area = triangleArea(points); const averagePressure = triangle.reduce((sum, node) => sum + pressureValues.get(node)!, 0) / 3;
+        forceOnSecondaryN = add(forceOnSecondaryN, [-normal[0] * averagePressure * area, -normal[1] * averagePressure * area, -normal[2] * averagePressure * area]);
+      }
+    }
+    const pressures = [...pressureValues.values()]; const gaps = [...gapValues.values()]; const minimumNormalGapMm = Math.min(...gaps);
+    const maximumTangentialSlipMm = Math.max(...secondaryNodes.map(node => contactNodes.get(node)!.tangentialSlipMm));
+    return {
+      interactionId: interaction.id, secondaryDomainId, primaryDomainId,
+      status: Math.max(...pressures) > 1e-10 ? 'active' as const : 'open_or_touching' as const,
+      maximumPressureMPa: Math.max(...pressures), minimumNormalGapMm, maximumPenetrationMm: Math.max(0, -minimumNormalGapMm), maximumTangentialSlipMm,
+      forceOnSecondaryN, pressureDatasetId, normalGapDatasetId,
+    };
+  });
+  return { interfaces, datasets };
+}
+
+function requireBoundaryRegion(model: NeutralFemModelV2, referenceId: string) {
+  const matches = model.boundaryRegions.filter(region => region.semanticReferenceIds.includes(referenceId));
+  if (matches.length !== 1) throw new Error(`Contact reference "${referenceId}" maps to ${matches.length} boundary regions.`);
+  return matches[0];
+}
+
+function boundaryElementMap(model: NeutralFemModelV2) {
+  const result = new Map<string, number>();
+  model.volumeElements.connectivity.forEach((cell, elementIndex) => {
+    const corners = cell.slice(0, 4);
+    for (const face of [[corners[0], corners[2], corners[1]], [corners[0], corners[1], corners[3]], [corners[1], corners[2], corners[3]], [corners[2], corners[0], corners[3]]]) result.set([...face].sort((a, b) => a - b).join(':'), elementIndex);
+  });
+  return result;
+}
+
+function facetSubtriangles(facet: number[]): number[][] {
+  return (facet.length === 6 ? [[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]] : [[0, 1, 2]]).map(indices => indices.map(index => facet[index]));
+}
+
+function contactTriangles(run: Run, facets: number[], values: Map<number, number>, displacements: Map<number, NeutralVector3>, elementByFace: Map<string, number>) {
+  return facets.flatMap(facetIndex => {
+    const facet = run.model.boundaryFacets.connectivity[facetIndex];
+    const elementIndex = elementByFace.get(facet.slice(0, 3).sort((a, b) => a - b).join(':'));
+    if (elementIndex === undefined) throw new Error(`Contact facet ${facetIndex} has no owning volume element.`);
+    return facetSubtriangles(facet).map(nodes => ({
+      facetIndex, elementIndex,
+      positionsAnalysisMm: nodes.map(node => run.model.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3],
+      displacementsMm: nodes.map(node => displacements.get(node) ?? missingField(`contact node ${node}`)) as [NeutralVector3, NeutralVector3, NeutralVector3],
+      values: nodes.map(node => values.get(node) ?? missingField(`contact value at node ${node}`)) as [number, number, number],
+    }));
+  });
+}
+
+function contactDeformationScale(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, domainId: string) {
+  const domain = run.model.domainRegions.find(entry => entry.domainId === domainId)!;
+  const maximumDisplacement = parsed.byDomain.get(domainId)!.maximumDisplacementMm;
+  const diagonal = boundingDiagonal(domain.nodeIndices.map(index => run.model.nodes[index]));
+  return maximumDisplacement > 1e-15 ? Math.min(1e6, Math.max(1, diagonal * 0.05 / maximumDisplacement)) : 1;
+}
+
+function transformDirection(matrix: readonly number[], direction: NeutralVector3): NeutralVector3 {
+  const transformed: NeutralVector3 = [
+    matrix[0] * direction[0] + matrix[1] * direction[1] + matrix[2] * direction[2],
+    matrix[4] * direction[0] + matrix[5] * direction[1] + matrix[6] * direction[2],
+    matrix[8] * direction[0] + matrix[9] * direction[1] + matrix[10] * direction[2],
+  ];
+  const length = Math.hypot(...transformed);
+  if (!(length > 0)) throw new Error('Contact reference has an invalid transformed normal.');
+  return transformed.map(value => value / length) as NeutralVector3;
+}
+
+function triangleArea(points: [NeutralVector3, NeutralVector3, NeutralVector3]) {
+  const a: NeutralVector3 = [points[1][0] - points[0][0], points[1][1] - points[0][1], points[1][2] - points[0][2]];
+  const b: NeutralVector3 = [points[2][0] - points[0][0], points[2][1] - points[0][1], points[2][2] - points[0][2]];
+  return Math.hypot(...cross(a, b)) / 2;
+}
 
 function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
   const mesh = asV1Mesh(run.model);

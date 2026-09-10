@@ -1,11 +1,11 @@
 # Optional external CalculiX SolverProvider
 
-`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5 deck generation.
+`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6A deck generation.
 It creates deterministic per-domain C3D10 element/node sets, per-material
 elastic and density cards, per-domain solid sections, analysis-coordinate
 loads and constraints, and per-domain result print requests. It emits explicit
-ties and rigid connectors only when requested, but no separable or frictional
-contact.
+ties, rigid connectors, and the narrowly capability-gated SIM-6A frictionless
+contact formulation only when requested.
 
 The SIM-5 path emits consistent-mass `*FREQUENCY` studies for homogeneously
 restrained models and single-domain free-free models. Free-free normalization
@@ -17,10 +17,20 @@ cross-checked and normalized for visualization. They predict idealized linear
 bifurcation only—not nonlinear collapse, imperfections, plasticity, or changing
 contact.
 
-This Node-only adapter consumes TunaCAD's unchanged neutral FEM mesh and writes
-a bounded linear-static C3D10 input deck for a user-installed CalculiX `ccx`
-executable. It parses requested ASCII displacement, integration-point stress and
-reaction-force output into TunaCAD's normalized simulation-result contract.
+The SIM-6A path accepts exactly two domains and direct FACE supports, with
+explicit frictionless node-to-surface penalty contact, small sliding, linear
+pressure-overclosure, and no initial adjustment. A two-body rigid-mode rank
+check treats contact as normal-only restraint. The deck requests final
+`CDIS,CSTR` output and bounded status increments; normalization returns
+interface pressure/gap/tangential-slip/status/force, ordered increment history, and paginated
+contact-pressure and normal-gap fields. This path is proof-of-concept only.
+Friction, finite sliding, initial interference adjustment, large deformation,
+and material nonlinearity are not supported.
+
+This Node-only adapter consumes TunaCAD's neutral FEM model and writes a
+bounded C3D10 input deck for a user-installed CalculiX `ccx` executable. It
+parses requested ASCII displacement, integration-point stress, reaction-force,
+eigen, and contact output into TunaCAD's normalized simulation-result contract.
 
 The adapter supports the current POC subset only: one isotropic material,
 multiple fixed durable FACE groups, multiple total surface-force durable FACE

@@ -14,7 +14,7 @@ export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
-export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling';
+export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
@@ -324,7 +324,28 @@ export interface NeutralRigidConnectorInteractionV2 {
   coupling: 'rigid_6dof';
 }
 
-export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2;
+/** First SIM-6 contact envelope. It maps exactly to CalculiX face-based
+ * node-to-surface penalty contact with pairing frozen once per increment.
+ * Positive clearance is not adjusted away and tangential traction is zero. */
+export interface NeutralFrictionlessContactInteractionV2 {
+  id: string;
+  name: string;
+  type: 'frictionless_contact';
+  secondaryReferenceIds: string[];
+  primaryReferenceIds: string[];
+  formulation: 'node_to_surface_penalty';
+  sliding: 'small';
+  normalBehavior: {
+    type: 'linear_penalty';
+    stiffnessMPaPerMm: number;
+    tensionCutoffMPa: number;
+    searchDistanceFactor: number;
+  };
+  tangentialBehavior: { type: 'frictionless' };
+  initialAdjustment: 'none';
+}
+
+export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2 | NeutralFrictionlessContactInteractionV2;
 
 interface NeutralSimulationRequestV2Base {
   schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
@@ -377,6 +398,18 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
     };
   };
   requestedResults: Array<'buckling_load_factors' | 'buckling_mode_shapes'>;
+} | {
+  analysis: {
+    type: 'static_contact';
+    assumptions: ['small_displacement', 'small_strain', 'quasi_static', 'frictionless_contact'];
+    settings: {
+      initialIncrement: number;
+      minimumIncrement: number;
+      maximumIncrement: number;
+      maximumIncrements: number;
+    };
+  };
+  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'contact_status' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_force'>;
 });
 
 export interface NeutralMeshJobRequestV2 {
@@ -535,6 +568,28 @@ export interface NeutralBucklingModeV2 {
   fieldDatasetIds: string[];
 }
 
+export interface NeutralContactInterfaceResultV2 {
+  interactionId: string;
+  secondaryDomainId: string;
+  primaryDomainId: string;
+  status: 'active' | 'open_or_touching';
+  maximumPressureMPa: number;
+  minimumNormalGapMm: number;
+  maximumPenetrationMm: number;
+  maximumTangentialSlipMm: number;
+  forceOnSecondaryN: NeutralVector3;
+  pressureDatasetId: string;
+  normalGapDatasetId: string;
+}
+
+export interface NeutralContactIncrementV2 {
+  increment: number;
+  attempt: number;
+  iterations: number;
+  stepTime: number;
+  incrementSize: number;
+}
+
 export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
   analysisType: 'linear_static';
 } | {
@@ -565,6 +620,14 @@ export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
     visualizationNormalization: 'maximum_vector_magnitude_1';
     prediction: 'linear_eigenvalue_not_nonlinear_collapse';
     modes: NeutralBucklingModeV2[];
+  };
+} | {
+  analysisType: 'static_contact';
+  contact: {
+    formulation: 'node_to_surface_penalty';
+    sliding: 'small';
+    interfaces: NeutralContactInterfaceResultV2[];
+    increments: NeutralContactIncrementV2[];
   };
 });
 
@@ -615,6 +678,11 @@ export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Bas
   step: { index: number; label: string; bucklingModeNumber: number; eigenvalueLoadFactor: number };
   component: 'buckling_mode_shape_magnitude';
   unit: 'normalized';
+} | {
+  analysisType: 'static_contact';
+  step: { index: 0; label: 'final_contact_increment' };
+  component: 'displacement_magnitude' | 'von_mises_stress' | 'contact_pressure' | 'normal_gap';
+  unit: 'mm' | 'MPa';
 });
 
 export interface NeutralSimulationFieldTriangleV2 {
@@ -642,7 +710,7 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
   fieldResults: {
     paginated: true;
     maximumPageTriangles: number;
-    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude'>;
+    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap'>;
     topology: 'triangle_soup';
   };
   study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
@@ -669,6 +737,17 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       preloadCaseRequired: true;
       loadTypes: readonly ['surface_force'];
       constraintTypes: readonly ['fixed'];
+    };
+    contact?: {
+      maximumDomains: 2;
+      maximumInteractions: number;
+      interactionTypes: readonly ['frictionless_contact'];
+      formulations: readonly ['node_to_surface_penalty'];
+      sliding: readonly ['small'];
+      normalBehaviors: readonly ['linear_penalty'];
+      tangentialBehaviors: readonly ['frictionless'];
+      initialAdjustments: readonly ['none'];
+      nonlinearIncrementReporting: true;
     };
   };
 }
@@ -948,7 +1027,7 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static' | 'modal' | 'linear_buckling';
+  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact';
   modal?: {
     requestedModeCount: number;
     minimumFrequencyHz?: number | null;
@@ -958,6 +1037,12 @@ export interface PrepareNeutralSimulationInputV2 {
   buckling?: {
     requestedModeCount: number;
     preloadCase: { id: string; name: string; loadIds: string[]; scaleFactor?: 1 };
+  };
+  contact?: {
+    initialIncrement: number;
+    minimumIncrement: number;
+    maximumIncrement: number;
+    maximumIncrements: number;
   };
   domains: Array<{
     domainId: string;

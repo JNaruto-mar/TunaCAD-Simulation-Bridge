@@ -1,0 +1,22 @@
+{
+  "schema": "tunacad-simulation-qualification-matrix/1.0",
+  "matrixId": "sim6a-windows-x64-gmsh-4.15.2-calculix-2.16",
+  "scope": "Experimental SIM-6A two-domain frictionless node-to-surface penalty contact with small sliding, linear penalty normal behavior, no initial adjustment, and bounded quasi-static increments.",
+  "environment": { "os": "win32", "architecture": "x64", "nodeMajor": 24, "gmshVersion": "4.15.2", "calculixVersion": "2.16" },
+  "qualification": { "status": "proof_of_concept", "engineeringUsePermitted": false, "recordedAt": "2026-09-10" },
+  "promotionPolicy": {
+    "requiredLaneIds": ["contract-and-admission", "deterministic-contact-deck", "bounded-contact-normalization", "real-patch-equilibrium", "opening-and-closing", "penetration-and-refinement-trends", "nonconvergence-and-cancellation", "independent-engineering-review"],
+    "requiresAllPassed": true,
+    "requiresEngineeringReview": true
+  },
+  "lanes": [
+    { "id": "contract-and-admission", "category": "contract", "state": "passed", "acceptance": "The v2 contract admits only the declared two-domain frictionless small-sliding envelope and rejects missing capability profiles, invalid increment bounds, stale identity, and incompatible contact geometry.", "command": "npm run test:sim6-contact", "evidence": { "analysisType": "static_contact", "maximumDomains": 2, "formulation": "node_to_surface_penalty", "sliding": "small", "normalBehavior": "linear_penalty", "tangentialBehavior": "frictionless", "initialAdjustment": "none" } },
+    { "id": "deterministic-contact-deck", "category": "adapter", "state": "passed", "acceptance": "The CalculiX adapter emits deterministic face-based secondary/primary surfaces, SMALL SLIDING contact, linear pressure-overclosure, bounded *STATIC increments, and final CDIS/CSTR output without friction or automatic adjustment.", "command": "npm run test:sim6-contact", "evidence": { "contactCard": "*CONTACT PAIR, TYPE=NODE TO SURFACE, SMALL SLIDING", "resultCard": "*CONTACT FILE: CDIS,CSTR", "maximumIncrements": 50 } },
+    { "id": "bounded-contact-normalization", "category": "adapter", "state": "passed", "acceptance": "Bounded FRD and STA parsers reject malformed signs and incomplete increment histories; normalized results preserve interface ownership, pressure/gap datasets, maximum tangential slip, resultant force, and final step time.", "command": "npm run test:sim6-contact", "evidence": { "fieldComponents": ["contact_pressure", "normal_gap"], "summaryComponents": ["contact_status", "maximum_penetration", "maximum_tangential_slip", "contact_force"], "incrementHistory": true, "engineeringUsePermitted": false } },
+    { "id": "real-patch-equilibrium", "category": "mechanics", "state": "pending", "acceptance": "A real Gmsh/CalculiX patch fixture demonstrates expected uniform pressure and global/contact-force equilibrium under mesh refinement.", "command": null, "evidence": null },
+    { "id": "opening-and-closing", "category": "mechanics", "state": "pending", "acceptance": "Independent real fixtures demonstrate opening under tensile separation and closing under compressive loading without tensile contact traction.", "command": null, "evidence": null },
+    { "id": "penetration-and-refinement-trends", "category": "mechanics", "state": "pending", "acceptance": "Penalty stiffness and mesh refinement demonstrate bounded penetration plus a physically credible Hertz-type pressure trend.", "command": null, "evidence": null },
+    { "id": "nonconvergence-and-cancellation", "category": "lifecycle", "state": "pending", "acceptance": "Deliberate cutback exhaustion and cancellation fixtures fail closed, terminate descendants, clean native files, and return no partial engineering result.", "command": null, "evidence": null },
+    { "id": "independent-engineering-review", "category": "governance", "state": "pending", "acceptance": "An independent qualified engineer approves the formulation, fixtures, tolerances, sign conventions, assumptions, and exact reviewed commit.", "command": null, "evidence": null }
+  ]
+}
