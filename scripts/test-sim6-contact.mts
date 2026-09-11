@@ -221,7 +221,10 @@ const contactField = parseCalculiXContactFrdV2(`
 `);
 assert.deepEqual(contactField.get(10), { normalGapMm: -0.0001, tangentialSlipMm: 0.002, pressureMPa: 2.5 });
 assert.deepEqual(contactField.get(12), { normalGapMm: 0, tangentialSlipMm: 0, pressureMPa: 0 });
-expectMessage('invalid gap or pressure sign', () => parseCalculiXContactFrdV2('-4 CONTACTR\n-1 11 0.01 0 0 2.5 0 0\n-3'));
+assert.equal(parseCalculiXContactFrdV2('-4 CONTACTR\n-1 11 0.01 0 0 0 0 0\n-3').get(10)?.normalGapMm, 0.01, 'Positive COPEN is a valid separated contact node.');
+assert.equal(parseCalculiXContactFrdV2('-4 CONTACTR\n-1 11 0.01 0 0 -0.000001 0 0\n-3').get(10)?.pressureMPa, -0.000001, 'The bounded CalculiX tension regularizer is preserved for request-aware validation.');
+expectMessage('invalid gap or pressure magnitude', () => parseCalculiXContactFrdV2('-4 CONTACTR\n-1 11 0.01 0 0 -2e12 0 0\n-3'));
+assert.equal(parseCalculiXContactFrdV2('-4 CONTACT\n-5 COPEN 1 4 1 1\n-3').size, 0, 'An explicit empty final contact block is a valid fully open state.');
 
 assert.deepEqual(parseCalculiXContactStaV2(`
  1 1 1U 7 0 0.0 0.1
@@ -239,7 +242,7 @@ const matrix = JSON.parse(readFileSync(new URL('../qualification/sim6a-windows-g
 assert.equal(matrix.matrixId, 'sim6a-windows-x64-gmsh-4.15.2-calculix-2.16');
 assert.equal(matrix.qualification.status, 'proof_of_concept');
 assert.equal(matrix.qualification.engineeringUsePermitted, false);
-assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'passed').map((lane: any) => lane.id), ['contract-and-admission', 'deterministic-contact-deck', 'bounded-contact-normalization']);
-assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'pending').map((lane: any) => lane.id), ['real-patch-equilibrium', 'opening-and-closing', 'penetration-and-refinement-trends', 'nonconvergence-and-cancellation', 'independent-engineering-review']);
+assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'passed').map((lane: any) => lane.id), ['contract-and-admission', 'deterministic-contact-deck', 'bounded-contact-normalization', 'real-patch-equilibrium', 'opening-and-closing', 'penetration-and-refinement-trends']);
+assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'pending').map((lane: any) => lane.id), ['nonconvergence-and-cancellation', 'independent-engineering-review']);
 
 console.log('SIM-6A frictionless small-sliding contact contract, admission, rigid-body stability, deterministic deck, and bounded parsers passed.');

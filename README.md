@@ -262,10 +262,18 @@ Run the contract/deck/parser lane with:
 npm run test:sim6-contact
 ```
 
+Run the real planar opening/closing and curved refinement/penalty lanes with:
+
+```powershell
+npm run test:sim6-contact-real
+npm run test:sim6-contact-trends
+```
+
 This is a contract and adapter foundation, not a qualified mechanics release.
-Real patch equilibrium, opening/closing, penetration and mesh-refinement
-trends, non-convergence/cancellation, and independent engineering review remain
-pending in `qualification/sim6a-windows-gmsh-4.15.2-calculix-2.16.json`.
+Real planar patch equilibrium, opening/closing, and curved Hertz-type
+penetration/refinement trends now pass. Non-convergence/cancellation and
+independent engineering review remain pending in
+`qualification/sim6a-windows-gmsh-4.15.2-calculix-2.16.json`.
 Friction, finite sliding, initial adjustment/interference, large deformation,
 and plasticity remain unsupported. The reviewer packet is
 `qualification/SIM6A_INDEPENDENT_ENGINEERING_REVIEW.md`.

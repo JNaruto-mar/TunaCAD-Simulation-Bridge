@@ -32,6 +32,8 @@
     "test:sim5-linear-buckling": "node --experimental-strip-types scripts/test-sim5-linear-buckling.mts",
     "test:sim5-matrix": "node --experimental-strip-types scripts/test-sim5-matrix.mts",
     "test:sim6-contact": "node --experimental-strip-types scripts/test-sim6-contact.mts",
+    "test:sim6-contact-real": "node --experimental-strip-types scripts/test-sim6-contact-real.mts",
+    "test:sim6-contact-trends": "node --experimental-strip-types scripts/test-sim6-contact-trends.mts",
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },

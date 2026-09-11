@@ -346,7 +346,9 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   } else if (request.analysis.type === 'static_contact') {
     const settings = request.analysis.settings;
     const expectedResults = ['contact_force', 'contact_pressure', 'contact_status', 'displacement', 'normal_gap', 'reaction_force', 'tangential_slip', 'von_mises_stress'];
-    if (request.model.domains.length !== 2 || !request.loads.length || !request.constraints.length || !request.interactions.length
+    const hasNonzeroPrescribedDisplacement = request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
+      && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14));
+    if (request.model.domains.length !== 2 || (!request.loads.length && !hasNonzeroPrescribedDisplacement) || !request.constraints.length || !request.interactions.length
       || request.interactions.some(interaction => interaction.type !== 'frictionless_contact')
       || settings.minimumIncrement > settings.initialIncrement || settings.initialIncrement > settings.maximumIncrement
       || request.requestedResults.length !== expectedResults.length
@@ -562,7 +564,7 @@ const contactResult = z.object({
   formulation: z.literal('node_to_surface_penalty'), sliding: z.literal('small'),
   interfaces: z.array(z.object({
     interactionId: text, secondaryDomainId: text, primaryDomainId: text, status: z.enum(['active', 'open_or_touching']),
-    maximumPressureMPa: nonNegative, minimumNormalGapMm: finite.max(0), maximumPenetrationMm: nonNegative, maximumTangentialSlipMm: nonNegative,
+    maximumPressureMPa: nonNegative, minimumNormalGapMm: finite, maximumPenetrationMm: nonNegative, maximumTangentialSlipMm: nonNegative,
     forceOnSecondaryN: vector, pressureDatasetId: text, normalGapDatasetId: text,
   }).strict()).min(1).max(32),
   increments: z.array(z.object({
