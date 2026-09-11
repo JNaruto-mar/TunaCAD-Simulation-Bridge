@@ -324,9 +324,17 @@ export interface NeutralRigidConnectorInteractionV2 {
   coupling: 'rigid_6dof';
 }
 
-/** First SIM-6 contact envelope. It maps exactly to CalculiX face-based
- * node-to-surface penalty contact with pairing frozen once per increment.
- * Positive clearance is not adjusted away and tangential traction is zero. */
+export type NeutralContactInitialAdjustmentV2 = 'none' | {
+  /** Move only secondary nodes whose signed initial gap is within the
+   * explicitly bounded distance. The CAD model is never mutated. */
+  type: 'bounded_to_contact';
+  maximumAdjustmentMm: number;
+};
+
+/** SIM-6A/SIM-6C frictionless-contact member of the small-sliding envelope. It maps exactly to CalculiX
+ * face-based node-to-surface penalty contact with pairing frozen once per
+ * increment. Tangential traction is zero; optional initial adjustment is
+ * explicit and bounded by admission before the solver can alter its mesh. */
 export interface NeutralFrictionlessContactInteractionV2 {
   id: string;
   name: string;
@@ -342,10 +350,19 @@ export interface NeutralFrictionlessContactInteractionV2 {
     searchDistanceFactor: number;
   };
   tangentialBehavior: { type: 'frictionless' };
-  initialAdjustment: 'none';
+  initialAdjustment: NeutralContactInitialAdjustmentV2;
 }
 
-export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2 | NeutralFrictionlessContactInteractionV2;
+export interface NeutralFrictionalContactInteractionV2 extends Omit<NeutralFrictionlessContactInteractionV2, 'type' | 'tangentialBehavior'> {
+  type: 'frictional_contact';
+  tangentialBehavior: {
+    type: 'coulomb_penalty';
+    frictionCoefficient: number;
+    stickSlopeMPaPerMm: number;
+  };
+}
+
+export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2 | NeutralFrictionlessContactInteractionV2 | NeutralFrictionalContactInteractionV2;
 
 interface NeutralSimulationRequestV2Base {
   schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
@@ -401,7 +418,7 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
 } | {
   analysis: {
     type: 'static_contact';
-    assumptions: ['small_displacement', 'small_strain', 'quasi_static', 'frictionless_contact'];
+    assumptions: ['small_displacement', 'small_strain', 'quasi_static', 'frictionless_contact' | 'frictional_contact'];
     settings: {
       initialIncrement: number;
       minimumIncrement: number;
@@ -409,7 +426,7 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
       maximumIncrements: number;
     };
   };
-  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'contact_status' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_force'>;
+  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'contact_status' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear' | 'contact_force'>;
 });
 
 export interface NeutralMeshJobRequestV2 {
@@ -577,9 +594,12 @@ export interface NeutralContactInterfaceResultV2 {
   minimumNormalGapMm: number;
   maximumPenetrationMm: number;
   maximumTangentialSlipMm: number;
+  maximumShearMPa?: number;
   forceOnSecondaryN: NeutralVector3;
   pressureDatasetId: string;
   normalGapDatasetId: string;
+  tangentialSlipDatasetId?: string;
+  contactShearDatasetId?: string;
 }
 
 export interface NeutralContactIncrementV2 {
@@ -681,7 +701,7 @@ export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Bas
 } | {
   analysisType: 'static_contact';
   step: { index: 0; label: 'final_contact_increment' };
-  component: 'displacement_magnitude' | 'von_mises_stress' | 'contact_pressure' | 'normal_gap';
+  component: 'displacement_magnitude' | 'von_mises_stress' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear';
   unit: 'mm' | 'MPa';
 });
 
@@ -710,7 +730,7 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
   fieldResults: {
     paginated: true;
     maximumPageTriangles: number;
-    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap'>;
+    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear'>;
     topology: 'triangle_soup';
   };
   study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
@@ -741,12 +761,12 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
     contact?: {
       maximumDomains: 2;
       maximumInteractions: number;
-      interactionTypes: readonly ['frictionless_contact'];
+      interactionTypes: ReadonlyArray<'frictionless_contact' | 'frictional_contact'>;
       formulations: readonly ['node_to_surface_penalty'];
       sliding: readonly ['small'];
       normalBehaviors: readonly ['linear_penalty'];
-      tangentialBehaviors: readonly ['frictionless'];
-      initialAdjustments: readonly ['none'];
+      tangentialBehaviors: ReadonlyArray<'frictionless' | 'coulomb_penalty'>;
+      initialAdjustments: ReadonlyArray<'none' | 'bounded_to_contact'>;
       nonlinearIncrementReporting: true;
     };
   };

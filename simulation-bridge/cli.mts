@@ -15,7 +15,7 @@ const bridge = await startSimulationBridge({ ...pipeline,
     const model = request.schema === 'tunacad-neutral-simulation-request/2.0'
       ? { analysis: request.analysis, domains: request.model.domains.map(domain => ({ domainId: domain.domainId, partId: domain.partId, occurrenceId: domain.occurrenceId })), revision: request.model.projectRevision, materials: request.materials.map(material => material.name), interactions: request.interactions.map(interaction => interaction.type === 'rigid_connector'
         ? { id: interaction.id, type: interaction.type, semanticReferenceIds: interaction.semanticReferenceIds, referencePointAnalysisMm: interaction.referencePointAnalysisMm, coupling: interaction.coupling }
-        : interaction.type === 'frictionless_contact'
+        : interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact'
           ? { id: interaction.id, type: interaction.type, secondaryReferenceIds: interaction.secondaryReferenceIds, primaryReferenceIds: interaction.primaryReferenceIds, formulation: interaction.formulation, sliding: interaction.sliding, normalBehavior: interaction.normalBehavior, tangentialBehavior: interaction.tangentialBehavior, initialAdjustment: interaction.initialAdjustment }
           : { id: interaction.id, type: interaction.type, secondaryReferenceIds: interaction.secondaryReferenceIds, primaryReferenceIds: interaction.primaryReferenceIds, adjustment: interaction.adjustment, positionToleranceMm: interaction.positionToleranceMm }) }
       : { part: request.geometry.partId, revision: request.geometry.projectRevision, material: request.material.name };

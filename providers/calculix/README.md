@@ -1,11 +1,11 @@
 # Optional external CalculiX SolverProvider
 
-`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6A deck generation.
+`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6 deck generation.
 It creates deterministic per-domain C3D10 element/node sets, per-material
 elastic and density cards, per-domain solid sections, analysis-coordinate
 loads and constraints, and per-domain result print requests. It emits explicit
-ties, rigid connectors, and the narrowly capability-gated SIM-6A frictionless
-contact formulation only when requested.
+ties, rigid connectors, and narrowly capability-gated SIM-6A/SIM-6C
+frictionless/Coulomb-penalty contact only when requested.
 
 The SIM-5 path emits consistent-mass `*FREQUENCY` studies for homogeneously
 restrained models and single-domain free-free models. Free-free normalization
@@ -17,14 +17,19 @@ cross-checked and normalized for visualization. They predict idealized linear
 bifurcation only—not nonlinear collapse, imperfections, plasticity, or changing
 contact.
 
-The SIM-6A path accepts exactly two domains and direct FACE supports, with
-explicit frictionless node-to-surface penalty contact, small sliding, linear
-pressure-overclosure, and no initial adjustment. A two-body rigid-mode rank
+The SIM-6 path accepts exactly two domains and direct FACE supports, with
+explicit frictionless or Coulomb-penalty node-to-surface contact, small sliding, linear
+pressure-overclosure, and either no initial adjustment or an explicit bounded
+planar `bounded_to_contact` adjustment. Admission checks semantic clearance
+and interference, then the deck rechecks every secondary mesh node before
+emitting CalculiX `ADJUST=`. Frictional interactions require both a bounded
+positive coefficient and an explicit penalty stick slope, emitted through
+`*FRICTION`; no solver default is accepted. A two-body rigid-mode rank
 check treats contact as normal-only restraint. The deck requests final
 `CDIS,CSTR` output and bounded status increments; normalization returns
-interface pressure/gap/tangential-slip/status/force, ordered increment history, and paginated
-contact-pressure and normal-gap fields. This path is proof-of-concept only.
-Friction, finite sliding, initial interference adjustment, large deformation,
+interface pressure/gap/tangential-slip/shear/status/force, ordered increment history, and paginated
+contact-pressure, normal-gap, tangential-slip, and contact-shear fields. This path is proof-of-concept only.
+Finite sliding, curved-surface initial adjustment, large deformation,
 and material nonlinearity are not supported.
 
 This Node-only adapter consumes TunaCAD's neutral FEM model and writes a

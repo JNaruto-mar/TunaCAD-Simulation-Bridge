@@ -2,6 +2,7 @@ import * as z from 'zod/v4';
 import type {
   MeshProviderCapabilities,
   MeshProviderCapabilitiesV2,
+  NeutralContactInitialAdjustmentV2,
   NeutralFemModelV2,
   NeutralSimulationFieldPageV2,
   NeutralSimulationRequestV2,
@@ -77,7 +78,7 @@ const requestSchema = z.object({
     }).strict(),
     z.object({
       type: z.literal('static_contact'),
-      assumptions: z.tuple([z.literal('small_displacement'), z.literal('small_strain'), z.literal('quasi_static'), z.literal('frictionless_contact')]),
+      assumptions: z.tuple([z.literal('small_displacement'), z.literal('small_strain'), z.literal('quasi_static'), z.enum(['frictionless_contact', 'frictional_contact'])]),
       settings: z.object({
         initialIncrement: positive.max(1), minimumIncrement: positive.max(1), maximumIncrement: positive.max(1),
         maximumIncrements: z.number().int().min(1).max(1000),
@@ -161,17 +162,40 @@ const requestSchema = z.object({
         tensionCutoffMPa: positive.max(1e6), searchDistanceFactor: positive.max(1),
       }).strict(),
       tangentialBehavior: z.object({ type: z.literal('frictionless') }).strict(),
-      initialAdjustment: z.literal('none'),
+      initialAdjustment: z.union([
+        z.literal('none'),
+        z.object({ type: z.literal('bounded_to_contact'), maximumAdjustmentMm: positive.max(10) }).strict(),
+      ]),
+    }).strict(),
+    z.object({
+      id: text, name: text, type: z.literal('frictional_contact'),
+      secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
+      formulation: z.literal('node_to_surface_penalty'), sliding: z.literal('small'),
+      normalBehavior: z.object({
+        type: z.literal('linear_penalty'), stiffnessMPaPerMm: positive.max(1e12),
+        tensionCutoffMPa: positive.max(1e6), searchDistanceFactor: positive.max(1),
+      }).strict(),
+      tangentialBehavior: z.object({
+        type: z.literal('coulomb_penalty'), frictionCoefficient: positive.max(2), stickSlopeMPaPerMm: positive.max(1e12),
+      }).strict(),
+      initialAdjustment: z.union([
+        z.literal('none'),
+        z.object({ type: z.literal('bounded_to_contact'), maximumAdjustmentMm: positive.max(10) }).strict(),
+      ]),
     }).strict(),
   ])).max(32),
   mesh: meshRequest,
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions',
     'natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass', 'buckling_load_factors', 'buckling_mode_shapes',
-    'contact_status', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_force'])).min(1).max(8),
+    'contact_status', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'contact_force'])).min(1).max(9),
 }).strict();
 
 function unique(values: string[]): boolean {
   return new Set(values).size === values.length;
+}
+
+function contactAdjustmentMode(value: NeutralContactInitialAdjustmentV2): 'none' | 'bounded_to_contact' {
+  return value === 'none' ? 'none' : value.type;
 }
 
 function isRigidTransform(value: number[], tolerance = 1e-9): boolean {
@@ -283,17 +307,19 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
     const primaryDomains = new Set(interaction.primaryReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
     if (secondaryDomains.size !== 1 || primaryDomains.size !== 1 || [...secondaryDomains][0] === [...primaryDomains][0]
       || interaction.secondaryReferenceIds.some(id => interaction.primaryReferenceIds.includes(id))) fail('BRIDGE_V2_INTERACTION_INVALID');
-    if (interaction.type === 'frictionless_contact') {
+    if (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') {
       const secondaryDomain = domainsById.get([...secondaryDomains][0]!); const primaryDomain = domainsById.get([...primaryDomains][0]!);
       if (!secondaryDomain || !primaryDomain) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
       for (const referenceId of interaction.secondaryReferenceIds) {
         const secondary = references.get(`interaction:${referenceId}`)!; const secondaryDirection = secondary.faceOwnerLocal.outwardDirection;
         if (!secondaryDirection) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
+        if (interaction.initialAdjustment !== 'none' && secondary.faceOwnerLocal.geometryType !== 'plane') fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
         const secondaryNormal = transformDirection(secondaryDomain.transformToAnalysis, secondaryDirection);
         const secondaryPoint = transformPoint(secondaryDomain.transformToAnalysis, secondary.faceOwnerLocal.centroidPartLocalMm);
         const candidates = interaction.primaryReferenceIds.map(primaryId => references.get(`interaction:${primaryId}`)!).filter(Boolean).map(primary => {
           const primaryDirection = primary.faceOwnerLocal.outwardDirection;
           if (!primaryDirection) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
+          if (interaction.initialAdjustment !== 'none' && primary.faceOwnerLocal.geometryType !== 'plane') fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
           const primaryNormal = transformDirection(primaryDomain.transformToAnalysis, primaryDirection);
           const primaryPoint = transformPoint(primaryDomain.transformToAnalysis, primary.faceOwnerLocal.centroidPartLocalMm);
           const delta = primaryPoint.map((value, axis) => value - secondaryPoint[axis]) as [number, number, number];
@@ -303,7 +329,13 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
           return { normalGap, opposed, tangentialOffset };
         });
         const tolerance = interaction.normalBehavior.searchDistanceFactor * Math.sqrt(secondary.faceOwnerLocal.areaMm2);
-        if (!candidates.some(candidate => candidate.opposed <= -.9 && candidate.normalGap >= -1e-8 && candidate.normalGap <= tolerance && candidate.tangentialOffset <= Math.sqrt(secondary.faceOwnerLocal.areaMm2))) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
+        const adjustmentLimit = interaction.initialAdjustment === 'none' ? 0 : interaction.initialAdjustment.maximumAdjustmentMm;
+        if (adjustmentLimit > tolerance
+          || !candidates.some(candidate => candidate.opposed <= -.9
+            && candidate.normalGap >= -(adjustmentLimit + 1e-8)
+            && candidate.normalGap <= tolerance
+            && (interaction.initialAdjustment === 'none' || Math.abs(candidate.normalGap) <= adjustmentLimit + 1e-8)
+            && candidate.tangentialOffset <= Math.sqrt(secondary.faceOwnerLocal.areaMm2))) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
       }
     }
   }
@@ -345,11 +377,14 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
     }
   } else if (request.analysis.type === 'static_contact') {
     const settings = request.analysis.settings;
-    const expectedResults = ['contact_force', 'contact_pressure', 'contact_status', 'displacement', 'normal_gap', 'reaction_force', 'tangential_slip', 'von_mises_stress'];
+    const frictional = request.interactions.some(interaction => interaction.type === 'frictional_contact');
+    const expectedResults = ['contact_force', 'contact_pressure', 'contact_status', ...(frictional ? ['contact_shear'] : []), 'displacement', 'normal_gap', 'reaction_force', 'tangential_slip', 'von_mises_stress'].sort();
     const hasNonzeroPrescribedDisplacement = request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
       && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14));
     if (request.model.domains.length !== 2 || (!request.loads.length && !hasNonzeroPrescribedDisplacement) || !request.constraints.length || !request.interactions.length
-      || request.interactions.some(interaction => interaction.type !== 'frictionless_contact')
+      || request.interactions.some(interaction => interaction.type !== 'frictionless_contact' && interaction.type !== 'frictional_contact')
+      || new Set(request.interactions.map(interaction => interaction.type)).size !== 1
+      || request.analysis.assumptions[3] !== (frictional ? 'frictional_contact' : 'frictionless_contact')
       || settings.minimumIncrement > settings.initialIncrement || settings.initialIncrement > settings.maximumIncrement
       || request.requestedResults.length !== expectedResults.length
       || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
@@ -393,15 +428,17 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
       || request.loads.some(load => !profile.study.buckling!.loadTypes.includes(load.type as 'surface_force'))
       || request.constraints.some(constraint => !profile.study.buckling!.constraintTypes.includes(constraint.type as 'fixed'))))
     || (request.analysis.type === 'static_contact' && (!profile.fieldResults.components.includes('contact_pressure') || !profile.fieldResults.components.includes('normal_gap')
+      || !profile.fieldResults.components.includes('tangential_slip')
+      || (request.interactions.some(interaction => interaction.type === 'frictional_contact') && !profile.fieldResults.components.includes('contact_shear'))
       || !profile.study.contact || request.model.domains.length > profile.study.contact.maximumDomains
       || request.interactions.length > profile.study.contact.maximumInteractions
-      || request.interactions.some(interaction => interaction.type !== 'frictionless_contact'
+      || request.interactions.some(interaction => interaction.type !== 'frictionless_contact' && interaction.type !== 'frictional_contact'
         || !profile.study.contact!.interactionTypes.includes(interaction.type)
         || !profile.study.contact!.formulations.includes(interaction.formulation)
         || !profile.study.contact!.sliding.includes(interaction.sliding)
         || !profile.study.contact!.normalBehaviors.includes(interaction.normalBehavior.type)
         || !profile.study.contact!.tangentialBehaviors.includes(interaction.tangentialBehavior.type)
-        || !profile.study.contact!.initialAdjustments.includes(interaction.initialAdjustment))
+        || !profile.study.contact!.initialAdjustments.includes(contactAdjustmentMode(interaction.initialAdjustment)))
       || !profile.study.contact.nonlinearIncrementReporting))
     || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
@@ -565,7 +602,8 @@ const contactResult = z.object({
   interfaces: z.array(z.object({
     interactionId: text, secondaryDomainId: text, primaryDomainId: text, status: z.enum(['active', 'open_or_touching']),
     maximumPressureMPa: nonNegative, minimumNormalGapMm: finite, maximumPenetrationMm: nonNegative, maximumTangentialSlipMm: nonNegative,
-    forceOnSecondaryN: vector, pressureDatasetId: text, normalGapDatasetId: text,
+    maximumShearMPa: nonNegative.optional(), forceOnSecondaryN: vector, pressureDatasetId: text, normalGapDatasetId: text,
+    tangentialSlipDatasetId: text.optional(), contactShearDatasetId: text.optional(),
   }).strict()).min(1).max(32),
   increments: z.array(z.object({
     increment: z.number().int().positive(), attempt: z.number().int().positive(), iterations: z.number().int().positive(),
@@ -660,17 +698,25 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || !unique(result.contact.interfaces.map(entry => entry.interactionId))
       || result.contact.interfaces.some(entry => {
         const interaction = request.interactions.find(candidate => candidate.id === entry.interactionId);
-        if (!interaction || interaction.type !== 'frictionless_contact') return true;
+        if (!interaction || (interaction.type !== 'frictionless_contact' && interaction.type !== 'frictional_contact')) return true;
         const secondary = request.model.references.find(reference => interaction.secondaryReferenceIds.includes(reference.semanticReferenceId))?.domainId;
         const primary = request.model.references.find(reference => interaction.primaryReferenceIds.includes(reference.semanticReferenceId))?.domainId;
         return entry.secondaryDomainId !== secondary || entry.primaryDomainId !== primary
           || entry.maximumPenetrationMm !== Math.max(0, -entry.minimumNormalGapMm)
-          || !datasetIds.includes(entry.pressureDatasetId) || !datasetIds.includes(entry.normalGapDatasetId);
+          || !datasetIds.includes(entry.pressureDatasetId) || !datasetIds.includes(entry.normalGapDatasetId)
+          || (entry.tangentialSlipDatasetId !== undefined && !datasetIds.includes(entry.tangentialSlipDatasetId))
+          || (entry.contactShearDatasetId !== undefined && !datasetIds.includes(entry.contactShearDatasetId))
+          || (interaction.type === 'frictional_contact' && (entry.maximumShearMPa === undefined
+            || !entry.tangentialSlipDatasetId || !entry.contactShearDatasetId));
       })
       || result.contact.increments.at(-1)?.stepTime !== 1
       || result.contact.increments.some((entry, index, entries) => entry.increment > request.analysis.settings.maximumIncrements
         || index > 0 && (entry.increment <= entries[index - 1].increment || entry.stepTime <= entries[index - 1].stepTime))
-      || !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_POC')) fail('BRIDGE_V2_CONTACT_RESULT_INVALID');
+      || !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_POC')
+      || (request.interactions.some(interaction => (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') && interaction.initialAdjustment !== 'none')
+        && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_INITIAL_ADJUSTMENT'))
+      || (request.interactions.some(interaction => interaction.type === 'frictional_contact')
+        && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FRICTION_POC'))) fail('BRIDGE_V2_CONTACT_RESULT_INVALID');
   } else if (('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined) || ('contact' in result && result.contact !== undefined)) fail('BRIDGE_V2_RESULT_INVALID');
   const constraints = new Map(request.constraints.map(constraint => [constraint.id, constraint]));
   const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
@@ -706,7 +752,7 @@ const fieldDataset = z.object({
     z.object({ index: z.number().int().positive(), label: text, modeNumber: z.number().int().positive(), frequencyHz: nonNegative }).strict(),
     z.object({ index: z.number().int().positive(), label: text, bucklingModeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive }).strict(),
   ]),
-  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap']), unit: z.enum(['mm', 'MPa', 'normalized']),
+  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear']), unit: z.enum(['mm', 'MPa', 'normalized']),
   location: z.literal('boundary_facet'), topology: z.literal('triangle_soup'),
   valueRange: z.object({ minimum: finite, maximum: finite, minimumPositionAnalysisMm: vector, maximumPositionAnalysisMm: vector }).strict(),
   deformation: z.object({ vectorsIncluded: z.literal(true), trueScale: z.literal(1), recommendedScale: positive }).strict(),
@@ -727,13 +773,15 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
   if (page.cursor !== String(page.triangleOffset) || page.triangleCount !== page.triangles.length
     || page.triangleCount > page.dataset.maximumPageTriangles || page.triangleOffset + page.triangleCount > page.dataset.totalTriangles
     || page.nextCursor !== (page.triangleOffset + page.triangleCount < page.dataset.totalTriangles ? String(page.triangleOffset + page.triangleCount) : null)
-    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' ? 'MPa' : 'normalized')
+    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' || page.dataset.component === 'tangential_slip' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' || page.dataset.component === 'contact_shear' ? 'MPa' : 'normalized')
     || (page.dataset.analysisType === 'modal') !== (page.dataset.component === 'mode_shape_magnitude')
     || (page.dataset.analysisType === 'modal') !== ('modeNumber' in page.dataset.step)
     || (page.dataset.analysisType === 'linear_buckling') !== (page.dataset.component === 'buckling_mode_shape_magnitude')
     || (page.dataset.analysisType === 'linear_buckling') !== ('bucklingModeNumber' in page.dataset.step)
-    || (page.dataset.analysisType === 'static_contact') !== (page.dataset.component === 'contact_pressure' || page.dataset.component === 'normal_gap' || page.dataset.step.label === 'final_contact_increment')
+    || (page.dataset.analysisType === 'static_contact') !== (['contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear'].includes(page.dataset.component) || page.dataset.step.label === 'final_contact_increment')
     || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
+    || (page.dataset.component !== 'normal_gap' && page.dataset.valueRange.minimum < 0)
+    || page.triangles.some(triangle => triangle.values.some(value => page.dataset.component !== 'normal_gap' && value < 0))
     || digest(page.triangles) !== page.chunkDigest) fail('BRIDGE_V2_FIELD_PAGE_INVALID');
   return page;
 }

@@ -235,25 +235,32 @@ All automated mechanics lanes pass. Independent engineering review remains
 before SIM-5 qualification. The reviewer packet is
 `qualification/SIM5_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
-## SIM-6A frictionless contact foundation
+## SIM-6A/SIM-6C small-sliding contact
 
 The additive v2 `static_contact` envelope implements the first SIM-6 increment:
 exactly two domains, explicit secondary and primary FACE groups, frictionless
-node-to-surface penalty contact, small sliding, linear pressure-overclosure,
-no initial adjustment, and bounded automatic quasi-static increments. Contact
+or Coulomb-penalty node-to-surface contact, small sliding, linear pressure-overclosure,
+and bounded automatic quasi-static increments. The backward-compatible
+`initialAdjustment: "none"` policy preserves CAD clearance, while explicit
+`{ type: "bounded_to_contact", maximumAdjustmentMm }` admits small planar
+clearance/interference corrections only when every secondary mesh node remains
+inside the declared bound. Contact
 is never inferred from touching CAD or assembly mates. Admission rejects a
 provider without the exact contact profile, and geometry checks require opposed
-surface normals, nonpenetrating initial clearance within the declared search
-distance, and bounded tangential offset.
+surface normals, initial clearance/interference inside the declared search and
+adjustment envelopes, and bounded tangential offset. The CAD model is never
+mutated; only CalculiX's temporary analysis mesh can be adjusted.
 
 Before launching CalculiX, the deck adapter checks a 12-degree-of-freedom
 two-body rigid-mode rank. Direct restraints contribute their actual components;
-frictionless contact contributes relative normal restraint only. The generated
+contact contributes conservative relative normal restraint only. The generated
 deck uses named face-based `*SURFACE` groups, `*CONTACT PAIR` with
-`TYPE=NODE TO SURFACE, SMALL SLIDING`, linear `*SURFACE BEHAVIOR`, a bounded
+`TYPE=NODE TO SURFACE, SMALL SLIDING` plus request-bounded `ADJUST=` when
+explicitly selected, linear `*SURFACE BEHAVIOR`, an explicit `*FRICTION`
+coefficient and penalty stick slope for frictional requests, a bounded
 `*STATIC` step, and final `CDIS,CSTR` contact output. Bounded normalization
 returns structural fields plus interface status, maximum pressure, minimum
-normal gap/penetration, integrated force on the secondary side, ordered
+normal gap/penetration, tangential slip/shear fields, integrated force on the secondary side, ordered
 converged increments, and digest-verified contact-pressure/normal-gap pages.
 
 Run the contract/deck/parser lane with:
@@ -262,7 +269,9 @@ Run the contract/deck/parser lane with:
 npm run test:sim6-contact
 ```
 
-Run the real planar opening/closing and curved refinement/penalty lanes with:
+Run the real planar opening/closing, deliberate non-convergence/cancellation,
+frictional sliding, bounded initial-adjustment, and curved
+refinement/penalty lanes with:
 
 ```powershell
 npm run test:sim6-contact-real
@@ -270,11 +279,14 @@ npm run test:sim6-contact-trends
 ```
 
 This is a contract and adapter foundation, not a qualified mechanics release.
-Real planar patch equilibrium, opening/closing, and curved Hertz-type
-penetration/refinement trends now pass. Non-convergence/cancellation and
-independent engineering review remain pending in
+Real planar patch equilibrium, opening/closing, 0.05 mm planar clearance and
+interference adjustment inside a 0.06 mm bound, and curved Hertz-type
+penetration/refinement trends now pass. Deliberate non-convergence and
+cancellation fail closed with native cleanup and no partial result. A paired
+frictionless/frictional sliding fixture verifies nonzero Coulomb-limited shear,
+slip fields, and tangential equilibrium. Independent engineering review remains pending in
 `qualification/sim6a-windows-gmsh-4.15.2-calculix-2.16.json`.
-Friction, finite sliding, initial adjustment/interference, large deformation,
+Finite/large sliding, curved-surface initial adjustment, large deformation,
 and plasticity remain unsupported. The reviewer packet is
 `qualification/SIM6A_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
@@ -296,8 +308,8 @@ Remote-support results carry force in N and moment in N·mm together with the
 exact connector ID and reference point; direct FACE supports deliberately
 return a null moment because they have no unique reduction point. When every
 support is remote, normalization verifies both global force and moment
-equilibrium. Separable or frictional contact is not treated as a linear
-connection and remains unsupported until SIM-6.
+equilibrium. Separable or frictional contact is never treated as a linear
+connection; it must use the explicit nonlinear SIM-6 contact path.
 
 The experimental bolted-bracket qualification fixture is defined independently
 in `qualification/sim4b-bolted-bracket-rigid-connectors.json`. It meshes a
