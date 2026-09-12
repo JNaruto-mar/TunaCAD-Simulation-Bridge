@@ -123,7 +123,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     return [
       `*SURFACE, NAME=${secondaryName}, TYPE=ELEMENT`, ...calculixSurfaceFaces(model, secondary),
       `*SURFACE, NAME=${primaryName}, TYPE=ELEMENT`, ...calculixSurfaceFaces(model, primary),
-      `*CONTACT PAIR, INTERACTION=${interactionName}, TYPE=NODE TO SURFACE, SMALL SLIDING${contact.initialAdjustment === 'none' ? '' : `, ADJUST=${solverNumber(contact.initialAdjustment.maximumAdjustmentMm)}`}`,
+      `*CONTACT PAIR, INTERACTION=${interactionName}, TYPE=NODE TO SURFACE${contact.sliding === 'small' ? ', SMALL SLIDING' : ''}${contact.initialAdjustment === 'none' ? '' : `, ADJUST=${solverNumber(contact.initialAdjustment.maximumAdjustmentMm)}`}`,
       `${secondaryName},${primaryName}`,
       `*SURFACE INTERACTION, NAME=${interactionName}`,
       '*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=LINEAR',
@@ -160,6 +160,9 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
     ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
   ] : [];
+  const nonlinearAnalysisCards = request.analysis.type === 'nonlinear_static'
+    ? nonlinearStepCards(request, model, boundaryCards)
+    : [];
   const analysisCards = request.analysis.type === 'modal' ? [
     '*STEP',
     '*FREQUENCY,SOLVER=ARPACK',
@@ -176,7 +179,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
     '*END STEP',
   ] : request.analysis.type === 'static_contact' ? [
-    `*STEP, INC=${request.analysis.settings.maximumIncrements}`,
+    `*STEP${request.interactions.some(interaction => (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') && interaction.sliding === 'finite') ? ', NLGEOM' : ''}, INC=${request.analysis.settings.maximumIncrements}`,
     '*STATIC',
     `${solverNumber(request.analysis.settings.initialIncrement)},1,${solverNumber(request.analysis.settings.minimumIncrement)},${solverNumber(request.analysis.settings.maximumIncrement)}`,
     ...boundaryCards,
@@ -195,7 +198,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     '*NODE FILE, NSET=NALL, GLOBAL=YES, FREQUENCY=1000000', 'U',
     '*CONTACT FILE, FREQUENCY=1000000', 'CDIS,CSTR',
     '*END STEP',
-  ] : [
+  ] : request.analysis.type === 'nonlinear_static' ? nonlinearAnalysisCards : [
     '*STEP', '*STATIC', ...boundaryCards,
     ...concentratedLoadCards,
     ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
@@ -214,7 +217,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   ];
   const lines = [
     '*HEADING',
-    `TunaCAD ${request.analysis.type === 'modal' ? request.constraints.length ? 'SIM-5 constrained modal' : 'SIM-5 free-free modal' : request.analysis.type === 'linear_buckling' ? 'SIM-5 linear eigenvalue buckling' : request.analysis.type === 'static_contact' ? request.interactions.some(interaction => interaction.type === 'frictional_contact') ? 'SIM-6C frictional small-sliding contact' : request.interactions.some(interaction => interaction.type === 'frictionless_contact' && interaction.initialAdjustment !== 'none') ? 'SIM-6B bounded-adjustment frictionless contact' : 'SIM-6A frictionless small-sliding contact' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
+    `TunaCAD ${request.analysis.type === 'modal' ? request.constraints.length ? 'SIM-5 constrained modal' : 'SIM-5 free-free modal' : request.analysis.type === 'linear_buckling' ? 'SIM-5 linear eigenvalue buckling' : request.analysis.type === 'static_contact' ? request.interactions.some(interaction => (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') && interaction.sliding === 'finite') ? 'SIM-6D finite-sliding finite-deformation contact' : request.interactions.some(interaction => interaction.type === 'frictional_contact') ? 'SIM-6C frictional small-sliding contact' : request.interactions.some(interaction => interaction.type === 'frictionless_contact' && interaction.initialAdjustment !== 'none') ? 'SIM-6B bounded-adjustment frictionless contact' : 'SIM-6A frictionless small-sliding contact' : request.analysis.type === 'nonlinear_static' ? request.materials.some(material => material.model === 'isotropic_elastic_plastic') ? 'SIM-7B material-nonlinear static' : 'SIM-7A geometric-nonlinear static' : 'SIM-4A multi-domain linear-static'} study ${safeComment(request.studyId)}`,
     '*NODE, NSET=NALL',
     ...model.nodes.map((point, index) => `${index + 1},${point.map(solverNumber).join(',')}`),
     ...(connectorRecords.length ? [
@@ -248,6 +251,10 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...materials.flatMap(material => [
       `*MATERIAL, NAME=${materialNames.get(material.id)!}`,
       '*ELASTIC', `${solverNumber(material.youngsModulusMPa)},${solverNumber(material.poissonRatio)}`,
+      ...(material.model === 'isotropic_elastic_plastic' ? [
+        '*PLASTIC, HARDENING=ISOTROPIC',
+        ...material.plasticity!.curve.map(point => `${solverNumber(point.trueStressMPa)},${solverNumber(point.plasticStrain)}`),
+      ] : []),
       ...(material.densityKgM3 !== undefined ? ['*DENSITY', solverNumber(material.densityKgM3 * 1e-12)] : []),
     ]),
     ...domains.map(domain => `*SOLID SECTION, ELSET=${domainSetNames.get(domain.domainId)!}, MATERIAL=${materialNames.get(domain.materialId)!}`),
@@ -321,9 +328,12 @@ export function validateStructuralStabilityV2(request: NeutralSimulationRequestV
   throw deckError('SIMULATION_MODEL_UNDERCONSTRAINED', `The connected structural model has free rigid-body modes: ${detail}. Add independent restraints until the rigid-body restraint rank is 6/6.`);
 }
 
-/** CalculiX adjusts every penetrating secondary node even when ADJUST is zero.
- * Guard that solver behavior with an exact mesh-space bound, and keep this
- * first adjustment slice planar so the signed distance is deterministic. */
+/** CalculiX can adjust initially open or penetrating secondary nodes before
+ * the first increment. Guard that solver behavior against the actual composed
+ * surface mesh: deep penetration is rejected, at least one secondary node
+ * must be inside the declared capture distance, and distant open nodes are
+ * deliberately left unadjusted. The closest-triangle projection works for
+ * planar and curved primary/secondary CAD faces without mutating CAD. */
 export function validateContactInitialAdjustmentV2(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): void {
   if (request.analysis.type !== 'static_contact') return;
   const references = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference]));
@@ -331,41 +341,50 @@ export function validateContactInitialAdjustmentV2(request: NeutralSimulationReq
   for (const contact of request.interactions) {
     if ((contact.type !== 'frictionless_contact' && contact.type !== 'frictional_contact') || contact.initialAdjustment === 'none') continue;
     const limit = contact.initialAdjustment.maximumAdjustmentMm;
-    const primaryFacets = contact.primaryReferenceIds.flatMap(referenceId => {
+    const primaryTriangles = contact.primaryReferenceIds.flatMap(referenceId => {
       const reference = references.get(referenceId);
       const domain = reference ? domains.get(reference.domainId) : undefined;
       const regions = requireRegions(model, [referenceId]);
-      if (!reference || !domain || reference.faceOwnerLocal.geometryType !== 'plane' || !reference.faceOwnerLocal.outwardDirection || !regions.length) {
-        throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', `Bounded initial adjustment requires verified planar primary FACE "${referenceId}".`);
+      if (!reference || !domain || !reference.faceOwnerLocal.outwardDirection || !regions.length) {
+        throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', `Bounded initial adjustment requires verified primary FACE "${referenceId}" with outward-normal evidence.`);
       }
-      const normal = transformedUnitDirection(domain.transformToAnalysis, reference.faceOwnerLocal.outwardDirection);
-      return regions.flatMap(region => region.facetIndices.map(facetIndex => {
+      const referenceNormal = transformedUnitDirection(domain.transformToAnalysis, reference.faceOwnerLocal.outwardDirection);
+      return regions.flatMap(region => region.facetIndices.flatMap(facetIndex => {
         const facet = model.boundaryFacets.connectivity[facetIndex];
         if (facet.length < 3) throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', `Primary FACE "${referenceId}" contains an invalid boundary facet.`);
-        return { point: model.nodes[facet[0]], triangle: facet.slice(0, 3).map(node => model.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3], normal };
+        return facetTriangles(facet).map(nodes => {
+          const triangle = nodes.map(node => model.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3];
+          let normal = triangleNormal(triangle);
+          if (dot(normal, referenceNormal) < 0) normal = normal.map(value => -value) as NeutralVector3;
+          return { triangle, normal };
+        });
       }));
     });
+    if (!primaryTriangles.length) throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', `Contact interaction "${contact.id}" has no primary surface triangles.`);
+    let eligibleNodeCount = 0;
     for (const referenceId of contact.secondaryReferenceIds) {
       const reference = references.get(referenceId);
       const domain = reference ? domains.get(reference.domainId) : undefined;
-      if (!reference || !domain || reference.faceOwnerLocal.geometryType !== 'plane' || !reference.faceOwnerLocal.outwardDirection) {
-        throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', `Bounded initial adjustment requires verified planar secondary FACE "${referenceId}".`);
+      if (!reference || !domain || !reference.faceOwnerLocal.outwardDirection) {
+        throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', `Bounded initial adjustment requires verified secondary FACE "${referenceId}" with outward-normal evidence.`);
       }
-      const normal = transformedUnitDirection(domain.transformToAnalysis, reference.faceOwnerLocal.outwardDirection);
+      const referenceNormal = transformedUnitDirection(domain.transformToAnalysis, reference.faceOwnerLocal.outwardDirection);
       const nodes = [...new Set(requireRegions(model, [referenceId]).flatMap(region => region.facetIndices.flatMap(facet => model.boundaryFacets.connectivity[facet])))];
       for (const node of nodes) {
         const point = model.nodes[node];
-        const gaps = primaryFacets.filter(primary => dot(normal, primary.normal) <= -.9)
-          .map(primary => {
-            const gap = dot(subtractPoint(primary.point, point), normal);
-            const projected = point.map((value, axis) => value + normal[axis] * gap) as NeutralVector3;
-            return pointInTriangle(projected, primary.triangle) ? gap : null;
-          }).filter((gap): gap is number => gap !== null);
-        if (!gaps.length || Math.min(...gaps.map(Math.abs)) > limit + 1e-8) {
-          throw deckError('SIMULATION_CONTACT_ADJUSTMENT_LIMIT_EXCEEDED', `Contact FACE "${referenceId}" contains a secondary node outside the ${solverNumber(limit)} mm initial-adjustment bound.`);
+        const nearest = primaryTriangles.map(primary => {
+          const projection = closestPointOnTriangle(point, primary.triangle);
+          return { ...primary, projection, distance: Math.hypot(...subtractPoint(point, projection)) };
+        }).sort((a, b) => a.distance - b.distance)[0];
+        if (!nearest || dot(referenceNormal, nearest.normal) > -.25) continue;
+        const signedGap = dot(subtractPoint(point, nearest.projection), nearest.normal);
+        if (signedGap < -(limit + 1e-8)) {
+          throw deckError('SIMULATION_CONTACT_ADJUSTMENT_LIMIT_EXCEEDED', `Contact FACE "${referenceId}" contains initial penetration beyond the ${solverNumber(limit)} mm adjustment bound.`);
         }
+        if (Math.abs(signedGap) <= limit + 1e-8 && nearest.distance <= limit + 1e-8) eligibleNodeCount += 1;
       }
     }
+    if (!eligibleNodeCount) throw deckError('SIMULATION_CONTACT_ADJUSTMENT_LIMIT_EXCEEDED', `Contact interaction "${contact.id}" has no secondary mesh node inside the ${solverNumber(limit)} mm adjustment bound.`);
   }
 }
 
@@ -503,13 +522,37 @@ function dot(a: NeutralVector3, b: NeutralVector3): number {
   return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
-function pointInTriangle(point: NeutralVector3, triangle: [NeutralVector3, NeutralVector3, NeutralVector3]): boolean {
-  const edge0 = subtractPoint(triangle[1], triangle[0]); const edge1 = subtractPoint(triangle[2], triangle[0]); const offset = subtractPoint(point, triangle[0]);
-  const d00 = dot(edge0, edge0); const d01 = dot(edge0, edge1); const d11 = dot(edge1, edge1); const d20 = dot(offset, edge0); const d21 = dot(offset, edge1);
-  const denominator = d00 * d11 - d01 * d01;
-  if (!(denominator > 1e-20)) return false;
-  const u = (d11 * d20 - d01 * d21) / denominator; const v = (d00 * d21 - d01 * d20) / denominator;
-  return u >= -1e-8 && v >= -1e-8 && u + v <= 1 + 1e-8;
+function facetTriangles(facet: number[]): [number, number, number][] {
+  return (facet.length === 6
+    ? [[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]]
+    : [[0, 1, 2]]).map(indices => indices.map(index => facet[index]) as [number, number, number]);
+}
+
+function triangleNormal(triangle: [NeutralVector3, NeutralVector3, NeutralVector3]): NeutralVector3 {
+  const a = subtractPoint(triangle[1], triangle[0]); const b = subtractPoint(triangle[2], triangle[0]);
+  const value: NeutralVector3 = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const length = Math.hypot(...value);
+  if (!(length > 1e-12)) throw deckError('SIMULATION_CONTACT_ADJUSTMENT_UNSUPPORTED', 'A contact surface contains a degenerate boundary triangle.');
+  return value.map(component => component / length) as NeutralVector3;
+}
+
+/** Closest point on a triangle from Real-Time Collision Detection's Voronoi
+ * region test. It avoids an infinite-plane projection accepting points beyond
+ * a curved or trimmed contact patch. */
+function closestPointOnTriangle(point: NeutralVector3, triangle: [NeutralVector3, NeutralVector3, NeutralVector3]): NeutralVector3 {
+  const [a, b, c] = triangle; const ab = subtractPoint(b, a); const ac = subtractPoint(c, a); const ap = subtractPoint(point, a);
+  const d1 = dot(ab, ap); const d2 = dot(ac, ap); if (d1 <= 0 && d2 <= 0) return a;
+  const bp = subtractPoint(point, b); const d3 = dot(ab, bp); const d4 = dot(ac, bp); if (d3 >= 0 && d4 <= d3) return b;
+  const vc = d1 * d4 - d3 * d2; if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return addScaled(a, ab, v); }
+  const cp = subtractPoint(point, c); const d5 = dot(ab, cp); const d6 = dot(ac, cp); if (d6 >= 0 && d5 <= d6) return c;
+  const vb = d5 * d2 - d1 * d6; if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return addScaled(a, ac, w); }
+  const va = d3 * d6 - d5 * d4; if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { const edge = subtractPoint(c, b); const w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return addScaled(b, edge, w); }
+  const denominator = 1 / (va + vb + vc); const v = vb * denominator; const w = vc * denominator;
+  return [a[0] + ab[0] * v + ac[0] * w, a[1] + ab[1] * v + ac[1] * w, a[2] + ab[2] * v + ac[2] * w];
+}
+
+function addScaled(origin: NeutralVector3, direction: NeutralVector3, scale: number): NeutralVector3 {
+  return [origin[0] + direction[0] * scale, origin[1] + direction[1] * scale, origin[2] + direction[2] * scale];
 }
 
 function validateSharedTopology(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): void {
@@ -530,6 +573,85 @@ function validateSharedTopology(request: NeutralSimulationRequestV2, model: Neut
 }
 
 function facetKey(nodes: number[]): string { return [...nodes].sort((a, b) => a - b).join(','); }
+
+function nonlinearStepCards(
+  request: Extract<NeutralSimulationRequestV2, { analysis: { type: 'nonlinear_static' } }>,
+  model: NeutralFemModelV2,
+  boundaryCards: string[],
+): string[] {
+  const mesh = asV1Mesh(model);
+  const loads = new Map(request.loads.map(load => [load.id, load]));
+  const domains = [...model.domainRegions].sort((a, b) => compareText(a.domainId, b.domainId));
+  const domainSetNames = new Map(domains.map((domain, index) => [domain.domainId, `DOMAIN_${String(index + 1).padStart(3, '0')}`]));
+  const nodeSetNames = new Map(domains.map((domain, index) => [domain.domainId, `DOMAIN_NODES_${String(index + 1).padStart(3, '0')}`]));
+  const cards: string[] = [];
+  const plastic = request.materials.some(material => material.model === 'isotropic_elastic_plastic');
+  let totalDuration = 0;
+  for (const [stepOffset, step] of request.analysis.settings.steps.entries()) {
+    const firstPoints = step.loadAmplitudes[0].points;
+    if (step.loadAmplitudes.some(entry => entry.points.length !== firstPoints.length
+      || entry.points.some((point, index) => point.time !== firstPoints[index].time || point.scaleFactor !== firstPoints[index].scaleFactor))) {
+      throw deckError('SIMULATION_NONLINEAR_AMPLITUDE_UNSUPPORTED', 'CalculiX SIM-7A currently requires one shared piecewise-linear amplitude shape for every load active in a step.');
+    }
+    const stepNumber = numberName(stepOffset);
+    const amplitudeName = `NL_AMPLITUDE_${stepNumber}`;
+    cards.push(`*AMPLITUDE, NAME=${amplitudeName}, TIME=STEP TIME`);
+    for (let index = 0; index < firstPoints.length; index += 4) {
+      cards.push(firstPoints.slice(index, index + 4).flatMap(point => [solverNumber(point.time * step.duration), solverNumber(point.scaleFactor)]).join(','));
+    }
+    const active = step.loadAmplitudes.map(entry => loads.get(entry.loadId)!);
+    const nodalLoads = new Map<number, NeutralVector3>();
+    for (const load of active) {
+      if (load.type === 'gravity' || load.type === 'remote_force') continue;
+      const regions = requireRegions(model, load.semanticReferenceIds);
+      const facets = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+      addLoads(nodalLoads, load.type === 'surface_force'
+        ? consistentSurfaceLoads(mesh, facets, load.forceN)
+        : pressureSurfaceLoads(mesh, facets, load.pressureMPa));
+    }
+    const gravity = active.filter(load => load.type === 'gravity').reduce<NeutralVector3>((sum, load) => [
+      sum[0] + load.accelerationMmPerS2[0], sum[1] + load.accelerationMmPerS2[1], sum[2] + load.accelerationMmPerS2[2],
+    ], [0, 0, 0]);
+    const gravityMagnitude = Math.hypot(...gravity);
+    if (active.some(load => load.type === 'remote_force')) throw deckError('SIMULATION_NONLINEAR_LOAD_UNSUPPORTED', 'Remote-force amplitudes are not admitted by the CalculiX SIM-7A profile.');
+    if (gravityMagnitude > 1e-9 && request.materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
+      throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a nonlinear gravity load requires positive density.');
+    }
+    const settings = request.analysis.settings;
+    cards.push(
+      `*STEP, NLGEOM, INC=${settings.maximumIncrements}`,
+      '*STATIC',
+      `${solverNumber(settings.initialIncrement * step.duration)},${solverNumber(step.duration)},${solverNumber(settings.minimumIncrement * step.duration)},${solverNumber(settings.maximumIncrement * step.duration)}`,
+      '*CONTROLS, PARAMETERS=TIME INCREMENTATION',
+      `4,8,9,${settings.maximumIterations},10,4,,${settings.maximumCutbacks},,`,
+      `${solverNumber(settings.cutbackFactor)},${solverNumber(settings.cutbackFactor)},0.75,0.85,,,1.5,`,
+      ...boundaryCards,
+      ...(nodalLoads.size ? [
+        `*CLOAD, OP=NEW, AMPLITUDE=${amplitudeName}`,
+        ...[...nodalLoads.entries()].sort(([a], [b]) => a - b).flatMap(([node, force]) => force.flatMap((value, axis) => Math.abs(value) > 1e-14 ? [`${node + 1},${axis + 1},${solverNumber(value)}`] : [])),
+      ] : ['*CLOAD, OP=NEW']),
+      ...(gravityMagnitude > 1e-9
+        ? [`*DLOAD, OP=NEW, AMPLITUDE=${amplitudeName}`, `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`]
+        : ['*DLOAD, OP=NEW']),
+      '*NODE PRINT, NSET=NALL, GLOBAL=YES, FREQUENCY=1', 'U',
+      ...request.constraints.flatMap((_constraint, index) => [`*NODE PRINT, NSET=${reactionName(index)}, TOTALS=ONLY, GLOBAL=YES, FREQUENCY=1`, 'RF']),
+      '*EL PRINT, ELSET=EALL, FREQUENCY=1', 'S',
+      ...(plastic ? [
+        '*EL PRINT, ELSET=EALL, FREQUENCY=1', 'PEEQ',
+        '*EL PRINT, ELSET=EALL, FREQUENCY=1', 'ENER',
+        '*EL PRINT, ELSET=EALL, TOTALS=ONLY, FREQUENCY=1', 'ELSE',
+      ] : []),
+      ...domains.flatMap(domain => [
+        `*NODE PRINT, NSET=${nodeSetNames.get(domain.domainId)!}, GLOBAL=YES, FREQUENCY=1`, 'U',
+        `*EL PRINT, ELSET=${domainSetNames.get(domain.domainId)!}, FREQUENCY=1`, 'S',
+      ]),
+      '*END STEP',
+    );
+    totalDuration += step.duration;
+  }
+  if (!(totalDuration > 0)) throw deckError('SIMULATION_NONLINEAR_STEP_INVALID', 'Nonlinear pseudo-time duration must be positive.');
+  return cards;
+}
 
 export function asV1Mesh(model: NeutralFemModelV2): NeutralFemMesh {
   const { perDomain: _perDomain, ...quality } = model.quality;

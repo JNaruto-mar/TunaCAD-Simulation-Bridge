@@ -152,7 +152,7 @@ const capabilities: any = {
     maximumMaterials: 2, maximumReferenceBindings: 8, materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force'], maximumLoads: 2,
     maximumReferencesPerLoad: 2, constraintTypes: ['fixed', 'prescribed_displacement'], maximumConstraints: 4, maximumReferencesPerConstraint: 2,
     contactModes: ['none'], interactionTypes: ['frictionless_contact', 'frictional_contact'], maximumInteractions: 2, maximumReferencesPerInteractionSide: 2,
-    contact: { maximumDomains: 2, maximumInteractions: 2, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
+    contact: { maximumDomains: 2, maximumInteractions: 2, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small', 'finite'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
   },
 };
 assert.deepEqual(admitV2SimulationRequest(request, capabilities), { accepted: true });
@@ -193,10 +193,29 @@ expectMessage('BRIDGE_V2_CONTACT_GEOMETRY_INVALID', () => validateNeutralSimulat
   candidate.model.domains.find((domain: any) => domain.domainId === 'domain-b').transformToAnalysis[3] = 10.05;
   candidate.interactions[0].initialAdjustment = { type: 'bounded_to_contact', maximumAdjustmentMm: 0.04 };
 }), preparedTimestamp + 1000));
-expectMessage('BRIDGE_V2_CONTACT_GEOMETRY_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => {
+const curvedAdjustmentRequest = reseal(candidate => {
+  candidate.studyId = 'sim6d-curved-adjustment';
   candidate.model.domains.find((domain: any) => domain.domainId === 'domain-b').transformToAnalysis[3] = 10.05;
-  candidate.model.references.find((entry: any) => entry.semanticReferenceId === 'secondary-face').faceOwnerLocal.geometryType = 'cylinder';
+  const secondary = candidate.model.references.find((entry: any) => entry.semanticReferenceId === 'secondary-face').faceOwnerLocal;
+  const primary = candidate.model.references.find((entry: any) => entry.semanticReferenceId === 'primary-face').faceOwnerLocal;
+  secondary.geometryType = 'cylinder'; secondary.boundingBoxMm = { min: [0, 0, 0], max: [0, 10, 10] };
+  primary.boundingBoxMm = { min: [10, 0, 0], max: [10, 10, 10] };
   candidate.interactions[0].initialAdjustment = { type: 'bounded_to_contact', maximumAdjustmentMm: 0.06 };
+});
+assert.deepEqual(validateNeutralSimulationRequestV2(curvedAdjustmentRequest, preparedTimestamp + 1000), curvedAdjustmentRequest);
+assert.deepEqual(admitV2SimulationRequest(curvedAdjustmentRequest, capabilities), { accepted: true });
+
+const finiteSlidingRequest = reseal(candidate => {
+  candidate.studyId = 'sim6d-finite-sliding'; candidate.name = 'Finite-sliding finite-deformation contact';
+  candidate.analysis.assumptions[0] = 'finite_deformation'; candidate.analysis.assumptions[1] = 'finite_strain';
+  candidate.interactions[0].sliding = 'finite';
+});
+assert.deepEqual(validateNeutralSimulationRequestV2(finiteSlidingRequest, preparedTimestamp + 1000), finiteSlidingRequest);
+assert.deepEqual(admitV2SimulationRequest(finiteSlidingRequest, capabilities), { accepted: true });
+const smallOnlyCapability = structuredClone(capabilities); smallOnlyCapability.study.contact.sliding = ['small'];
+assert.equal(admitV2SimulationRequest(finiteSlidingRequest, smallOnlyCapability).accepted, false);
+expectMessage('BRIDGE_V2_CONTACT_REQUEST_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => {
+  candidate.interactions[0].sliding = 'finite';
 }), preparedTimestamp + 1000));
 
 expectMessage('BRIDGE_V2_CONTACT_GEOMETRY_INVALID', () => validateNeutralSimulationRequestV2(reseal(candidate => {
@@ -219,10 +238,19 @@ const adjustedFem = makeFem(adjustedRequest);
 adjustedFem.domainRegions.find(domain => domain.domainId === 'domain-b')!.nodeIndices.forEach(node => { adjustedFem.nodes[node][0] += 0.05; });
 const adjustedDeck = createCalculiXInputDeckV2(adjustedRequest, adjustedFem);
 assert.match(adjustedDeck, /\*CONTACT PAIR, INTERACTION=CONTACT_BEHAVIOR_001, TYPE=NODE TO SURFACE, SMALL SLIDING, ADJUST=0\.06/);
-const outOfBoundFem = structuredClone(adjustedFem); outOfBoundFem.nodes[10][0] += 0.02;
-expectMessage('outside the 0.06 mm initial-adjustment bound', () => createCalculiXInputDeckV2(adjustedRequest, outOfBoundFem));
-const outsidePrimaryFem = structuredClone(adjustedFem); outsidePrimaryFem.nodes[10][1] += 20;
-expectMessage('outside the 0.06 mm initial-adjustment bound', () => createCalculiXInputDeckV2(adjustedRequest, outsidePrimaryFem));
+const curvedAdjustmentFem = makeFem(curvedAdjustmentRequest);
+curvedAdjustmentFem.domainRegions.find(domain => domain.domainId === 'domain-b')!.nodeIndices.forEach(node => { curvedAdjustmentFem.nodes[node][0] += 0.05; });
+assert.match(createCalculiXInputDeckV2(curvedAdjustmentRequest, curvedAdjustmentFem), /ADJUST=0\.06/);
+const outOfBoundFem = structuredClone(adjustedFem); outOfBoundFem.nodes[10][0] -= 0.12;
+expectMessage('initial penetration beyond the 0.06 mm adjustment bound', () => createCalculiXInputDeckV2(adjustedRequest, outOfBoundFem));
+const outsidePrimaryFem = structuredClone(adjustedFem);
+for (const node of [10, 12, 13, 16, 18, 17]) outsidePrimaryFem.nodes[node][1] += 20;
+expectMessage('no secondary mesh node inside the 0.06 mm adjustment bound', () => createCalculiXInputDeckV2(adjustedRequest, outsidePrimaryFem));
+const finiteDeck = createCalculiXInputDeckV2(finiteSlidingRequest, makeFem(finiteSlidingRequest));
+assert.match(finiteDeck, /SIM-6D finite-sliding finite-deformation contact/);
+assert.match(finiteDeck, /\*CONTACT PAIR, INTERACTION=CONTACT_BEHAVIOR_001, TYPE=NODE TO SURFACE\n/);
+assert.doesNotMatch(finiteDeck, /SMALL SLIDING/);
+assert.match(finiteDeck, /\*STEP, NLGEOM, INC=50/);
 
 const unsupportedFem = makeFem(request);
 unsupportedFem.boundaryRegions = unsupportedFem.boundaryRegions.filter(region => region.regionId !== 'guide-region');
@@ -277,6 +305,13 @@ adjustedResult.warnings.push({ code: 'SIMULATION_CONTACT_INITIAL_ADJUSTMENT', me
 assert.deepEqual(validateNeutralSimulationResultV2(adjustedResult, adjustedRequest), adjustedResult);
 adjustedResult.warnings = adjustedResult.warnings.filter((warning: any) => warning.code !== 'SIMULATION_CONTACT_INITIAL_ADJUSTMENT');
 expectMessage('BRIDGE_V2_CONTACT_RESULT_INVALID', () => validateNeutralSimulationResultV2(adjustedResult, adjustedRequest));
+const finiteResult = structuredClone(contactResult);
+finiteResult.studyId = finiteSlidingRequest.studyId; finiteResult.requestDigest = finiteSlidingRequest.requestDigest; finiteResult.modelDigest = finiteSlidingRequest.model.modelDigest;
+finiteResult.contact.sliding = 'finite';
+finiteResult.warnings.push({ code: 'SIMULATION_CONTACT_FINITE_SLIDING_POC', message: 'Finite sliding remains proof-of-concept output.', severity: 'warning' });
+assert.deepEqual(validateNeutralSimulationResultV2(finiteResult, finiteSlidingRequest), finiteResult);
+finiteResult.warnings = finiteResult.warnings.filter((warning: any) => warning.code !== 'SIMULATION_CONTACT_FINITE_SLIDING_POC');
+expectMessage('BRIDGE_V2_CONTACT_RESULT_INVALID', () => validateNeutralSimulationResultV2(finiteResult, finiteSlidingRequest));
 const incompleteContactResult = structuredClone(contactResult); incompleteContactResult.contact.increments.at(-1).stepTime = 0.9;
 expectMessage('BRIDGE_V2_CONTACT_RESULT_INVALID', () => validateNeutralSimulationResultV2(incompleteContactResult, request));
 
@@ -310,7 +345,7 @@ const matrix = JSON.parse(readFileSync(new URL('../qualification/sim6a-windows-g
 assert.equal(matrix.matrixId, 'sim6a-windows-x64-gmsh-4.15.2-calculix-2.16');
 assert.equal(matrix.qualification.status, 'proof_of_concept');
 assert.equal(matrix.qualification.engineeringUsePermitted, false);
-assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'passed').map((lane: any) => lane.id), ['contract-and-admission', 'deterministic-contact-deck', 'bounded-contact-normalization', 'real-patch-equilibrium', 'opening-and-closing', 'bounded-initial-adjustment', 'penetration-and-refinement-trends', 'nonconvergence-and-cancellation', 'frictional-sliding']);
+assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'passed').map((lane: any) => lane.id), ['contract-and-admission', 'deterministic-contact-deck', 'bounded-contact-normalization', 'real-patch-equilibrium', 'opening-and-closing', 'bounded-initial-adjustment', 'penetration-and-refinement-trends', 'nonconvergence-and-cancellation', 'frictional-sliding', 'finite-sliding', 'curved-initial-adjustment']);
 assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'pending').map((lane: any) => lane.id), ['independent-engineering-review']);
 
-console.log('SIM-6A/SIM-6C small-sliding contact contract, friction admission, bounded adjustment, deterministic deck, normalized shear/slip fields, rigid-body stability, and bounded parsers passed.');
+console.log('SIM-6 small/finite-sliding contact contract, friction admission, planar/curved bounded adjustment, deterministic NLGEOM deck, normalized shear/slip fields, rigid-body stability, and bounded parsers passed.');

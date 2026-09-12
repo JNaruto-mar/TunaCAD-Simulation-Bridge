@@ -33,7 +33,7 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
       provider: provider ? { id: provider.id, version: provider.version, capabilities: provider.capabilities } : null,
       providerV2: providerV2 ? { id: providerV2.id, version: providerV2.version, capabilities: providerV2.capabilities } : null,
       meshing: { ready: !!mesh, adapterVersion: mesh?.version ?? 'unavailable', runtimeVersion: gmshVersion, geometryFormats: mesh ? ['step'] : [], elementFamilies: mesh ? ['tetrahedral'] : [] },
-      solving: { ready: !!solver, adapterVersion: solver?.version ?? 'unavailable', runtimeVersion: calculixVersion, analysisTypes: solver ? ['linear_static'] : [] },
+      solving: { ready: !!solver, adapterVersion: solver?.version ?? 'unavailable', runtimeVersion: calculixVersion, analysisTypes: solverV2 ? [...solverV2.capabilities.analysisTypes] : solver ? ['linear_static'] : [] },
       configuration: { ...paths, discoveryUsed: (!gmshExecutable && !!paths.gmshExecutable) || (!calculixExecutable && !!paths.calculixExecutable) },
     },
   };

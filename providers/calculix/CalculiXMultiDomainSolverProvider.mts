@@ -40,25 +40,31 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     this.executable = resolve(options.executable); this.runtimeVersion = options.runtimeVersion;
     const maximumDomains = options.maximumDomains ?? 16;
     this.capabilities = {
-      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling', 'static_contact'],
-      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear'], topology: 'triangle_soup' },
+      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static'],
+      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
-        materialModels: ['isotropic_linear_elastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force'], maximumLoads: 64,
+        materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force'], maximumLoads: 64,
         maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
         multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector', 'frictionless_contact', 'frictional_contact'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
         modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 },
         buckling: { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] },
-        contact: { maximumDomains: 2, maximumInteractions: 8, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
+        nonlinearStatic: {
+          maximumDomains: 1, maximumSteps: 8, maximumAmplitudePoints: 32, amplitudeModes: ['shared_shape_per_step'],
+          loadTypes: ['surface_force', 'pressure', 'gravity'], constraintTypes: ['fixed'],
+          geometricNonlinearity: true, materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], materialNonlinearity: true, hardeningModels: ['isotropic'], automaticIncrements: true,
+          plasticStrainResults: true, energyResults: true, incrementHistory: true, loadDisplacementHistory: true,
+        },
+        contact: { maximumDomains: 2, maximumInteractions: 8, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small', 'finite'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
       },
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
       durableReferenceMapping: 'supported', authority: 'engineering',
       qualification: {
         status: 'proof_of_concept', engineeringUsePermitted: false,
-        statement: 'Experimental SIM-4B linear-static, SIM-5 modal/buckling, and SIM-6A/SIM-6C small-sliding contact CalculiX solver.',
-        limitations: ['Windows development-host evidence only', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain, small-displacement node-to-surface penalty behavior; initial adjustment is bounded and planar-only, Coulomb friction uses an explicit penalty stick slope, and large-sliding contact is unsupported', 'Clearance recovery for secondary nodes omitted from CalculiX CONTACT output currently requires a planar primary FACE', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
-        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim6a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
+        statement: 'Experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
+        limitations: ['Windows development-host evidence only', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support proof-of-concept only; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim7a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
         topology: 'local_adapter', credentials: 'none', geometryLeavesDevice: false,
@@ -139,6 +145,11 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
           : run.request.analysis.type === 'static_contact'
             ? normalizeContact(run, parseCalculiXDatV2(contents, run.model, run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]), run.request.loads.some(load => load.type === 'gravity')),
               parseCalculiXContactFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), parseCalculiXContactStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta'))), this.id, this.version, this.runtimeVersion)
+            : run.request.analysis.type === 'nonlinear_static'
+              ? normalizeNonlinear(run,
+                parseCalculiXNonlinearDatV2(contents, run.model, run.request.constraints.map((_constraint, index) => reactionName(index))),
+                parseCalculiXNonlinearStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta')), run.request.analysis.settings.steps.map(step => step.duration)),
+                this.id, this.version, this.runtimeVersion)
           : (() => {
           const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
           return normalize(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity')), this.id, this.version, this.runtimeVersion);
@@ -165,13 +176,19 @@ export function parseCalculiXDatV2(text: string, model: NeutralFemModelV2, react
   const nodeDomains = new Map(model.domainRegions.flatMap(domain => domain.nodeIndices.map(node => [node, domain.domainId] as const)));
   const displacements = new Map<number, NeutralVector3>();
   const vonMisesByElement = new Map<number, number>();
-  const reactions: Record<string, NeutralVector3> = {}; let mode: 'u' | 'rf' | 's' | 'volume' | null = null; let reaction: string | null = null; let totalVolumeMm3: number | null = null;
+  const equivalentPlasticStrainByElement = new Map<number, number>();
+  const energyDensityByElement = new Map<number, number>();
+  const reactions: Record<string, NeutralVector3> = {}; let mode: 'u' | 'rf' | 's' | 'volume' | 'peeq' | 'energy_density' | 'internal_energy' | null = null; let reaction: string | null = null; let totalVolumeMm3: number | null = null; let totalInternalEnergyNmm: number | null = null;
   for (const raw of text.split(/\r?\n/)) {
     if (raw.length > 4096) throw new Error('CalculiX v2 result contains an oversized record.'); const lower = raw.toLowerCase();
     if (lower.includes('displacements') && lower.includes('for set')) { mode = 'u'; continue; }
     if ((lower.includes('total force') || lower.includes('forces')) && lower.includes('for set')) { mode = 'rf'; reaction = /for set\s+([a-z0-9_-]+)/i.exec(raw)?.[1]?.toUpperCase() ?? null; continue; }
     if (lower.includes('stresses') && lower.includes('for set')) { mode = 's'; continue; }
+    if ((lower.includes('equivalent plastic strain') || lower.includes('peeq')) && lower.includes('for set')) { mode = 'peeq'; continue; }
+    if (lower.includes('energy density')) { mode = 'energy_density'; continue; }
+    if ((lower.includes('total internal energy') || lower.includes('total strain energy')) && lower.includes('for set')) { mode = 'internal_energy'; continue; }
     if (lower.includes('volume') && lower.includes('for set')) { mode = 'volume'; continue; }
+    if (!raw.trim()) continue;
     const values = raw.trim().split(/\s+/).map(value => Number(value.replace(/[dD]/g, 'E'))); if (!values.length || values.some(value => !Number.isFinite(value))) continue;
     if (mode === 'u' && values.length >= 4) {
       const node = Math.trunc(values[0]) - 1; const domain = byDomain.get(nodeDomains.get(node) ?? ''); if (!domain) continue; const magnitude = Math.hypot(values[1], values[2], values[3]);
@@ -183,11 +200,14 @@ export function parseCalculiXDatV2(text: string, model: NeutralFemModelV2, react
       vonMisesByElement.set(element, Math.max(vonMisesByElement.get(element) ?? 0, vm));
       if (vm > domain.maximumVonMisesStressMPa) { domain.maximumVonMisesStressMPa = vm; domain.maximumStressElement = element; }
     } else if (mode === 'rf' && reaction && values.length >= 3) { const force = values.slice(-3) as NeutralVector3; reactions[reaction] = add(reactions[reaction] ?? [0, 0, 0], force); }
+    else if (mode === 'peeq' && values.length >= 3) { const element = Math.trunc(values[0]) - 1; if (model.volumeElements.domainIds[element]) equivalentPlasticStrainByElement.set(element, Math.max(equivalentPlasticStrainByElement.get(element) ?? 0, values.at(-1)!)); }
+    else if (mode === 'energy_density' && values.length >= 3) { const element = Math.trunc(values[0]) - 1; if (model.volumeElements.domainIds[element]) energyDensityByElement.set(element, Math.max(energyDensityByElement.get(element) ?? 0, values.at(-1)!)); }
+    else if (mode === 'internal_energy') totalInternalEnergyNmm = values.at(-1)!;
     else if (mode === 'volume') totalVolumeMm3 = values.at(-1)!;
   }
   if (reactionSets.some(name => !reactions[name]) || [...byDomain.values()].some(item => item.maximumDisplacementNode < 0 || item.maximumStressElement < 0 || !Number.isFinite(item.maximumDisplacementMm) || !Number.isFinite(item.maximumVonMisesStressMPa))
     || (expectVolume && !(totalVolumeMm3 && totalVolumeMm3 > 0))) throw new Error('CalculiX did not produce complete finite per-domain SIM-4A output.');
-  return { byDomain, reactions, totalVolumeMm3, displacements, vonMisesByElement };
+  return { byDomain, reactions, totalVolumeMm3, displacements, vonMisesByElement, equivalentPlasticStrainByElement, energyDensityByElement, totalInternalEnergyNmm };
 }
 
 export interface CalculiXContactNodeOutput { normalGapMm: number; tangentialSlipMm: number; pressureMPa: number; shearMPa: number }
@@ -234,6 +254,45 @@ export function parseCalculiXContactStaV2(text: string) {
     throw new Error('CalculiX did not report a complete, ordered contact increment history.');
   }
   return increments;
+}
+
+/** Parse every successful increment from every ordered SIM-7A step. The
+ * CalculiX status columns are step, increment, attempt, iterations, total
+ * pseudo-time, step pseudo-time, and increment size. */
+export function parseCalculiXNonlinearStaV2(text: string, durations: number[]) {
+  if (text.split(/\r?\n/).length > 100_000) throw new Error('CalculiX nonlinear status contains too many records.');
+  const steps = durations.map((duration, index) => ({ stepIndex: index + 1, duration, increments: [] as Array<{ increment: number; attempt: number; iterations: number; stepTime: number; totalTime: number; incrementSize: number }> }));
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.length > 4096) throw new Error('CalculiX nonlinear status contains an oversized record.');
+    const fields = raw.trim().split(/\s+/);
+    if (fields.length !== 7 || fields.slice(0, 4).some(field => !/^\d+$/.test(field))) continue;
+    const values = fields.map(field => Number(field.replace(/[dD]/g, 'E')));
+    const [stepIndex, increment, attempt, iterations, totalTime, stepTime, incrementSize] = values;
+    const step = steps[stepIndex - 1];
+    if (!step || values.some(value => !Number.isFinite(value)) || ![stepIndex, increment, attempt, iterations].every(Number.isInteger)
+      || increment < 1 || attempt < 1 || iterations < 1 || totalTime < 0 || stepTime < 0 || incrementSize <= 0) continue;
+    step.increments.push({ increment, attempt, iterations, stepTime, totalTime, incrementSize });
+  }
+  let priorTotalTime = -Infinity;
+  for (const step of steps) {
+    if (!step.increments.length || Math.abs(step.increments.at(-1)!.stepTime - step.duration) > Math.max(1e-8, step.duration * 1e-8)
+      || step.increments.some((entry, index, entries) => index > 0 && (entry.increment <= entries[index - 1].increment || entry.stepTime <= entries[index - 1].stepTime)
+        || entry.totalTime <= (index > 0 ? entries[index - 1].totalTime : priorTotalTime))) throw new Error(`CalculiX did not report a complete, ordered nonlinear increment history for step ${step.stepIndex}.`);
+    priorTotalTime = step.increments.at(-1)!.totalTime;
+  }
+  return steps;
+}
+
+/** Split increment-frequency text output at each NALL displacement heading and
+ * reuse the hardened static parser for a complete response frame. */
+export function parseCalculiXNonlinearDatV2(text: string, model: NeutralFemModelV2, reactionSets: string[]) {
+  if (text.split(/\r?\n/).length > 4_000_000) throw new Error('CalculiX nonlinear result contains too many records.');
+  const starts = [...text.matchAll(/^.*displacements.*for set\s+NALL\b.*$/gim)].map(match => match.index!);
+  if (!starts.length) throw new Error('CalculiX did not produce nonlinear increment displacement frames.');
+  return starts.map((start, index) => {
+    const frame = text.slice(start, starts[index + 1] ?? text.length);
+    return parseCalculiXDatV2(frame, model, reactionSets, false);
+  });
 }
 
 type ModalSix = [number, number, number, number, number, number];
@@ -522,6 +581,151 @@ function buildBucklingFieldDatasets(run: Run, modes: BucklingDatMode[], shapes: 
   return datasets;
 }
 
+function normalizeNonlinear(
+  run: Run,
+  frames: ReturnType<typeof parseCalculiXNonlinearDatV2>,
+  statusSteps: ReturnType<typeof parseCalculiXNonlinearStaV2>,
+  adapterId: string,
+  adapterVersion: string,
+  runtimeVersion: string,
+) {
+  if (run.request.analysis.type !== 'nonlinear_static') throw new Error('Nonlinear normalization received a non-nonlinear request.');
+  const plastic = run.request.materials.some(material => material.model === 'isotropic_elastic_plastic');
+  const requestedSteps = run.request.analysis.settings.steps;
+  const increments = statusSteps.flatMap((step, stepOffset) => step.increments.map(increment => ({ stepOffset, increment })));
+  if (frames.length !== increments.length) throw new Error(`CalculiX nonlinear response-frame count ${frames.length} does not match ${increments.length} converged increments.`);
+  const finalStep = requestedSteps.at(-1)!;
+  const finalLoads = finalStep.loadAmplitudes.map(entry => {
+    const load = run.request.loads.find(candidate => candidate.id === entry.loadId)!;
+    const scale = entry.points.at(-1)!.scaleFactor;
+    return load.type === 'surface_force' ? { ...load, forceN: load.forceN.map(value => value * scale) as NeutralVector3 }
+      : load.type === 'pressure' ? { ...load, pressureMPa: load.pressureMPa * scale }
+        : load.type === 'gravity' ? { ...load, accelerationMmPerS2: load.accelerationMmPerS2.map(value => value * scale) as NeutralVector3 }
+          : load;
+  });
+  const effectiveRequest = {
+    ...run.request,
+    analysis: { type: 'linear_static' as const, assumptions: ['small_displacement', 'small_strain', 'static_loading'] as const },
+    loads: finalLoads,
+    requestedResults: ['von_mises_stress', 'displacement', 'reaction_force'] as Array<'von_mises_stress' | 'displacement' | 'reaction_force'>,
+  } as NeutralSimulationRequestV2;
+  const base = normalize({ ...run, request: effectiveRequest }, frames.at(-1)!, adapterId, adapterVersion, runtimeVersion);
+  const finalTotalTime = statusSteps.at(-1)!.increments.at(-1)!.totalTime;
+  for (const [datasetId, dataset] of base.datasets) base.datasets.set(datasetId, {
+    ...dataset,
+    descriptor: {
+      ...dataset.descriptor, analysisType: 'nonlinear_static',
+      step: { index: requestedSteps.length, label: 'final_nonlinear_increment', stepId: finalStep.id, totalTime: finalTotalTime },
+    } as NeutralSimulationFieldDatasetV2,
+  });
+  const materialDatasets = plastic ? buildNonlinearMaterialFieldDatasets(run, frames.at(-1)!, requestedSteps.length, finalStep.id, finalTotalTime) : new Map();
+  for (const [datasetId, dataset] of materialDatasets) base.datasets.set(datasetId, dataset);
+  const history = increments.map(({ stepOffset, increment }, index) => {
+    const requested = requestedSteps[stepOffset];
+    const parsed = frames[index];
+    return {
+      stepIndex: stepOffset + 1, stepId: requested.id, increment: increment.increment, attempt: increment.attempt,
+      iterations: increment.iterations, stepTime: increment.stepTime, totalTime: increment.totalTime, incrementSize: increment.incrementSize,
+      loadScaleFactors: requested.loadAmplitudes.map(entry => ({ loadId: entry.loadId, scaleFactor: interpolate(entry.points, increment.stepTime / requested.duration) })),
+      maximumDisplacementMm: Math.max(...[...parsed.byDomain.values()].map(domain => domain.maximumDisplacementMm)),
+      resultantReactionForceN: Object.values(parsed.reactions).reduce<NeutralVector3>(add, [0, 0, 0]),
+      materialState: plastic ? nonlinearMaterialState(run, parsed) : null,
+    };
+  });
+  const totalIterations = increments.reduce((sum, entry) => sum + entry.increment.iterations, 0);
+  const result: NeutralSimulationResultV2 = {
+    ...base.result,
+    analysisType: 'nonlinear_static',
+    perDomain: base.result.perDomain.map(domain => ({
+      ...domain,
+      fieldDatasetIds: [...domain.fieldDatasetIds, ...[...materialDatasets.values()].filter(dataset => dataset.descriptor.domainId === domain.domainId).map(dataset => dataset.descriptor.datasetId)],
+    })),
+    warnings: [
+      { code: 'SIMULATION_PROVIDER_POC', message: `Experimental ${plastic ? 'SIM-7B material/geometric' : 'SIM-7A geometric'}-nonlinear result; qualified-engineer review is mandatory.`, severity: 'warning' },
+      { code: 'SIMULATION_GEOMETRIC_NONLINEARITY_POC', message: `Finite-deformation kinematics are enabled with ${plastic ? 'tabulated isotropic elastic-plastic hardening' : 'an isotropic linear-elastic constitutive law'}. Review load path, increments, convergence, and mesh sensitivity.`, severity: 'warning' },
+      ...(plastic ? [{ code: 'SIMULATION_MATERIAL_NONLINEARITY_POC', message: 'SIM-7B isotropic hardening is experimental; coupon and single-load plastic-hinge path evidence does not qualify reordered multi-axis loading or replace formal qualification and independent review.', severity: 'warning' as const }] : []),
+    ],
+    convergence: { status: 'converged', iterations: totalIterations, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Review the full force-displacement path, geometric stiffness, load-step amplitudes, increment cutbacks, and large-deformation mesh convergence.'],
+    nonlinear: {
+      formulation: plastic ? 'finite_deformation_elastic_plastic' : 'finite_deformation_elastic',
+      steps: statusSteps.map((step, index) => ({
+        stepIndex: index + 1, stepId: requestedSteps[index].id, converged: true,
+        increments: step.increments.map(({ totalTime: _totalTime, ...increment }) => increment),
+      })),
+      history,
+      materialState: plastic ? history.at(-1)!.materialState : null,
+    },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental ${plastic ? 'SIM-7B material/geometric' : 'SIM-7A geometric'}-nonlinear result. Not certified.` },
+  };
+  return { result, datasets: base.datasets };
+}
+
+function nonlinearMaterialState(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>) {
+  const elementCount = run.model.volumeElements.connectivity.length;
+  if (parsed.equivalentPlasticStrainByElement.size !== elementCount || parsed.energyDensityByElement.size !== elementCount
+    || parsed.totalInternalEnergyNmm === null || !Number.isFinite(parsed.totalInternalEnergyNmm) || parsed.totalInternalEnergyNmm < 0) {
+    throw new Error(`CalculiX omitted required finite SIM-7B plastic-strain or energy output (elements=${elementCount}, PEEQ=${parsed.equivalentPlasticStrainByElement.size}, ENER=${parsed.energyDensityByElement.size}, ELSE=${String(parsed.totalInternalEnergyNmm)}).`);
+  }
+  const plasticStrains = [...parsed.equivalentPlasticStrainByElement.values()];
+  const energyDensities = [...parsed.energyDensityByElement.values()];
+  if (plasticStrains.some(value => !Number.isFinite(value) || value < 0) || energyDensities.some(value => !Number.isFinite(value) || value < 0)) {
+    throw new Error('CalculiX produced invalid SIM-7B plastic-strain or energy output.');
+  }
+  return {
+    maximumEquivalentPlasticStrain: Math.max(...plasticStrains),
+    maximumEnergyDensityMPa: Math.max(...energyDensities),
+    totalInternalEnergyNmm: parsed.totalInternalEnergyNmm,
+    yieldedElementCount: plasticStrains.filter(value => value > 1e-12).length,
+  };
+}
+
+function buildNonlinearMaterialFieldDatasets(
+  run: Run,
+  parsed: ReturnType<typeof parseCalculiXDatV2>,
+  stepIndex: number,
+  stepId: string,
+  totalTime: number,
+) {
+  nonlinearMaterialState(run, parsed);
+  const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
+  for (const domain of run.model.domainRegions) {
+    const baseTriangles = renderTriangles(run, domain.domainId, parsed.displacements);
+    const references = run.model.boundaryRegions.filter(region => region.domainId === domain.domainId).flatMap(region => region.semanticReferenceIds);
+    const maximumDisplacement = parsed.byDomain.get(domain.domainId)!.maximumDisplacementMm;
+    const diagonal = boundingDiagonal(domain.nodeIndices.map(index => run.model.nodes[index]));
+    for (const [component, unit, suffix, values] of [
+      ['equivalent_plastic_strain', 'dimensionless', 'plastic-strain', parsed.equivalentPlasticStrainByElement],
+      ['strain_energy_density', 'MPa', 'energy-density', parsed.energyDensityByElement],
+    ] as const) {
+      const triangles = baseTriangles.map(triangle => {
+        const value = values.get(triangle.elementIndex) ?? missingField(`element ${triangle.elementIndex}`);
+        return { ...triangle, values: [value, value, value] as [number, number, number] };
+      });
+      const datasetId = `${run.providerRunId}:${domain.domainId}:${suffix}`;
+      const descriptor: NeutralSimulationFieldDatasetV2 = {
+        schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId, jobId: run.providerRunId, domainId: domain.domainId,
+        analysisType: 'nonlinear_static', step: { index: stepIndex, label: 'final_nonlinear_increment', stepId, totalTime }, component, unit,
+        location: 'boundary_facet', topology: 'triangle_soup', valueRange: fieldExtrema(triangles),
+        deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: maximumDisplacement > 1e-15 ? Math.min(1e6, Math.max(1, diagonal * 0.05 / maximumDisplacement)) : 1 },
+        mapping: { domain: 'exact', cadRegions: 'partial', semanticReferenceIds: [...new Set(references)].sort(compareText) },
+        totalTriangles: triangles.length, maximumPageTriangles: 128, datasetDigest: digest(triangles),
+      };
+      datasets.set(datasetId, { descriptor, triangles });
+    }
+  }
+  return datasets;
+}
+
+function interpolate(points: Array<{ time: number; scaleFactor: number }>, time: number): number {
+  if (time <= points[0].time) return points[0].scaleFactor;
+  for (let index = 1; index < points.length; index++) if (time <= points[index].time) {
+    const left = points[index - 1]; const right = points[index];
+    return left.scaleFactor + (right.scaleFactor - left.scaleFactor) * (time - left.time) / (right.time - left.time);
+  }
+  return points.at(-1)!.scaleFactor;
+}
+
 function renderTriangles(run: Run, domainId: string, vectors: Map<number, NeutralVector3>): NeutralSimulationFieldTriangleV2[] {
   const elementByFace = new Map<string, number>();
   run.model.volumeElements.connectivity.forEach((cell, elementIndex) => {
@@ -576,20 +780,22 @@ function normalizeContact(
   const totalIterations = increments.reduce((sum, entry) => sum + entry.iterations, 0);
   const usesInitialAdjustment = contacts.some(interaction => interaction.initialAdjustment !== 'none');
   const usesFriction = contacts.some(interaction => interaction.type === 'frictional_contact');
+  const sliding = contacts[0]?.sliding ?? 'small';
   const result: NeutralSimulationResultV2 = {
     ...base.result,
     analysisType: 'static_contact',
     perDomain,
     warnings: [
-      { code: 'SIMULATION_CONTACT_POC', message: 'Experimental SIM-6 small-sliding penalty-contact result; qualified-engineer review is mandatory.', severity: 'warning' },
-      { code: 'SIMULATION_CONTACT_OPENING_LIMIT', message: 'Secondary nodes omitted from the final CalculiX CONTACT block require planar-primary geometric clearance recovery; the bounded tensile regularizer is normalized to zero traction.', severity: 'warning' },
+      { code: 'SIMULATION_CONTACT_POC', message: `Experimental SIM-6 ${sliding}-sliding penalty-contact result; qualified-engineer review is mandatory.`, severity: 'warning' },
+      { code: 'SIMULATION_CONTACT_OPENING_LIMIT', message: 'Secondary nodes omitted from the final CalculiX CONTACT block use closest-triangle clearance recovery on the final deformed primary surface; the bounded tensile regularizer is normalized to zero traction.', severity: 'warning' },
       ...(usesInitialAdjustment ? [{ code: 'SIMULATION_CONTACT_INITIAL_ADJUSTMENT', message: 'CalculiX moved admitted secondary mesh nodes onto the primary surface before solving. The immutable CAD geometry was not changed; review the declared adjustment bound and mesh quality.', severity: 'warning' as const }] : []),
-      ...(usesFriction ? [{ code: 'SIMULATION_CONTACT_FRICTION_POC', message: 'Coulomb friction uses an explicit penalty stick slope and small-sliding kinematics; review stick/slip sensitivity and the friction coefficient.', severity: 'warning' as const }] : []),
+      ...(usesFriction ? [{ code: 'SIMULATION_CONTACT_FRICTION_POC', message: `Coulomb friction uses an explicit penalty stick slope and ${sliding}-sliding kinematics; review stick/slip sensitivity and the friction coefficient.`, severity: 'warning' as const }] : []),
+      ...(sliding === 'finite' ? [{ code: 'SIMULATION_CONTACT_FINITE_SLIDING_POC', message: 'Finite sliding updates contact projection with NLGEOM finite-deformation kinematics; the material law remains isotropic linear elastic.', severity: 'warning' as const }] : []),
     ],
     convergence: { status: 'converged', iterations: totalIterations, residual: null, providerDeclared: true },
     suggestedEngineeringIssues: [`Review contact-side choice, ${usesFriction ? 'normal/tangential penalty stiffness, friction coefficient, stick/slip response,' : 'penalty stiffness,'} mesh refinement, interface traction, penetration, and increment cutbacks.`],
     review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental SIM-6 contact result. Not certified.` },
-    contact: { formulation: 'node_to_surface_penalty', sliding: 'small', interfaces: contact.interfaces, increments },
+    contact: { formulation: 'node_to_surface_penalty', sliding, interfaces: contact.interfaces, increments },
   };
   return { result, datasets: base.datasets };
 }
@@ -696,8 +902,9 @@ function contactForceResultants(run: Run, reactions: NeutralSimulationResultV2['
 
 /** CalculiX reports only secondary nodes that retain generated contact springs
  * in the final increment. Recover signed clearance for omitted nodes from the
- * final displacement field and a local interpolation of the planar primary
- * surface instead of fabricating pressure or rejecting a valid open region. */
+ * final displacement field and the closest point on the deformed, triangulated
+ * primary surface. Barycentric displacement interpolation keeps this valid for
+ * planar, curved, and finite-sliding contact patches. */
 function inferOpenContactOutputs(
   run: Run,
   parsed: ReturnType<typeof parseCalculiXDatV2>,
@@ -705,38 +912,54 @@ function inferOpenContactOutputs(
   secondaryNodes: number[],
   primaryRegions: NeutralFemModelV2['boundaryRegions'],
 ): Map<number, CalculiXContactNodeOutput> {
-  const primaryReference = run.request.model.references.find(reference => interaction.primaryReferenceIds.includes(reference.semanticReferenceId));
-  if (!primaryReference?.faceOwnerLocal.outwardDirection || primaryReference.faceOwnerLocal.geometryType !== 'plane'
-  ) {
-    throw new Error(`Missing contact-node clearance recovery for interaction "${interaction.id}" requires a planar primary FACE.`);
-  }
-  const primaryDomain = run.request.model.domains.find(domain => domain.domainId === primaryReference.domainId);
-  if (!primaryDomain) throw new Error(`Contact interaction "${interaction.id}" has no primary domain.`);
-  const normal = transformDirection(primaryDomain.transformToAnalysis, primaryReference.faceOwnerLocal.outwardDirection);
-  const primaryNodes = [...new Set(primaryRegions.flatMap(region => region.facetIndices.flatMap(facet => run.model.boundaryFacets.connectivity[facet])))];
-  if (!primaryNodes.length) throw new Error(`Contact interaction "${interaction.id}" has no primary mesh nodes.`);
-  const primarySamples = primaryNodes.map(node => {
-    const displacement = parsed.displacements.get(node) ?? missingField(`primary contact node ${node}`);
-    return { deformed: add(run.model.nodes[node], displacement), displacement };
+  const references = new Map(run.request.model.references.map(reference => [reference.semanticReferenceId, reference]));
+  const primaryTriangles = primaryRegions.flatMap(region => {
+    const referenceId = interaction.primaryReferenceIds.find(id => region.semanticReferenceIds.includes(id));
+    const reference = referenceId ? references.get(referenceId) : undefined;
+    const primaryDomain = reference ? run.request.model.domains.find(domain => domain.domainId === reference.domainId) : undefined;
+    if (!reference?.faceOwnerLocal.outwardDirection || !primaryDomain) throw new Error(`Contact interaction "${interaction.id}" has incomplete primary normal/domain evidence.`);
+    const referenceNormal = transformDirection(primaryDomain.transformToAnalysis, reference.faceOwnerLocal.outwardDirection);
+    return region.facetIndices.flatMap(facet => facetSubtriangles(run.model.boundaryFacets.connectivity[facet]).map(nodes => {
+      const displacements = nodes.map(node => parsed.displacements.get(node) ?? missingField(`primary contact node ${node}`)) as [NeutralVector3, NeutralVector3, NeutralVector3];
+      const deformed = nodes.map((node, index) => add(run.model.nodes[node], displacements[index])) as [NeutralVector3, NeutralVector3, NeutralVector3];
+      let normal = normalizedCross(subtract(deformed[1], deformed[0]), subtract(deformed[2], deformed[0]));
+      if (dot(normal, referenceNormal) < 0) normal = normal.map(value => -value) as NeutralVector3;
+      return { deformed, displacements, normal };
+    }));
   });
+  if (!primaryTriangles.length) throw new Error(`Contact interaction "${interaction.id}" has no primary surface triangles.`);
   return new Map(secondaryNodes.map(node => {
     const displacement = parsed.displacements.get(node) ?? missingField(`secondary contact node ${node}`);
     const deformed = add(run.model.nodes[node], displacement);
-    const nearest = primarySamples.map(sample => {
-      const delta = subtract(sample.deformed, deformed); const normalDistance = dot(delta, normal);
-      return { ...sample, tangentialDistanceSquared: Math.max(0, dot(delta, delta) - normalDistance ** 2) };
-    }).sort((a, b) => a.tangentialDistanceSquared - b.tangentialDistanceSquared).slice(0, 4);
-    const exact = nearest.filter(sample => sample.tangentialDistanceSquared < 1e-16);
-    const weights = (exact.length ? exact : nearest).map(sample => ({ sample, weight: exact.length ? 1 : 1 / Math.max(sample.tangentialDistanceSquared, 1e-16) }));
-    const weightSum = weights.reduce((sum, entry) => sum + entry.weight, 0);
-    const primaryPoint = weights.reduce<NeutralVector3>((sum, entry) => add(sum, entry.sample.deformed.map(value => value * entry.weight / weightSum) as NeutralVector3), [0, 0, 0]);
-    const primaryDisplacement = weights.reduce<NeutralVector3>((sum, entry) => add(sum, entry.sample.displacement.map(value => value * entry.weight / weightSum) as NeutralVector3), [0, 0, 0]);
-    const normalGapMm = dot(subtract(deformed, primaryPoint), normal);
+    const nearest = primaryTriangles.map(triangle => {
+      const closest = closestPointWithWeights(deformed, triangle.deformed);
+      return { ...triangle, ...closest, distance: Math.hypot(...subtract(deformed, closest.point)) };
+    }).sort((a, b) => a.distance - b.distance)[0];
+    const primaryDisplacement = nearest.weights.reduce<NeutralVector3>((sum, weight, index) => add(sum, nearest.displacements[index].map(value => value * weight) as NeutralVector3), [0, 0, 0]);
+    const normalGapMm = dot(subtract(deformed, nearest.point), nearest.normal);
     const relative = subtract(displacement, primaryDisplacement);
-    const normalRelative = dot(relative, normal);
-    const tangentialSlipMm = Math.hypot(...relative.map((value, axis) => value - normalRelative * normal[axis]));
+    const normalRelative = dot(relative, nearest.normal);
+    const tangentialSlipMm = Math.hypot(...relative.map((value, axis) => value - normalRelative * nearest.normal[axis]));
     return [node, { normalGapMm, tangentialSlipMm, pressureMPa: 0, shearMPa: 0 }];
   }));
+}
+
+function normalizedCross(a: NeutralVector3, b: NeutralVector3): NeutralVector3 {
+  const value = cross(a, b); const length = Math.hypot(...value);
+  if (!(length > 1e-12)) throw new Error('Contact surface contains a degenerate deformed triangle.');
+  return value.map(component => component / length) as NeutralVector3;
+}
+
+function closestPointWithWeights(point: NeutralVector3, triangle: [NeutralVector3, NeutralVector3, NeutralVector3]): { point: NeutralVector3; weights: [number, number, number] } {
+  const [a, b, c] = triangle; const ab = subtract(b, a); const ac = subtract(c, a); const ap = subtract(point, a);
+  const d1 = dot(ab, ap); const d2 = dot(ac, ap); if (d1 <= 0 && d2 <= 0) return { point: a, weights: [1, 0, 0] };
+  const bp = subtract(point, b); const d3 = dot(ab, bp); const d4 = dot(ac, bp); if (d3 >= 0 && d4 <= d3) return { point: b, weights: [0, 1, 0] };
+  const vc = d1 * d4 - d3 * d2; if (vc <= 0 && d1 >= 0 && d3 <= 0) { const v = d1 / (d1 - d3); return { point: add(a, ab.map(value => value * v) as NeutralVector3), weights: [1 - v, v, 0] }; }
+  const cp = subtract(point, c); const d5 = dot(ab, cp); const d6 = dot(ac, cp); if (d6 >= 0 && d5 <= d6) return { point: c, weights: [0, 0, 1] };
+  const vb = d5 * d2 - d1 * d6; if (vb <= 0 && d2 >= 0 && d6 <= 0) { const w = d2 / (d2 - d6); return { point: add(a, ac.map(value => value * w) as NeutralVector3), weights: [1 - w, 0, w] }; }
+  const va = d3 * d6 - d5 * d4; if (va <= 0 && d4 - d3 >= 0 && d5 - d6 >= 0) { const w = (d4 - d3) / ((d4 - d3) + (d5 - d6)); return { point: add(b, subtract(c, b).map(value => value * w) as NeutralVector3), weights: [0, 1 - w, w] }; }
+  const denominator = 1 / (va + vb + vc); const v = vb * denominator; const w = vc * denominator;
+  return { point: add(a, add(ab.map(value => value * v) as NeutralVector3, ac.map(value => value * w) as NeutralVector3)), weights: [1 - v - w, v, w] };
 }
 
 function requireBoundaryRegion(model: NeutralFemModelV2, referenceId: string) {

@@ -43,6 +43,19 @@ try {
   const cantileverError = Math.abs(cantileverFine - expectedTipDisplacement) / expectedTipDisplacement;
   assert.ok(cantileverError <= 0.08, `Cantilever displacement error ${cantileverError} exceeds 8%.`);
   assert.ok(relativeChange(cantileverRuns[1].metrics.maximumDisplacementMm, cantileverRuns[2].metrics.maximumDisplacementMm) <= 0.04, 'Cantilever displacement did not stabilize across refinement.');
+  const repeatRequest = createRequest(cantilever, await geometryDigest(cantileverStep), 3.5);
+  const repeatedCantileverRuns = [
+    await run(pipeline.provider, repeatRequest, cantileverStep),
+    await run(pipeline.provider, repeatRequest, cantileverStep),
+    await run(pipeline.provider, repeatRequest, cantileverStep),
+  ];
+  const repeatDisplacements = repeatedCantileverRuns.map(result => requiredMetric(result.metrics.maximumDisplacementMm, 'repeatability displacement'));
+  const repeatStresses = repeatedCantileverRuns.map(result => requiredMetric(result.metrics.maximumVonMisesStressMPa, 'repeatability stress'));
+  const repeatReactions = repeatedCantileverRuns.map(result => result.reactions.reduce<NeutralVector3>((sum, item) => [sum[0] + item.forceN[0], sum[1] + item.forceN[1], sum[2] + item.forceN[2]], [0, 0, 0]));
+  assertRepeatable(repeatDisplacements, 1e-10, 'maximum displacement');
+  assertRepeatable(repeatStresses, 1e-10, 'maximum stress');
+  for (let axis = 0; axis < 3; axis++) assertRepeatable(repeatReactions.map(reaction => reaction[axis]), 1e-10, `reaction axis ${axis}`);
+  assert.deepEqual(repeatedCantileverRuns.map(result => result.provenance.mesh?.elementCount), [1618, 1618, 1618], 'Identical version-bound requests must retain the same mesh element count.');
 
   const plate = plateWithHoleSpec();
   const plateStep = await createStep(plate);
@@ -80,6 +93,11 @@ try {
       mediumToFineRelativeChange: relativeChange(plateStresses[1], plateStresses[2]),
     },
     nearSingular: { maximumDisplacementMm: slenderDisplacement, thicknessMm: slender.height, engineeringUsePermitted: slenderResult.review.engineeringUsePermitted },
+    repeatability: {
+      runCount: repeatedCantileverRuns.length, meshElementCounts: repeatedCantileverRuns.map(result => result.provenance.mesh?.elementCount),
+      maximumDisplacementMm: repeatDisplacements, maximumVonMisesStressMPa: repeatStresses, reactionForceN: repeatReactions,
+      maximumRelativeSpread: Math.max(relativeSpread(repeatDisplacements), relativeSpread(repeatStresses), ...[0, 1, 2].map(axis => relativeSpread(repeatReactions.map(reaction => reaction[axis])))),
+    },
   }, null, 2));
 } finally {
   await rm(directory, { recursive: true, force: true });
@@ -188,4 +206,13 @@ function requiredMetric(value: number | null, label: string): number {
 function relativeChange(from: number | null, to: number | null): number {
   const a = requiredMetric(from, 'comparison source'); const b = requiredMetric(to, 'comparison target');
   return Math.abs(b - a) / Math.max(Math.abs(b), 1e-12);
+}
+
+function relativeSpread(values: number[]): number {
+  return (Math.max(...values) - Math.min(...values)) / Math.max(...values.map(Math.abs), 1);
+}
+
+function assertRepeatable(values: number[], tolerance: number, label: string): void {
+  const spread = relativeSpread(values);
+  assert.ok(spread <= tolerance, `${label} repeatability spread ${spread} exceeds ${tolerance}.`);
 }

@@ -36,13 +36,26 @@ const face = z.object({
   }).strict().optional(),
   witnessPointsPartLocalMm: z.array(vector).max(32).optional(),
 }).strict();
-const material = z.object({
-  id: text, name: text, model: z.literal('isotropic_linear_elastic'),
-  densityKgM3: positive.max(100000).optional(),
-  youngsModulusMPa: positive.max(100000000), poissonRatio: finite.min(0).lt(0.5),
-  yieldStrengthMPa: positive.optional(),
-  source: z.object({ kind: z.enum(['library', 'custom']), reference: text, revision: text.optional() }).strict(),
-}).strict();
+const materialSource = z.object({ kind: z.enum(['library', 'custom']), reference: text, revision: text.optional() }).strict();
+const material = z.discriminatedUnion('model', [
+  z.object({
+    id: text, name: text, model: z.literal('isotropic_linear_elastic'),
+    densityKgM3: positive.max(100000).optional(),
+    youngsModulusMPa: positive.max(100000000), poissonRatio: finite.min(0).lt(0.5),
+    yieldStrengthMPa: positive.optional(), source: materialSource,
+  }).strict(),
+  z.object({
+    id: text, name: text, model: z.literal('isotropic_elastic_plastic'),
+    densityKgM3: positive.max(100000).optional(),
+    youngsModulusMPa: positive.max(100000000), poissonRatio: finite.min(0).lt(0.5),
+    yieldStrengthMPa: positive,
+    plasticity: z.object({
+      hardening: z.literal('isotropic'),
+      curve: z.array(z.object({ trueStressMPa: positive.max(100000000), plasticStrain: nonNegative.max(10) }).strict()).min(2).max(128),
+    }).strict(),
+    source: materialSource,
+  }).strict(),
+]);
 const meshRequest = z.object({
   dimensionality: z.literal('3d'), elementFamily: z.literal('tetrahedral'), order: z.literal(2),
   globalSizeMm: positive.max(1000000), minimumSizeMm: positive.optional(),
@@ -78,10 +91,31 @@ const requestSchema = z.object({
     }).strict(),
     z.object({
       type: z.literal('static_contact'),
-      assumptions: z.tuple([z.literal('small_displacement'), z.literal('small_strain'), z.literal('quasi_static'), z.enum(['frictionless_contact', 'frictional_contact'])]),
+      assumptions: z.tuple([
+        z.enum(['small_displacement', 'finite_deformation']),
+        z.enum(['small_strain', 'finite_strain']),
+        z.literal('quasi_static'),
+        z.enum(['frictionless_contact', 'frictional_contact']),
+      ]),
       settings: z.object({
         initialIncrement: positive.max(1), minimumIncrement: positive.max(1), maximumIncrement: positive.max(1),
         maximumIncrements: z.number().int().min(1).max(1000),
+      }).strict(),
+    }).strict(),
+    z.object({
+      type: z.literal('nonlinear_static'),
+      assumptions: z.tuple([z.literal('finite_deformation'), z.literal('finite_strain'), z.literal('quasi_static'), z.enum(['isotropic_linear_elastic', 'isotropic_elastic_plastic'])]),
+      settings: z.object({
+        steps: z.array(z.object({
+          id: text, name: text, duration: positive.max(1e9),
+          loadAmplitudes: z.array(z.object({
+            loadId: text, interpolation: z.literal('piecewise_linear'),
+            points: z.array(z.object({ time: nonNegative.max(1), scaleFactor: finite.min(-1e6).max(1e6) }).strict()).min(2).max(64),
+          }).strict()).min(1).max(64),
+        }).strict()).min(1).max(16),
+        initialIncrement: positive.max(1), minimumIncrement: positive.max(1), maximumIncrement: positive.max(1),
+        maximumIncrements: z.number().int().min(1).max(1000), maximumIterations: z.number().int().min(4).max(100),
+        cutbackFactor: positive.lt(1), maximumCutbacks: z.number().int().min(1).max(20),
       }).strict(),
     }).strict(),
   ]),
@@ -156,7 +190,7 @@ const requestSchema = z.object({
     z.object({
       id: text, name: text, type: z.literal('frictionless_contact'),
       secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
-      formulation: z.literal('node_to_surface_penalty'), sliding: z.literal('small'),
+      formulation: z.literal('node_to_surface_penalty'), sliding: z.enum(['small', 'finite']),
       normalBehavior: z.object({
         type: z.literal('linear_penalty'), stiffnessMPaPerMm: positive.max(1e12),
         tensionCutoffMPa: positive.max(1e6), searchDistanceFactor: positive.max(1),
@@ -170,7 +204,7 @@ const requestSchema = z.object({
     z.object({
       id: text, name: text, type: z.literal('frictional_contact'),
       secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
-      formulation: z.literal('node_to_surface_penalty'), sliding: z.literal('small'),
+      formulation: z.literal('node_to_surface_penalty'), sliding: z.enum(['small', 'finite']),
       normalBehavior: z.object({
         type: z.literal('linear_penalty'), stiffnessMPaPerMm: positive.max(1e12),
         tensionCutoffMPa: positive.max(1e6), searchDistanceFactor: positive.max(1),
@@ -187,7 +221,8 @@ const requestSchema = z.object({
   mesh: meshRequest,
   requestedResults: z.array(z.enum(['von_mises_stress', 'displacement', 'reaction_force', 'factor_of_safety', 'critical_regions',
     'natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass', 'buckling_load_factors', 'buckling_mode_shapes',
-    'contact_status', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'contact_force'])).min(1).max(9),
+    'contact_status', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'contact_force',
+    'load_displacement_history', 'increment_convergence', 'equivalent_plastic_strain', 'strain_energy_density', 'internal_energy'])).min(1).max(12),
 }).strict();
 
 function unique(values: string[]): boolean {
@@ -222,6 +257,21 @@ function transformPoint(matrix: number[], point: [number, number, number]): [num
 function transformDirection(matrix: number[], direction: [number, number, number]): [number, number, number] {
   const value: [number, number, number] = [matrix[0] * direction[0] + matrix[1] * direction[1] + matrix[2] * direction[2], matrix[4] * direction[0] + matrix[5] * direction[1] + matrix[6] * direction[2], matrix[8] * direction[0] + matrix[9] * direction[1] + matrix[10] * direction[2]];
   const length = Math.hypot(...value); return value.map(component => component / length) as [number, number, number];
+}
+
+function faceBoundsDistance(
+  first: { min: [number, number, number]; max: [number, number, number] } | undefined,
+  firstTransform: number[],
+  second: { min: [number, number, number]; max: [number, number, number] } | undefined,
+  secondTransform: number[],
+): number {
+  if (!first || !second) return Number.POSITIVE_INFINITY;
+  const transformed = (box: { min: [number, number, number]; max: [number, number, number] }, matrix: number[]) => {
+    const points = [0, 1].flatMap(x => [0, 1].flatMap(y => [0, 1].map(z => transformPoint(matrix, [box[x ? 'max' : 'min'][0], box[y ? 'max' : 'min'][1], box[z ? 'max' : 'min'][2]]))));
+    return { min: [0, 1, 2].map(axis => Math.min(...points.map(point => point[axis]))), max: [0, 1, 2].map(axis => Math.max(...points.map(point => point[axis]))) };
+  };
+  const a = transformed(first, firstTransform); const b = transformed(second, secondTransform);
+  return Math.hypot(...[0, 1, 2].map(axis => Math.max(0, a.min[axis] - b.max[axis], b.min[axis] - a.max[axis])));
 }
 
 function fail(code: string): never {
@@ -270,6 +320,15 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
 
   const materials = new Map(request.materials.map(entry => [entry.id, entry]));
   if (materials.size !== request.materials.length) fail('BRIDGE_V2_MATERIAL_INVALID');
+  for (const entry of request.materials) if (entry.model === 'isotropic_elastic_plastic') {
+    const curve = entry.plasticity?.curve ?? [];
+    if (curve[0]?.plasticStrain !== 0 || curve[0]?.trueStressMPa !== entry.yieldStrengthMPa
+      || curve.some((point, index) => index > 0
+        && (point.plasticStrain <= curve[index - 1].plasticStrain || point.trueStressMPa <= curve[index - 1].trueStressMPa))) {
+      fail('BRIDGE_V2_MATERIAL_INVALID');
+    }
+  }
+  if (request.analysis.type !== 'nonlinear_static' && request.materials.some(entry => entry.model === 'isotropic_elastic_plastic')) fail('BRIDGE_V2_MATERIAL_INVALID');
   const assignments = request.materialAssignments;
   if (!unique(assignments.map(entry => entry.assignmentId)) || !unique(assignments.map(entry => entry.domainId)) || !unique(assignments.map(entry => entry.volumeRegionId))) fail('BRIDGE_V2_ASSIGNMENT_INVALID');
   if (assignments.length !== domains.length) fail('BRIDGE_V2_ASSIGNMENT_INVALID');
@@ -313,29 +372,33 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
       for (const referenceId of interaction.secondaryReferenceIds) {
         const secondary = references.get(`interaction:${referenceId}`)!; const secondaryDirection = secondary.faceOwnerLocal.outwardDirection;
         if (!secondaryDirection) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
-        if (interaction.initialAdjustment !== 'none' && secondary.faceOwnerLocal.geometryType !== 'plane') fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
         const secondaryNormal = transformDirection(secondaryDomain.transformToAnalysis, secondaryDirection);
         const secondaryPoint = transformPoint(secondaryDomain.transformToAnalysis, secondary.faceOwnerLocal.centroidPartLocalMm);
         const candidates = interaction.primaryReferenceIds.map(primaryId => references.get(`interaction:${primaryId}`)!).filter(Boolean).map(primary => {
           const primaryDirection = primary.faceOwnerLocal.outwardDirection;
           if (!primaryDirection) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
-          if (interaction.initialAdjustment !== 'none' && primary.faceOwnerLocal.geometryType !== 'plane') fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
           const primaryNormal = transformDirection(primaryDomain.transformToAnalysis, primaryDirection);
           const primaryPoint = transformPoint(primaryDomain.transformToAnalysis, primary.faceOwnerLocal.centroidPartLocalMm);
           const delta = primaryPoint.map((value, axis) => value - secondaryPoint[axis]) as [number, number, number];
           const normalGap = delta[0] * secondaryNormal[0] + delta[1] * secondaryNormal[1] + delta[2] * secondaryNormal[2];
           const opposed = secondaryNormal[0] * primaryNormal[0] + secondaryNormal[1] * primaryNormal[1] + secondaryNormal[2] * primaryNormal[2];
           const tangentialOffset = Math.sqrt(Math.max(0, Math.hypot(...delta) ** 2 - normalGap ** 2));
-          return { normalGap, opposed, tangentialOffset };
+          return {
+            normalGap, opposed, tangentialOffset,
+            boundsDistance: faceBoundsDistance(secondary.faceOwnerLocal.boundingBoxMm, secondaryDomain.transformToAnalysis, primary.faceOwnerLocal.boundingBoxMm, primaryDomain.transformToAnalysis),
+            curvedAdjustment: secondary.faceOwnerLocal.geometryType !== 'plane' || primary.faceOwnerLocal.geometryType !== 'plane',
+          };
         });
         const tolerance = interaction.normalBehavior.searchDistanceFactor * Math.sqrt(secondary.faceOwnerLocal.areaMm2);
         const adjustmentLimit = interaction.initialAdjustment === 'none' ? 0 : interaction.initialAdjustment.maximumAdjustmentMm;
         if (adjustmentLimit > tolerance
           || !candidates.some(candidate => candidate.opposed <= -.9
-            && candidate.normalGap >= -(adjustmentLimit + 1e-8)
-            && candidate.normalGap <= tolerance
-            && (interaction.initialAdjustment === 'none' || Math.abs(candidate.normalGap) <= adjustmentLimit + 1e-8)
-            && candidate.tangentialOffset <= Math.sqrt(secondary.faceOwnerLocal.areaMm2))) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
+            && (interaction.initialAdjustment !== 'none' && candidate.curvedAdjustment
+              ? candidate.boundsDistance <= adjustmentLimit + 1e-8
+              : candidate.normalGap >= -(adjustmentLimit + 1e-8)
+                && candidate.normalGap <= tolerance
+                && (interaction.initialAdjustment === 'none' || Math.abs(candidate.normalGap) <= adjustmentLimit + 1e-8)
+                && candidate.tangentialOffset <= Math.sqrt(secondary.faceOwnerLocal.areaMm2)))) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
       }
     }
   }
@@ -378,17 +441,40 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   } else if (request.analysis.type === 'static_contact') {
     const settings = request.analysis.settings;
     const frictional = request.interactions.some(interaction => interaction.type === 'frictional_contact');
+    const finiteSliding = request.interactions.some(interaction => interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact' ? interaction.sliding === 'finite' : false);
     const expectedResults = ['contact_force', 'contact_pressure', 'contact_status', ...(frictional ? ['contact_shear'] : []), 'displacement', 'normal_gap', 'reaction_force', 'tangential_slip', 'von_mises_stress'].sort();
     const hasNonzeroPrescribedDisplacement = request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
       && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14));
     if (request.model.domains.length !== 2 || (!request.loads.length && !hasNonzeroPrescribedDisplacement) || !request.constraints.length || !request.interactions.length
       || request.interactions.some(interaction => interaction.type !== 'frictionless_contact' && interaction.type !== 'frictional_contact')
       || new Set(request.interactions.map(interaction => interaction.type)).size !== 1
+      || new Set(request.interactions.map(interaction => interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact' ? interaction.sliding : null)).size !== 1
+      || request.analysis.assumptions[0] !== (finiteSliding ? 'finite_deformation' : 'small_displacement')
+      || request.analysis.assumptions[1] !== (finiteSliding ? 'finite_strain' : 'small_strain')
       || request.analysis.assumptions[3] !== (frictional ? 'frictional_contact' : 'frictionless_contact')
       || settings.minimumIncrement > settings.initialIncrement || settings.initialIncrement > settings.maximumIncrement
       || request.requestedResults.length !== expectedResults.length
       || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
       fail('BRIDGE_V2_CONTACT_REQUEST_INVALID');
+    }
+  } else if (request.analysis.type === 'nonlinear_static') {
+    const settings = request.analysis.settings;
+    const loadIds = new Set(request.loads.map(load => load.id));
+    const materialModels = new Set(request.materials.map(material => material.model));
+    const plastic = materialModels.has('isotropic_elastic_plastic');
+    const expectedResults = ['displacement', 'increment_convergence', 'load_displacement_history', 'reaction_force', 'von_mises_stress',
+      ...(plastic ? ['equivalent_plastic_strain', 'strain_energy_density', 'internal_energy'] : [])].sort();
+    if (!request.loads.length || !request.constraints.length || request.interactions.length
+      || materialModels.size !== 1 || !materialModels.has(request.analysis.assumptions[3])
+      || request.constraints.some(constraint => constraint.type !== 'fixed')
+      || settings.minimumIncrement > settings.initialIncrement || settings.initialIncrement > settings.maximumIncrement
+      || !unique(settings.steps.map(step => step.id))
+      || settings.steps.some(step => !unique(step.loadAmplitudes.map(entry => entry.loadId))
+        || entryListInvalid(step.loadAmplitudes, loadIds))
+      || request.loads.some(load => !settings.steps.some(step => step.loadAmplitudes.some(entry => entry.loadId === load.id)))
+      || request.requestedResults.length !== expectedResults.length
+      || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
+      fail('BRIDGE_V2_NONLINEAR_REQUEST_INVALID');
     }
   } else if (!request.constraints.length || !request.loads.length && !request.constraints.some(constraint => (constraint.type === 'prescribed_displacement'
     && constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14))
@@ -398,6 +484,12 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   if (request.mesh.globalSizeMm < maximumSize / 200
     || (request.mesh.minimumSizeMm !== undefined && request.mesh.minimumSizeMm < request.mesh.globalSizeMm / 20)) fail('BRIDGE_V2_MESH_BUDGET_INVALID');
   return request;
+}
+
+function entryListInvalid(entries: Array<{ loadId: string; points: Array<{ time: number; scaleFactor: number }> }>, loadIds: Set<string>): boolean {
+  return entries.some(entry => !loadIds.has(entry.loadId)
+    || entry.points[0].time !== 0 || entry.points.at(-1)?.time !== 1
+    || entry.points.some((point, index, points) => index > 0 && point.time <= points[index - 1].time));
 }
 
 export type V2Admission = { accepted: true } | { accepted: false; code: 'PROVIDER_INTERFACE_VERSION_UNSUPPORTED' | 'PROVIDER_V2_CAPABILITY_UNSUPPORTED'; message: string };
@@ -440,6 +532,24 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
         || !profile.study.contact!.tangentialBehaviors.includes(interaction.tangentialBehavior.type)
         || !profile.study.contact!.initialAdjustments.includes(contactAdjustmentMode(interaction.initialAdjustment)))
       || !profile.study.contact.nonlinearIncrementReporting))
+    || (request.analysis.type === 'nonlinear_static' && (!profile.fieldResults.components.includes('displacement_magnitude')
+      || !profile.fieldResults.components.includes('von_mises_stress') || !profile.study.nonlinearStatic
+      || request.model.domains.length > profile.study.nonlinearStatic.maximumDomains
+      || request.analysis.settings.steps.length > profile.study.nonlinearStatic.maximumSteps
+      || request.analysis.settings.steps.some(step => step.loadAmplitudes.some(entry => entry.points.length > profile.study.nonlinearStatic!.maximumAmplitudePoints))
+      || !profile.study.nonlinearStatic.amplitudeModes?.includes('shared_shape_per_step')
+      || request.analysis.settings.steps.some(step => !sharedAmplitudeShape(step.loadAmplitudes))
+      || request.loads.some(load => !profile.study.nonlinearStatic!.loadTypes.includes(load.type))
+      || request.constraints.some(constraint => !profile.study.nonlinearStatic!.constraintTypes.includes(constraint.type))
+      || !profile.study.nonlinearStatic.geometricNonlinearity || !profile.study.nonlinearStatic.automaticIncrements
+      || !profile.study.nonlinearStatic.incrementHistory || !profile.study.nonlinearStatic.loadDisplacementHistory
+      || request.materials.some(material => !profile.study.nonlinearStatic!.materialModels.includes(material.model))
+      || (request.materials.some(material => material.model === 'isotropic_elastic_plastic')
+        && (!profile.study.nonlinearStatic.materialNonlinearity
+          || !profile.study.nonlinearStatic.hardeningModels.includes('isotropic')
+          || !profile.study.nonlinearStatic.plasticStrainResults || !profile.study.nonlinearStatic.energyResults
+          || !profile.fieldResults.components.includes('equivalent_plastic_strain')
+          || !profile.fieldResults.components.includes('strain_energy_density')))))
     || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
     || request.model.domains.length > profile.study.maximumOccurrences
@@ -466,6 +576,12 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
     return { accepted: false, code: 'PROVIDER_V2_CAPABILITY_UNSUPPORTED', message: 'The provider does not exactly support this SIM-4A study envelope.' };
   }
   return { accepted: true };
+}
+
+function sharedAmplitudeShape(entries: Array<{ points: Array<{ time: number; scaleFactor: number }> }>): boolean {
+  const first = entries[0]?.points;
+  return !!first && entries.every(entry => entry.points.length === first.length
+    && entry.points.every((point, index) => point.time === first[index].time && point.scaleFactor === first[index].scaleFactor));
 }
 
 const femSchema = z.object({
@@ -598,7 +714,7 @@ const bucklingResult = z.object({
   modes: z.array(z.object({ modeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive, fieldDatasetIds: z.array(text).min(1).max(128) }).strict()).min(1).max(12),
 }).strict();
 const contactResult = z.object({
-  formulation: z.literal('node_to_surface_penalty'), sliding: z.literal('small'),
+  formulation: z.literal('node_to_surface_penalty'), sliding: z.enum(['small', 'finite']),
   interfaces: z.array(z.object({
     interactionId: text, secondaryDomainId: text, primaryDomainId: text, status: z.enum(['active', 'open_or_touching']),
     maximumPressureMPa: nonNegative, minimumNormalGapMm: finite, maximumPenetrationMm: nonNegative, maximumTangentialSlipMm: nonNegative,
@@ -610,9 +726,33 @@ const contactResult = z.object({
     stepTime: nonNegative.max(1), incrementSize: positive.max(1),
   }).strict()).min(1).max(1000),
 }).strict();
+const nonlinearIncrement = z.object({
+  increment: z.number().int().positive(), attempt: z.number().int().positive(), iterations: z.number().int().positive(),
+  stepTime: nonNegative, incrementSize: positive,
+}).strict();
+const nonlinearMaterialState = z.object({
+  maximumEquivalentPlasticStrain: nonNegative,
+  maximumEnergyDensityMPa: nonNegative,
+  totalInternalEnergyNmm: nonNegative,
+  yieldedElementCount: z.number().int().nonnegative(),
+}).strict();
+const nonlinearResult = z.object({
+  formulation: z.enum(['finite_deformation_elastic', 'finite_deformation_elastic_plastic']),
+  steps: z.array(z.object({
+    stepIndex: z.number().int().positive(), stepId: text, converged: z.literal(true),
+    increments: z.array(nonlinearIncrement).min(1).max(1000),
+  }).strict()).min(1).max(16),
+  history: z.array(z.object({
+    stepIndex: z.number().int().positive(), stepId: text, increment: z.number().int().positive(), attempt: z.number().int().positive(),
+    iterations: z.number().int().positive(), stepTime: nonNegative, totalTime: nonNegative, incrementSize: positive,
+    loadScaleFactors: z.array(z.object({ loadId: text, scaleFactor: finite }).strict()).min(1).max(64),
+    maximumDisplacementMm: nonNegative, resultantReactionForceN: vector, materialState: nonlinearMaterialState.nullable(),
+  }).strict()).min(1).max(16000),
+  materialState: nonlinearMaterialState.nullable(),
+}).strict();
 const resultSchema = z.object({
   schema: z.literal('tunacad-neutral-simulation-result/2.0'), studyId: text, jobId: text, requestDigest: hash,
-  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact']), status: z.enum(['succeeded', 'failed', 'cancelled']),
+  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static']), status: z.enum(['succeeded', 'failed', 'cancelled']),
   authority: z.enum(['engineering', 'architecture_mock']), metrics: resultMetrics,
   perDomain: z.array(z.object({ domainId: text, metrics: resultMetrics, fieldDatasetIds: z.array(text).max(512) }).strict()).min(1).max(128),
   reactions: z.array(z.object({
@@ -631,6 +771,7 @@ const resultSchema = z.object({
   modal: modalResult.optional(),
   buckling: bucklingResult.optional(),
   contact: contactResult.optional(),
+  nonlinear: nonlinearResult.optional(),
   provenance: z.object({
     providerInterfaceVersion: z.literal('2.0'), adapterId: text, adapterVersion: text, providerRunId: text,
     submittedAt: z.iso.datetime(), completedAt: z.iso.datetime(), normalizedAt: z.iso.datetime(),
@@ -691,9 +832,42 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
     return result;
   }
+  if (request.analysis.type === 'nonlinear_static') {
+    const plastic = request.materials.some(material => material.model === 'isotropic_elastic_plastic');
+    if (result.analysisType !== 'nonlinear_static' || !('nonlinear' in result) || !result.nonlinear
+      || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
+      || ('contact' in result && result.contact !== undefined)
+      || result.nonlinear.formulation !== (plastic ? 'finite_deformation_elastic_plastic' : 'finite_deformation_elastic')
+      || result.nonlinear.steps.length !== request.analysis.settings.steps.length
+      || result.nonlinear.steps.some((step, index) => {
+        const requested = request.analysis.settings.steps[index];
+        return step.stepIndex !== index + 1 || step.stepId !== requested.id || step.increments.length > request.analysis.settings.maximumIncrements
+          || Math.abs((step.increments.at(-1)?.stepTime ?? -1) - requested.duration) > 1e-8
+          || step.increments.some((entry, entryIndex, entries) => entry.iterations > request.analysis.settings.maximumIterations
+            || entry.attempt > request.analysis.settings.maximumCutbacks + 1
+            || entryIndex > 0 && (entry.increment <= entries[entryIndex - 1].increment || entry.stepTime <= entries[entryIndex - 1].stepTime));
+      })
+      || result.nonlinear.history.length !== result.nonlinear.steps.reduce((sum, step) => sum + step.increments.length, 0)
+      || result.nonlinear.history.some((point, index, history) => {
+        const step = request.analysis.settings.steps[point.stepIndex - 1];
+        const increment = result.nonlinear.steps[point.stepIndex - 1]?.increments.find(entry => entry.increment === point.increment);
+        const expectedLoads = step?.loadAmplitudes ?? [];
+        return !step || point.stepId !== step.id || !increment || point.attempt !== increment.attempt || point.iterations !== increment.iterations
+          || Math.abs(point.stepTime - increment.stepTime) > 1e-10 || Math.abs(point.incrementSize - increment.incrementSize) > 1e-10
+          || point.loadScaleFactors.length !== expectedLoads.length || !unique(point.loadScaleFactors.map(entry => entry.loadId))
+          || point.loadScaleFactors.some(entry => Math.abs(entry.scaleFactor - interpolateAmplitude(expectedLoads.find(candidate => candidate.loadId === entry.loadId)?.points ?? [], point.stepTime / step.duration)) > 1e-8)
+          || index > 0 && point.totalTime <= history[index - 1].totalTime
+          || (plastic ? !point.materialState || point.materialState.yieldedElementCount > request.mesh.maximumElements : point.materialState !== null);
+      })
+      || (plastic ? !result.nonlinear.materialState || JSON.stringify(result.nonlinear.materialState) !== JSON.stringify(result.nonlinear.history.at(-1)?.materialState) : result.nonlinear.materialState !== null)
+      || !result.warnings.some(warning => warning.code === 'SIMULATION_GEOMETRIC_NONLINEARITY_POC')
+      || (plastic && !result.warnings.some(warning => warning.code === 'SIMULATION_MATERIAL_NONLINEARITY_POC'))) fail('BRIDGE_V2_NONLINEAR_RESULT_INVALID');
+  }
   if (request.analysis.type === 'static_contact') {
+    const requestedSliding = request.interactions.find(interaction => interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact')?.sliding;
     if (result.analysisType !== 'static_contact' || !('contact' in result) || !result.contact
       || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
+      || result.contact.sliding !== requestedSliding
       || result.contact.interfaces.length !== request.interactions.length
       || !unique(result.contact.interfaces.map(entry => entry.interactionId))
       || result.contact.interfaces.some(entry => {
@@ -716,8 +890,10 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || (request.interactions.some(interaction => (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') && interaction.initialAdjustment !== 'none')
         && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_INITIAL_ADJUSTMENT'))
       || (request.interactions.some(interaction => interaction.type === 'frictional_contact')
-        && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FRICTION_POC'))) fail('BRIDGE_V2_CONTACT_RESULT_INVALID');
-  } else if (('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined) || ('contact' in result && result.contact !== undefined)) fail('BRIDGE_V2_RESULT_INVALID');
+        && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FRICTION_POC'))
+      || (requestedSliding === 'finite'
+        && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FINITE_SLIDING_POC'))) fail('BRIDGE_V2_CONTACT_RESULT_INVALID');
+  } else if (request.analysis.type !== 'nonlinear_static' && (('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined) || ('contact' in result && result.contact !== undefined) || ('nonlinear' in result && result.nonlinear !== undefined))) fail('BRIDGE_V2_RESULT_INVALID');
   const constraints = new Map(request.constraints.map(constraint => [constraint.id, constraint]));
   const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
   const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
@@ -737,6 +913,15 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
   return result;
 }
 
+function interpolateAmplitude(points: Array<{ time: number; scaleFactor: number }>, time: number): number {
+  if (!points.length || time <= points[0].time) return points[0]?.scaleFactor ?? Number.NaN;
+  for (let index = 1; index < points.length; index++) if (time <= points[index].time) {
+    const left = points[index - 1]; const right = points[index]; const ratio = (time - left.time) / (right.time - left.time);
+    return left.scaleFactor + ratio * (right.scaleFactor - left.scaleFactor);
+  }
+  return points.at(-1)!.scaleFactor;
+}
+
 const fieldTriangle = z.object({
   facetIndex: z.number().int().nonnegative(), elementIndex: z.number().int().nonnegative(),
   positionsAnalysisMm: z.tuple([vector, vector, vector]),
@@ -745,14 +930,15 @@ const fieldTriangle = z.object({
 }).strict();
 const fieldDataset = z.object({
   schema: z.literal('tunacad-neutral-simulation-field-dataset/2.0'),
-  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact']),
+  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static']),
   step: z.union([
     z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
     z.object({ index: z.literal(0), label: z.literal('final_contact_increment') }).strict(),
+    z.object({ index: z.number().int().positive(), label: z.literal('final_nonlinear_increment'), stepId: text, totalTime: positive }).strict(),
     z.object({ index: z.number().int().positive(), label: text, modeNumber: z.number().int().positive(), frequencyHz: nonNegative }).strict(),
     z.object({ index: z.number().int().positive(), label: text, bucklingModeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive }).strict(),
   ]),
-  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear']), unit: z.enum(['mm', 'MPa', 'normalized']),
+  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density']), unit: z.enum(['mm', 'MPa', 'normalized', 'dimensionless']),
   location: z.literal('boundary_facet'), topology: z.literal('triangle_soup'),
   valueRange: z.object({ minimum: finite, maximum: finite, minimumPositionAnalysisMm: vector, maximumPositionAnalysisMm: vector }).strict(),
   deformation: z.object({ vectorsIncluded: z.literal(true), trueScale: z.literal(1), recommendedScale: positive }).strict(),
@@ -773,12 +959,14 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
   if (page.cursor !== String(page.triangleOffset) || page.triangleCount !== page.triangles.length
     || page.triangleCount > page.dataset.maximumPageTriangles || page.triangleOffset + page.triangleCount > page.dataset.totalTriangles
     || page.nextCursor !== (page.triangleOffset + page.triangleCount < page.dataset.totalTriangles ? String(page.triangleOffset + page.triangleCount) : null)
-    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' || page.dataset.component === 'tangential_slip' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' || page.dataset.component === 'contact_shear' ? 'MPa' : 'normalized')
+    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' || page.dataset.component === 'tangential_slip' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' || page.dataset.component === 'contact_shear' || page.dataset.component === 'strain_energy_density' ? 'MPa' : page.dataset.component === 'equivalent_plastic_strain' ? 'dimensionless' : 'normalized')
     || (page.dataset.analysisType === 'modal') !== (page.dataset.component === 'mode_shape_magnitude')
     || (page.dataset.analysisType === 'modal') !== ('modeNumber' in page.dataset.step)
     || (page.dataset.analysisType === 'linear_buckling') !== (page.dataset.component === 'buckling_mode_shape_magnitude')
     || (page.dataset.analysisType === 'linear_buckling') !== ('bucklingModeNumber' in page.dataset.step)
     || (page.dataset.analysisType === 'static_contact') !== (['contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear'].includes(page.dataset.component) || page.dataset.step.label === 'final_contact_increment')
+    || (page.dataset.analysisType === 'nonlinear_static') !== (page.dataset.step.label === 'final_nonlinear_increment')
+    || (['equivalent_plastic_strain', 'strain_energy_density'].includes(page.dataset.component) && page.dataset.analysisType !== 'nonlinear_static')
     || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
     || (page.dataset.component !== 'normal_gap' && page.dataset.valueRange.minimum < 0)
     || page.triangles.some(triangle => triangle.values.some(value => page.dataset.component !== 'normal_gap' && value < 0))

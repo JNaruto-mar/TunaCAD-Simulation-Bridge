@@ -34,6 +34,11 @@
     "test:sim6-contact": "node --experimental-strip-types scripts/test-sim6-contact.mts",
     "test:sim6-contact-real": "node --experimental-strip-types scripts/test-sim6-contact-real.mts",
     "test:sim6-contact-trends": "node --experimental-strip-types scripts/test-sim6-contact-trends.mts",
+    "test:sim7-geometric-nonlinear": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear.mts",
+    "test:sim7-geometric-nonlinear-real": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear-real.mts",
+    "test:sim7-material-path-real": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear-real.mts --material-path-only",
+    "test:sim7-material-lifecycle-real": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear-real.mts --material-lifecycle-only",
+    "test:sim7-material-hinge-real": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear-real.mts --material-hinge-only",
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },

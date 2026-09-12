@@ -31,6 +31,7 @@ try {
   const samples = [];
   for (const meshSizeMm of [2.25, 1.75, 1.4]) samples.push(await solve(meshSizeMm, 1_050_000));
   const stiffPenalty = await solve(1.75, 2_100_000);
+  const curvedAdjustment = await solve(2.25, 1_050_000, true);
 
   assert.ok(samples.every(sample => sample.status === 'active'));
   assert.ok(samples.every(sample => sample.maximumPressureMPa > sample.activeEdgePressureMPa * 1.25), 'The curved patch must retain a center-high, edge-decaying pressure profile.');
@@ -46,6 +47,10 @@ try {
   assert.ok(samples[2].hertzHalfWidthRelativeError < 0.3, 'The fine active strip width must remain within 30% of the Hertz line-contact reference.');
   assert.ok(stiffPenalty.maximumPenetrationMm < samples[1].maximumPenetrationMm * 0.93, 'A two-times stiffer penalty must materially reduce penetration.');
   assert.ok(stiffPenalty.maximumPenetrationMm < 0.03, 'Qualified penalty penetration must remain below 0.03 mm.');
+  assert.equal(curvedAdjustment.status, 'active');
+  assert.equal(curvedAdjustment.initialAdjustmentWarning, true, 'Curved bounded adjustment must emit the mandatory mesh-adjustment warning.');
+  assert.ok(curvedAdjustment.maximumPenetrationMm < 0.06, 'Curved bounded adjustment must retain penetration below its declared 0.06 mm bound.');
+  assert.ok(curvedAdjustment.contactEquilibriumRelativeError < 0.12, 'Curved bounded adjustment must retain secondary-body force equilibrium.');
 
   console.log(JSON.stringify({
     fixture: 'deformable half-cylinder on planar steel foundation',
@@ -55,10 +60,11 @@ try {
     meshRefinement: samples,
     peakPressureRelativeChanges: refinementChanges,
     penaltyComparison: { baseline: samples[1], twoTimesStiffer: stiffPenalty },
+    curvedInitialAdjustment: { initialClearanceMm: 0.05, maximumAdjustmentMm: 0.06, ...curvedAdjustment },
   }, null, 2));
 
-  async function solve(meshSizeMm: number, penaltyStiffnessMPaPerMm: number) {
-    const request = createRequest(meshSizeMm, penaltyStiffnessMPaPerMm);
+  async function solve(meshSizeMm: number, penaltyStiffnessMPaPerMm: number, curvedInitialAdjustment = false) {
+    const request = createRequest(meshSizeMm, penaltyStiffnessMPaPerMm, curvedInitialAdjustment);
     const model = await mesher.mesh(request, { descriptor: request.model, async exportDomain(domainId) { return geometry.get(domainId)!; } });
     const submission = await solver.submit(request, model);
     const deadline = Date.now() + solver.capabilities.execution.totalTimeoutMs;
@@ -94,6 +100,7 @@ try {
           activeHalfWidthMm: maximumX, activeEdgePressureMPa, maximumPenetrationMm: contact.maximumPenetrationMm,
           hertzHalfWidthMm, hertzHalfWidthRelativeError: Math.abs(maximumX - hertzHalfWidthMm) / hertzHalfWidthMm,
           drivenForceN, contactForceN, contactEquilibriumRelativeError: Math.abs(contactForceN - drivenForceN) / Math.max(drivenForceN, 1e-12),
+          initialAdjustmentWarning: result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_INITIAL_ADJUSTMENT'),
         };
       }
       await new Promise(resolve => setTimeout(resolve, 25));
@@ -112,10 +119,10 @@ try {
   await rm(directory, { recursive: true, force: true });
 }
 
-function createRequest(meshSizeMm: number, penaltyStiffnessMPaPerMm: number): NeutralSimulationRequestV2 {
-  const projectRevision = `sim6a-trends-${meshSizeMm}-${penaltyStiffnessMPaPerMm}`;
+function createRequest(meshSizeMm: number, penaltyStiffnessMPaPerMm: number, curvedInitialAdjustment = false): NeutralSimulationRequestV2 {
+  const projectRevision = `sim6a-trends-${meshSizeMm}-${penaltyStiffnessMPaPerMm}-${curvedInitialAdjustment ? 'adjusted' : 'touching'}`;
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as const;
-  const translated = [1, 0, 0, 0, 0, 1, 0, 20, 0, 0, 1, 0, 0, 0, 0, 1] as const;
+  const translated = [1, 0, 0, 0, 0, 1, 0, curvedInitialAdjustment ? 20.05 : 20, 0, 0, 1, 0, 0, 0, 0, 1] as const;
   const foundationShape = { valid: true as const, connectedSolidCount: 1 as const, faceCount: 6, edgeCount: 12, volumeMm3: 2000, surfaceAreaMm2: 1000,
     boundingBoxOwnerLocalMm: { min: [-10, 0, 0] as NeutralVector3, max: [10, 10, 10] as NeutralVector3, size: [20, 10, 10] as NeutralVector3 } };
   const radius = 10; const length = 10;
@@ -128,7 +135,7 @@ function createRequest(meshSizeMm: number, penaltyStiffnessMPaPerMm: number): Ne
     faceOwnerLocal: { centroidPartLocalMm: centroid, areaMm2, outwardDirection, geometryType, boundingBoxMm: { min, max } },
   });
   return sealNeutralSimulationRequestV2({
-    schema: 'tunacad-neutral-simulation-request/2.0', studyId: `sim6a-curved-${meshSizeMm}-${penaltyStiffnessMPaPerMm}`, name: 'SIM-6A curved pressure and penalty trends',
+    schema: 'tunacad-neutral-simulation-request/2.0', studyId: `sim6a-curved-${meshSizeMm}-${penaltyStiffnessMPaPerMm}${curvedInitialAdjustment ? '-adjusted' : ''}`, name: curvedInitialAdjustment ? 'SIM-6D curved bounded initial adjustment' : 'SIM-6A curved pressure and penalty trends',
     preparedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 20 * 60_000).toISOString(),
     analysis: { type: 'static_contact', assumptions: ['small_displacement', 'small_strain', 'quasi_static', 'frictionless_contact'], settings: { initialIncrement: 0.1, minimumIncrement: 0.001, maximumIncrement: 0.2, maximumIncrements: 100 } },
     model: { projectRevision, coordinateSpace: 'frozen_analysis', domains: [
@@ -153,7 +160,7 @@ function createRequest(meshSizeMm: number, penaltyStiffnessMPaPerMm: number): Ne
       { id: 'drive-slider', name: 'Prescribed cylinder approach', type: 'prescribed_displacement', semanticReferenceIds: ['slider-drive-face'], displacementMm: [0, -0.2, 0], coordinateSystem: 'analysis' },
     ],
     interactions: [{ id: 'curved-contact', name: 'Half-cylinder to plane', type: 'frictionless_contact', secondaryReferenceIds: ['secondary-cylinder-negative', 'secondary-cylinder-positive'], primaryReferenceIds: ['primary-plane'],
-      formulation: 'node_to_surface_penalty', sliding: 'small', normalBehavior: { type: 'linear_penalty', stiffnessMPaPerMm: penaltyStiffnessMPaPerMm, tensionCutoffMPa: 0.000001, searchDistanceFactor: 1 }, tangentialBehavior: { type: 'frictionless' }, initialAdjustment: 'none' }],
+      formulation: 'node_to_surface_penalty', sliding: 'small', normalBehavior: { type: 'linear_penalty', stiffnessMPaPerMm: penaltyStiffnessMPaPerMm, tensionCutoffMPa: 0.000001, searchDistanceFactor: 1 }, tangentialBehavior: { type: 'frictionless' }, initialAdjustment: curvedInitialAdjustment ? { type: 'bounded_to_contact', maximumAdjustmentMm: 0.06 } : 'none' }],
     mesh: { dimensionality: '3d', elementFamily: 'tetrahedral', order: 2, globalSizeMm: meshSizeMm, minimumSizeMm: meshSizeMm / 4, maximumNodes: 150000, maximumElements: 75000, qualityMetric: 'provider_normalized', minimumQuality: 0.04 },
     requestedResults: ['von_mises_stress', 'displacement', 'reaction_force', 'contact_status', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_force'],
   });

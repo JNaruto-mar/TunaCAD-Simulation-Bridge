@@ -12,11 +12,12 @@
   "qualification": {
     "status": "proof_of_concept",
     "engineeringUsePermitted": false,
-    "recordedAt": "2026-09-06"
+    "recordedAt": "2026-09-12"
   },
   "promotionPolicy": {
     "requiredLaneIds": [
       "cantilever-analytical",
+      "deterministic-repeatability",
       "plate-with-hole-trend",
       "tapered-bracket-convergence",
       "near-singular-failure-mode",
@@ -42,6 +43,22 @@
         "fineDisplacementMm": 0.1908403137435828,
         "fineRelativeError": 0.005842779168674629,
         "mediumToFineRelativeChange": 0.00015553833704096362
+      }
+    },
+    {
+      "id": "deterministic-repeatability",
+      "category": "benchmark",
+      "state": "passed",
+      "acceptance": "Three executions of the identical sealed cantilever request on the recorded runtime tuple retain identical mesh count, displacement, stress, and reaction resultants within a 1e-10 relative-spread tolerance.",
+      "command": "npm run test:benchmarks",
+      "evidence": {
+        "runCount": 3,
+        "elementCounts": [1618, 1618, 1618],
+        "maximumDisplacementMm": [0.1908403137435828, 0.1908403137435828, 0.1908403137435828],
+        "maximumVonMisesStressMPa": [55.59590663535679, 55.59590663535679, 55.59590663535679],
+        "reactionForceN": [[2.57721e-10, -3.415548e-10, 100], [2.57721e-10, -3.415548e-10, 100], [2.57721e-10, -3.415548e-10, 100]],
+        "maximumRelativeSpread": 0,
+        "maximumAllowedRelativeSpread": 1e-10
       }
     },
     {
@@ -120,7 +137,7 @@
       "id": "independent-engineering-review",
       "category": "governance",
       "state": "pending",
-      "acceptance": "An independent qualified reviewer approves the benchmark definitions, tolerances, solver assumptions, and the exact version-bound evidence before engineering use is enabled.",
+      "acceptance": "An independent qualified reviewer approves the benchmark definitions, tolerances, solver assumptions, exact public commit, and digest-bound automated evidence set before engineering use is enabled.",
       "command": null,
       "evidence": null
     }

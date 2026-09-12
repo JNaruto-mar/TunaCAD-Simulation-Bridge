@@ -14,7 +14,7 @@ export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
-export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact';
+export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
@@ -32,11 +32,19 @@ export type NeutralMatrix4 = [
 export interface NeutralSimulationMaterial {
   id: string;
   name: string;
-  model: 'isotropic_linear_elastic';
+  model: 'isotropic_linear_elastic' | 'isotropic_elastic_plastic';
   densityKgM3?: number;
   youngsModulusMPa: number;
   poissonRatio: number;
   yieldStrengthMPa?: number;
+  /** SIM-7B tabulated true stress versus accumulated true plastic strain.
+   * The first point must be the initial yield stress at zero plastic strain;
+   * subsequent points must increase in both plastic strain and true stress.
+   * Only isotropic hardening is currently admitted. */
+  plasticity?: {
+    hardening: 'isotropic';
+    curve: Array<{ trueStressMPa: number; plasticStrain: number }>;
+  };
   source: { kind: 'library' | 'custom'; reference: string; revision?: string };
 }
 
@@ -331,9 +339,13 @@ export type NeutralContactInitialAdjustmentV2 = 'none' | {
   maximumAdjustmentMm: number;
 };
 
-/** SIM-6A/SIM-6C frictionless-contact member of the small-sliding envelope. It maps exactly to CalculiX
+export type NeutralContactSlidingV2 = 'small' | 'finite';
+
+/** SIM-6 frictionless-contact member. Small sliding freezes pairing once per
+ * increment; finite sliding updates the active surface projection under
+ * finite-deformation kinematics. It maps exactly to CalculiX
  * face-based node-to-surface penalty contact with pairing frozen once per
- * increment. Tangential traction is zero; optional initial adjustment is
+ * increment only for `small`. Tangential traction is zero; optional initial adjustment is
  * explicit and bounded by admission before the solver can alter its mesh. */
 export interface NeutralFrictionlessContactInteractionV2 {
   id: string;
@@ -342,7 +354,7 @@ export interface NeutralFrictionlessContactInteractionV2 {
   secondaryReferenceIds: string[];
   primaryReferenceIds: string[];
   formulation: 'node_to_surface_penalty';
-  sliding: 'small';
+  sliding: NeutralContactSlidingV2;
   normalBehavior: {
     type: 'linear_penalty';
     stiffnessMPaPerMm: number;
@@ -418,7 +430,12 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
 } | {
   analysis: {
     type: 'static_contact';
-    assumptions: ['small_displacement', 'small_strain', 'quasi_static', 'frictionless_contact' | 'frictional_contact'];
+    assumptions: [
+      'small_displacement' | 'finite_deformation',
+      'small_strain' | 'finite_strain',
+      'quasi_static',
+      'frictionless_contact' | 'frictional_contact',
+    ];
     settings: {
       initialIncrement: number;
       minimumIncrement: number;
@@ -427,6 +444,22 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
     };
   };
   requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'contact_status' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear' | 'contact_force'>;
+} | {
+  analysis: {
+    type: 'nonlinear_static';
+    assumptions: ['finite_deformation', 'finite_strain', 'quasi_static', 'isotropic_linear_elastic' | 'isotropic_elastic_plastic'];
+    settings: {
+      steps: NeutralNonlinearLoadStepV2[];
+      initialIncrement: number;
+      minimumIncrement: number;
+      maximumIncrement: number;
+      maximumIncrements: number;
+      maximumIterations: number;
+      cutbackFactor: number;
+      maximumCutbacks: number;
+    };
+  };
+  requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'load_displacement_history' | 'increment_convergence' | 'equivalent_plastic_strain' | 'strain_energy_density' | 'internal_energy'>;
 });
 
 export interface NeutralMeshJobRequestV2 {
@@ -610,6 +643,46 @@ export interface NeutralContactIncrementV2 {
   incrementSize: number;
 }
 
+export interface NeutralNonlinearAmplitudePointV2 {
+  /** Normalized step time. Every amplitude must begin at 0 and end at 1. */
+  time: number;
+  scaleFactor: number;
+}
+
+export interface NeutralNonlinearLoadStepV2 {
+  id: string;
+  name: string;
+  /** Pseudo-time retained in result history; no dynamic inertia is implied. */
+  duration: number;
+  loadAmplitudes: Array<{
+    loadId: string;
+    interpolation: 'piecewise_linear';
+    points: NeutralNonlinearAmplitudePointV2[];
+  }>;
+}
+
+export interface NeutralNonlinearHistoryPointV2 {
+  stepIndex: number;
+  stepId: string;
+  increment: number;
+  attempt: number;
+  iterations: number;
+  stepTime: number;
+  totalTime: number;
+  incrementSize: number;
+  loadScaleFactors: Array<{ loadId: string; scaleFactor: number }>;
+  maximumDisplacementMm: number;
+  resultantReactionForceN: NeutralVector3;
+  materialState: NeutralNonlinearMaterialStateV2 | null;
+}
+
+export interface NeutralNonlinearMaterialStateV2 {
+  maximumEquivalentPlasticStrain: number;
+  maximumEnergyDensityMPa: number;
+  totalInternalEnergyNmm: number;
+  yieldedElementCount: number;
+}
+
 export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
   analysisType: 'linear_static';
 } | {
@@ -645,9 +718,22 @@ export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
   analysisType: 'static_contact';
   contact: {
     formulation: 'node_to_surface_penalty';
-    sliding: 'small';
+    sliding: NeutralContactSlidingV2;
     interfaces: NeutralContactInterfaceResultV2[];
     increments: NeutralContactIncrementV2[];
+  };
+} | {
+  analysisType: 'nonlinear_static';
+  nonlinear: {
+    formulation: 'finite_deformation_elastic' | 'finite_deformation_elastic_plastic';
+    steps: Array<{
+      stepIndex: number;
+      stepId: string;
+      converged: true;
+      increments: NeutralContactIncrementV2[];
+    }>;
+    history: NeutralNonlinearHistoryPointV2[];
+    materialState: NeutralNonlinearMaterialStateV2 | null;
   };
 });
 
@@ -703,6 +789,11 @@ export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Bas
   step: { index: 0; label: 'final_contact_increment' };
   component: 'displacement_magnitude' | 'von_mises_stress' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear';
   unit: 'mm' | 'MPa';
+} | {
+  analysisType: 'nonlinear_static';
+  step: { index: number; label: 'final_nonlinear_increment'; stepId: string; totalTime: number };
+  component: 'displacement_magnitude' | 'von_mises_stress' | 'equivalent_plastic_strain' | 'strain_energy_density';
+  unit: 'mm' | 'MPa' | 'dimensionless';
 });
 
 export interface NeutralSimulationFieldTriangleV2 {
@@ -730,7 +821,7 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
   fieldResults: {
     paginated: true;
     maximumPageTriangles: number;
-    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear'>;
+    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear' | 'equivalent_plastic_strain' | 'strain_energy_density'>;
     topology: 'triangle_soup';
   };
   study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
@@ -758,12 +849,29 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       loadTypes: readonly ['surface_force'];
       constraintTypes: readonly ['fixed'];
     };
+    nonlinearStatic?: {
+      maximumDomains: number;
+      maximumSteps: number;
+      maximumAmplitudePoints: number;
+      amplitudeModes: readonly ['shared_shape_per_step'];
+      loadTypes: ReadonlyArray<NeutralSimulationLoadV2['type']>;
+      constraintTypes: ReadonlyArray<NeutralSimulationConstraintV2['type']>;
+      geometricNonlinearity: true;
+      materialModels: ReadonlyArray<'isotropic_linear_elastic' | 'isotropic_elastic_plastic'>;
+      materialNonlinearity: boolean;
+      hardeningModels: ReadonlyArray<'isotropic'>;
+      plasticStrainResults: boolean;
+      energyResults: boolean;
+      automaticIncrements: true;
+      incrementHistory: true;
+      loadDisplacementHistory: true;
+    };
     contact?: {
       maximumDomains: 2;
       maximumInteractions: number;
       interactionTypes: ReadonlyArray<'frictionless_contact' | 'frictional_contact'>;
       formulations: readonly ['node_to_surface_penalty'];
-      sliding: readonly ['small'];
+      sliding: ReadonlyArray<NeutralContactSlidingV2>;
       normalBehaviors: readonly ['linear_penalty'];
       tangentialBehaviors: ReadonlyArray<'frictionless' | 'coulomb_penalty'>;
       initialAdjustments: ReadonlyArray<'none' | 'bounded_to_contact'>;
@@ -1047,7 +1155,7 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact';
+  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static';
   modal?: {
     requestedModeCount: number;
     minimumFrequencyHz?: number | null;
@@ -1063,6 +1171,16 @@ export interface PrepareNeutralSimulationInputV2 {
     minimumIncrement: number;
     maximumIncrement: number;
     maximumIncrements: number;
+  };
+  nonlinear?: {
+    steps: NeutralNonlinearLoadStepV2[];
+    initialIncrement: number;
+    minimumIncrement: number;
+    maximumIncrement: number;
+    maximumIncrements: number;
+    maximumIterations: number;
+    cutbackFactor: number;
+    maximumCutbacks: number;
   };
   domains: Array<{
     domainId: string;

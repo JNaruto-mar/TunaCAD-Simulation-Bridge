@@ -1,6 +1,6 @@
 # Optional external CalculiX SolverProvider
 
-`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6 deck generation.
+`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6/SIM-7 deck generation.
 It creates deterministic per-domain C3D10 element/node sets, per-material
 elastic and density cards, per-domain solid sections, analysis-coordinate
 loads and constraints, and per-domain result print requests. It emits explicit
@@ -18,19 +18,64 @@ bifurcation only—not nonlinear collapse, imperfections, plasticity, or changin
 contact.
 
 The SIM-6 path accepts exactly two domains and direct FACE supports, with
-explicit frictionless or Coulomb-penalty node-to-surface contact, small sliding, linear
-pressure-overclosure, and either no initial adjustment or an explicit bounded
-planar `bounded_to_contact` adjustment. Admission checks semantic clearance
-and interference, then the deck rechecks every secondary mesh node before
-emitting CalculiX `ADJUST=`. Frictional interactions require both a bounded
+explicit frictionless or Coulomb-penalty node-to-surface contact, small or
+finite sliding, linear pressure-overclosure, and either no initial adjustment
+or an explicit bounded planar/curved `bounded_to_contact` adjustment. Finite
+sliding omits CalculiX `SMALL SLIDING` and requires an `NLGEOM`
+finite-deformation step. Admission checks semantic clearance and transformed
+curved FACE bounds, then the deck checks the closest actual primary-surface
+triangle for every relevant secondary mesh node before emitting CalculiX
+`ADJUST=`. Deep penetration fails closed, distant open nodes stay unadjusted,
+and at least one node must be capturable. Frictional interactions require both a bounded
 positive coefficient and an explicit penalty stick slope, emitted through
 `*FRICTION`; no solver default is accepted. A two-body rigid-mode rank
 check treats contact as normal-only restraint. The deck requests final
 `CDIS,CSTR` output and bounded status increments; normalization returns
 interface pressure/gap/tangential-slip/shear/status/force, ordered increment history, and paginated
-contact-pressure, normal-gap, tangential-slip, and contact-shear fields. This path is proof-of-concept only.
-Finite sliding, curved-surface initial adjustment, large deformation,
-and material nonlinearity are not supported.
+contact-pressure, normal-gap, tangential-slip, and contact-shear fields. Missing
+open-node output is recovered against the closest deformed primary triangle.
+This path is proof-of-concept only. Finite sliding includes geometric
+nonlinearity, but material nonlinearity is not supported.
+
+The separate SIM-7 `nonlinear_static` path admits one domain with an elastic or
+tabulated isotropic elastic-plastic material, fixed FACE supports,
+surface/pressure/gravity loading, and no
+interactions. It emits ordered finite-deformation `NLGEOM` steps, explicit
+piecewise-linear amplitudes, automatic-increment bounds, and request-controlled
+iteration/cutback cards. Bounded `.sta` and increment-frequency `.dat` parsing
+produces convergence and force-displacement history plus final paginated
+stress/displacement fields. All active loads in one step currently share one
+amplitude shape; unsupported shapes fail before solver launch. SIM-7B emits a
+deterministic `*PLASTIC, HARDENING=ISOTROPIC` table after strict curve
+validation. It requests `PEEQ`, `ENER`, and `ELSE` in every nonlinear step,
+normalizes plastic-strain/energy state at every converged increment, and serves
+final equivalent-plastic-strain and energy-density triangle pages. A native
+100 x 10 x 10 mm, 30 kN coupon development solve separates the 0.1421 mm
+elastic response from the 3.7655 mm elastic-plastic response while recovering
+0.03863676 maximum equivalent plastic strain, 11.28585 MPa maximum energy
+density, 104210.9 N·mm internal energy, and the axial reaction. Missing native
+material output is quarantined. SIM-7B mesh/increment convergence,
+plastic-hinge/path-order fixtures, and SIM-7B-specific failure qualification
+remain pending. The focused two-step load/unload/reload coupon lane now
+verifies matched elastic branch slopes, residual elongation, nondecreasing
+PEEQ, reaction equilibrium, and external-work/internal-energy agreement while
+keeping the capability experimental. The same lane now checks monotonic and
+load/unload/reload histories on actual 209/309/434-element meshes and maximum
+increment levels 0.10/0.075/0.05. Fine history differences remain below 0.81%
+for mesh refinement and 0.98% for increment refinement; residual displacement
+and elastic branch stiffness remain below the separate 3% path-metric gate.
+The separate material-lifecycle lane observes complete positive PEEQ, energy
+density, and total internal energy before deliberate increment exhaustion and
+active cancellation. Both paths clear normalized results and every field
+dataset, delete the exact native directory, and reject late-result
+resurrection.
+The plastic-hinge lane adds an analytically bracketed solid cantilever: a
+sub-yield monotonic final load is compared with an overload-return history at
+the same final resultant. Paginated displacement vectors provide a fitted
+root-zone chord rotation; paginated PEEQ is reduced into root/transition/far
+zones; per-step energy and reaction endpoints retain the path history. The
+overload path leaves root-localized plastic strain and larger rotation/energy
+while preserving final and incremental equilibrium.
 
 This Node-only adapter consumes TunaCAD's neutral FEM model and writes a
 bounded C3D10 input deck for a user-installed CalculiX `ccx` executable. It

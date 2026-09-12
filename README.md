@@ -235,16 +235,17 @@ All automated mechanics lanes pass. Independent engineering review remains
 before SIM-5 qualification. The reviewer packet is
 `qualification/SIM5_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
-## SIM-6A/SIM-6C small-sliding contact
+## SIM-6 small/finite-sliding contact
 
-The additive v2 `static_contact` envelope implements the first SIM-6 increment:
+The additive v2 `static_contact` envelope implements the SIM-6 increments:
 exactly two domains, explicit secondary and primary FACE groups, frictionless
-or Coulomb-penalty node-to-surface contact, small sliding, linear pressure-overclosure,
+or Coulomb-penalty node-to-surface contact, small or finite sliding, linear pressure-overclosure,
 and bounded automatic quasi-static increments. The backward-compatible
 `initialAdjustment: "none"` policy preserves CAD clearance, while explicit
-`{ type: "bounded_to_contact", maximumAdjustmentMm }` admits small planar
-clearance/interference corrections only when every secondary mesh node remains
-inside the declared bound. Contact
+`{ type: "bounded_to_contact", maximumAdjustmentMm }` admits bounded planar or
+curved clearance/interference corrections. Mesh-space closest-triangle checks
+reject deep penetration, require at least one capturable node, and leave
+distant open nodes unchanged. Contact
 is never inferred from touching CAD or assembly mates. Admission rejects a
 provider without the exact contact profile, and geometry checks require opposed
 surface normals, initial clearance/interference inside the declared search and
@@ -255,8 +256,9 @@ Before launching CalculiX, the deck adapter checks a 12-degree-of-freedom
 two-body rigid-mode rank. Direct restraints contribute their actual components;
 contact contributes conservative relative normal restraint only. The generated
 deck uses named face-based `*SURFACE` groups, `*CONTACT PAIR` with
-`TYPE=NODE TO SURFACE, SMALL SLIDING` plus request-bounded `ADJUST=` when
-explicitly selected, linear `*SURFACE BEHAVIOR`, an explicit `*FRICTION`
+`TYPE=NODE TO SURFACE, SMALL SLIDING` for small sliding or default finite
+sliding with an `NLGEOM` step, plus request-bounded `ADJUST=` when explicitly
+selected, linear `*SURFACE BEHAVIOR`, an explicit `*FRICTION`
 coefficient and penalty stick slope for frictional requests, a bounded
 `*STATIC` step, and final `CDIS,CSTR` contact output. Bounded normalization
 returns structural fields plus interface status, maximum pressure, minimum
@@ -280,15 +282,111 @@ npm run test:sim6-contact-trends
 
 This is a contract and adapter foundation, not a qualified mechanics release.
 Real planar patch equilibrium, opening/closing, 0.05 mm planar clearance and
-interference adjustment inside a 0.06 mm bound, and curved Hertz-type
+interference adjustment inside a 0.06 mm bound, curved-surface adjustment, a
+4 mm finite-sliding fixture, and curved Hertz-type
 penetration/refinement trends now pass. Deliberate non-convergence and
 cancellation fail closed with native cleanup and no partial result. A paired
 frictionless/frictional sliding fixture verifies nonzero Coulomb-limited shear,
-slip fields, and tangential equilibrium. Independent engineering review remains pending in
+slip fields, and tangential equilibrium. Finite sliding explicitly enables
+finite-deformation kinematics while retaining the current isotropic
+linear-elastic material law. Independent engineering review remains pending in
 `qualification/sim6a-windows-gmsh-4.15.2-calculix-2.16.json`.
-Finite/large sliding, curved-surface initial adjustment, large deformation,
-and plasticity remain unsupported. The reviewer packet is
+Material nonlinearity and plasticity remain unsupported. The reviewer packet is
 `qualification/SIM6A_INDEPENDENT_ENGINEERING_REVIEW.md`.
+
+## SIM-7A geometric-nonlinear static increment
+
+The additive v2 `nonlinear_static` member is separate from linear statics and
+contact. Its first provider envelope accepts one elastic solid, fixed FACE
+supports, surface force/pressure/gravity loads, no interactions, and up to
+eight ordered pseudo-time steps. Every active load has an explicit
+piecewise-linear amplitude from normalized step time 0 through 1. The request
+also fixes the automatic initial/minimum/maximum increment, per-step increment
+limit, iteration limit, divergence cutback factor, and maximum cutbacks.
+
+CalculiX maps this exactly to ordered `*STEP,NLGEOM`, `*STATIC`, `*AMPLITUDE`,
+`OP=NEW` load, and `*CONTROLS,PARAMETERS=TIME INCREMENTATION` cards. Successful
+`.sta` records and increment-frequency `.dat` frames are bounded and
+cross-checked before normalization. Results contain every converged increment,
+the interpolated scale for each active load, maximum displacement and support
+resultant at every point, plus final digest-verified displacement/stress field
+pages. No partial history is returned after non-convergence.
+
+Run the deterministic contract/deck/parser and native large-deflection beam
+lanes with:
+
+```powershell
+npm run test:sim7-geometric-nonlinear
+$env:TUNACAD_GMSH_EXECUTABLE='C:\Tools\gmsh\gmsh.exe'
+$env:TUNACAD_CALCULIX_EXECUTABLE='C:\Tools\CalculiX\ccx.exe'
+npm run test:sim7-geometric-nonlinear-real
+```
+
+The native 150 x 10 x 5 mm cantilever records two ordered ramps and 14
+converged history points. At 500 N its 24.9486 mm NLGEOM displacement differs
+by 2.28% from the 25.5312 mm small-displacement solve while the 500 N reaction
+balances. This is automated proof-of-concept evidence, not qualification.
+Deliberate increment exhaustion and active cancellation also quarantine
+partial results, clean native files, and resist late-result resurrection.
+Plasticity, snap-through/limit-point continuation, unloading/reloading, and
+plastic hinges remain for later SIM-7 increments. The three-mesh and
+three-increment force-displacement convergence lanes pass; independent
+engineering review is the sole pending SIM-7A promotion gate.
+
+The first SIM-7B material-nonlinearity foundation accepts a strictly ordered
+isotropic-hardening true-stress/plastic-strain table for `nonlinear_static`,
+advertises that support explicitly, and emits deterministic CalculiX
+`*PLASTIC` cards. Elastic-plastic requests also require CalculiX `PEEQ`, `ENER`,
+and `ELSE` output from the first nonlinear step. Every converged history point
+records maximum equivalent plastic strain, maximum energy density, total
+internal energy, and yielded-element count; final plastic strain and energy
+density are available as digest-verified paginated fields. Missing native
+material output fails closed. A native 100 x 10 x 10 mm, 30 kN coupon
+development check records 0.1421 mm elastic versus 3.7655 mm elastic-plastic
+displacement, 0.03863676 maximum equivalent plastic strain, 11.28585 MPa
+maximum energy density, 104210.9 N·mm internal energy, and a -30,000.02 N axial
+reaction. This is not qualification: coupon mesh/increment convergence,
+plastic-hinge/path-order dependence, and material-nonlinear failure evidence
+remain pending; engineering use is not permitted.
+
+The focused `test:sim7-material-path-real` lane loads the same coupon to 30 kN,
+then follows a second-step 1 → 0 → 1 unload/reload amplitude. The solver records
+22 converged increments per step. Unload/reload stiffness fits are 196018.17
+and 195999.69 N/mm with R² above 0.9999997; the residual elongation is 3.628044
+mm, PEEQ remains monotonic at 0.03870592, and integrated external work agrees
+with final internal energy within 0.0753%. This is path-history development
+evidence, not qualification.
+
+That focused lane also executes resource-bounded three-level convergence
+matrices. Actual mesh counts 209/309/434 keep all medium-to-fine displacement,
+PEEQ, and internal-energy history differences below 0.81%. Maximum nonlinear
+increments 0.10/0.075/0.05 produce contracting whole-history differences below
+0.98%. Residual displacement and unload/reload stiffness remain within 0.39%
+for the fine increment pair and 0.28% for the fine mesh pair. SIM-7B remains
+experimental and does not permit engineering use.
+
+The focused `test:sim7-material-lifecycle-real` lane deliberately caps a
+plastic coupon at 36 increments and cancels a separate cyclic coupon only after
+complete positive PEEQ, energy-density, and total-internal-energy frames are
+observed while CalculiX is running. Non-convergence and cancellation expose no
+normalized result or field page, remove their native working directories, and
+cannot be changed by a late child exit. This is fail-closed development
+evidence; it does not qualify SIM-7B.
+
+The focused `test:sim7-material-hinge-real` lane compares two paths on a
+100 x 10 x 10 mm solid cantilever. A monotonic 400 N load has a 240 MPa nominal
+root stress and remains elastic; a 600 N overload exceeds the 250 MPa yield
+point before returning to the same 400 N final resultant. The latter retains
+0.0009195724 PEEQ in the root 25 mm, 1.3033x the fitted root chord rotation,
+and 1.3862x the internal energy. The overload/return reaction endpoints are
+599.9999/400 N and full reaction history balances within 0.0001 N. This proves
+a single-load plastic-hinge path effect without claiming reordered multi-axis
+loading or engineering qualification.
+
+Production validation now begins in parallel with SIM-2 and proceeds through
+SIM-4, SIM-5, and SIM-6. See
+`qualification/PRODUCTION_ENGINEERING_VALIDATION_STATUS.md` for the current
+capability-specific PASS/FAIL/PENDING report.
 
 SIM-4B supports explicitly declared nonconformal `bonded_tie`, conformal
 `shared_topology`, and six-degree-of-freedom `rigid_connector` interactions. A

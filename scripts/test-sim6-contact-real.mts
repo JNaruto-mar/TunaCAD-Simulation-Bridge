@@ -97,6 +97,16 @@ try {
   const tangentialEquilibriumError = Math.abs(slidingDriveReaction![1] + frictionalInterface.forceOnSecondaryN[1]) / Math.max(1, Math.abs(frictionalInterface.forceOnSecondaryN[1]));
   assert.ok(tangentialEquilibriumError < 0.03, `Frictional tangential equilibrium error is ${(tangentialEquilibriumError * 100).toFixed(2)}%.`);
 
+  const finiteSliding = await solve(createRequest('sliding_finite'), step, mesher, solver);
+  if (finiteSliding.analysisType !== 'static_contact') throw new Error('Expected a finite-sliding static-contact result.');
+  const finiteInterface = finiteSliding.contact.interfaces[0];
+  assert.equal(finiteSliding.contact.sliding, 'finite');
+  assert.equal(finiteInterface.status, 'active');
+  assert.ok(finiteSliding.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FINITE_SLIDING_POC'));
+  assert.ok(finiteInterface.maximumTangentialSlipMm > 3.5, 'Finite sliding must recover the prescribed travel across changing surface projections.');
+  assert.ok(Math.abs(finiteInterface.forceOnSecondaryN[0]) > 1, 'Finite sliding must retain compressive contact after large tangential travel.');
+  assert.ok(Math.abs(finiteInterface.forceOnSecondaryN[1]) < Math.abs(finiteInterface.forceOnSecondaryN[0]) * 0.01, 'Frictionless finite sliding must not transmit meaningful tangential force.');
+
   const beforeFailureDirectories = await providerDirectories();
   const nonconvergentRequest = createRequest('nonconvergent');
   const nonconvergentModel = await mesher.mesh(nonconvergentRequest, { descriptor: nonconvergentRequest.model, async exportDomain() { return step; } });
@@ -161,6 +171,15 @@ try {
       maximumTangentialSlipMm: frictionalInterface.maximumTangentialSlipMm,
       normalizedDatasets: [frictionalInterface.tangentialSlipDatasetId, frictionalInterface.contactShearDatasetId],
     },
+    finiteSliding: {
+      prescribedTangentialMm: 4,
+      status: finiteInterface.status,
+      contactForceOnSecondaryN: finiteInterface.forceOnSecondaryN,
+      maximumPressureMPa: finiteInterface.maximumPressureMPa,
+      maximumTangentialSlipMm: finiteInterface.maximumTangentialSlipMm,
+      convergedIncrements: finiteSliding.contact.increments.length,
+      warningCode: 'SIMULATION_CONTACT_FINITE_SLIDING_POC',
+    },
     lifecycle: {
       nonconvergence: { status: nonconvergentStatus.status, code: nonconvergentStatus.failure?.code, resultQuarantined: true, nativeFilesRemoved: true },
       cancellation: { status: cancelledStatus.status, phase: cancelledStatus.phase, resultQuarantined: true, lateExitQuarantined: true, nativeFilesRemoved: true },
@@ -170,7 +189,7 @@ try {
   await rm(directory, { recursive: true, force: true });
 }
 
-type ContactCase = 'closing' | 'opening' | 'adjust_clearance' | 'adjust_interference' | 'nonconvergent' | 'sliding_frictionless' | 'sliding_frictional';
+type ContactCase = 'closing' | 'opening' | 'adjust_clearance' | 'adjust_interference' | 'nonconvergent' | 'sliding_frictionless' | 'sliding_frictional' | 'sliding_finite';
 
 function createRequest(contactCase: ContactCase): NeutralSimulationRequestV2 {
   const projectRevision = `sim6a-real-${contactCase}-r1`;
@@ -178,8 +197,9 @@ function createRequest(contactCase: ContactCase): NeutralSimulationRequestV2 {
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as const;
   const initialGapMm = contactCase === 'adjust_clearance' || contactCase === 'nonconvergent' ? 0.05 : contactCase === 'adjust_interference' ? -0.05 : 0;
   const usesAdjustment = contactCase.startsWith('adjust_') || contactCase === 'nonconvergent';
-  const usesSliding = contactCase === 'sliding_frictionless' || contactCase === 'sliding_frictional';
+  const usesSliding = contactCase === 'sliding_frictionless' || contactCase === 'sliding_frictional' || contactCase === 'sliding_finite';
   const usesFriction = contactCase === 'sliding_frictional';
+  const usesFiniteSliding = contactCase === 'sliding_finite';
   const translated = [1, 0, 0, 10 + initialGapMm, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] as const;
   const shape = {
     valid: true as const, connectedSolidCount: 1 as const, faceCount: 6, edgeCount: 12, volumeMm3: 1000, surfaceAreaMm2: 600,
@@ -201,7 +221,7 @@ function createRequest(contactCase: ContactCase): NeutralSimulationRequestV2 {
   return sealNeutralSimulationRequestV2({
     schema: 'tunacad-neutral-simulation-request/2.0', studyId: `sim6a-real-${contactCase}`, name: `SIM-6A real patch ${contactCase}`,
     preparedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 20 * 60_000).toISOString(),
-    analysis: { type: 'static_contact', assumptions: ['small_displacement', 'small_strain', 'quasi_static', usesFriction ? 'frictional_contact' : 'frictionless_contact'], settings: contactCase.startsWith('adjust_') || usesSliding
+    analysis: { type: 'static_contact', assumptions: [usesFiniteSliding ? 'finite_deformation' : 'small_displacement', usesFiniteSliding ? 'finite_strain' : 'small_strain', 'quasi_static', usesFriction ? 'frictional_contact' : 'frictionless_contact'], settings: contactCase.startsWith('adjust_') || usesSliding
       ? { initialIncrement: 0.01, minimumIncrement: 0.00001, maximumIncrement: 0.1, maximumIncrements: 200 }
       : contactCase === 'nonconvergent' ? { initialIncrement: 0.1, minimumIncrement: 0.1, maximumIncrement: 0.1, maximumIncrements: 1 }
       : { initialIncrement: 0.1, minimumIncrement: 0.001, maximumIncrement: 0.2, maximumIncrements: 100 } },
@@ -235,11 +255,11 @@ function createRequest(contactCase: ContactCase): NeutralSimulationRequestV2 {
       { id: 'slider-z-guide', name: 'Slider Z guide', type: 'prescribed_displacement', semanticReferenceIds: ['slider-z-guide-face'], displacementMm: [null, null, 0], coordinateSystem: 'analysis' },
       ...(contactCase === 'opening' ? [{ id: 'open-slider', name: 'Open slider', type: 'prescribed_displacement' as const, semanticReferenceIds: ['slider-end-face'], displacementMm: [0.05, null, null] as [number | null, number | null, number | null], coordinateSystem: 'analysis' as const }] : []),
       ...(contactCase.startsWith('adjust_') ? [{ id: 'compress-adjusted-slider', name: 'Compress adjusted slider', type: 'prescribed_displacement' as const, semanticReferenceIds: ['slider-end-face'], displacementMm: [-0.01, null, null] as [number | null, number | null, number | null], coordinateSystem: 'analysis' as const }] : []),
-      ...(usesSliding ? [{ id: 'drive-slider', name: 'Compress and slide slider', type: 'prescribed_displacement' as const, semanticReferenceIds: ['slider-end-face'], displacementMm: [-0.001, 0.02, null] as [number | null, number | null, number | null], coordinateSystem: 'analysis' as const }] : []),
+      ...(usesSliding ? [{ id: 'drive-slider', name: 'Compress and slide slider', type: 'prescribed_displacement' as const, semanticReferenceIds: ['slider-end-face'], displacementMm: [-0.001, usesFiniteSliding ? 4 : 0.02, null] as [number | null, number | null, number | null], coordinateSystem: 'analysis' as const }] : []),
     ],
     interactions: [{
       id: 'contact-patch', name: 'Planar contact patch', type: usesFriction ? 'frictional_contact' : 'frictionless_contact', secondaryReferenceIds: ['secondary-contact-face'], primaryReferenceIds: ['primary-contact-face'],
-      formulation: 'node_to_surface_penalty', sliding: 'small', normalBehavior: { type: 'linear_penalty', stiffnessMPaPerMm: 1_050_000, tensionCutoffMPa: 0.000001, searchDistanceFactor: 0.01 },
+      formulation: 'node_to_surface_penalty', sliding: usesFiniteSliding ? 'finite' : 'small', normalBehavior: { type: 'linear_penalty', stiffnessMPaPerMm: 1_050_000, tensionCutoffMPa: 0.000001, searchDistanceFactor: 0.01 },
       tangentialBehavior: usesFriction ? { type: 'coulomb_penalty', frictionCoefficient: 0.2, stickSlopeMPaPerMm: 5000 } : { type: 'frictionless' }, initialAdjustment: usesAdjustment
         ? { type: 'bounded_to_contact', maximumAdjustmentMm: 0.06 }
         : 'none',
