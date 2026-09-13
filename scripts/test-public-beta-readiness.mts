@@ -9,7 +9,7 @@ const capabilitySchema = z.object({
   id: z.string().min(1), name: z.string().min(1), status: lifecycleStatus,
   validationStatus: lifecycleStatus, matrixFile: z.string().regex(/^sim.+\.json$/), matrixId: z.string().min(1),
   automatedPassCount: z.number().int().positive(), automatedFailCount: z.literal(0),
-  pendingGates: z.array(z.string()).min(1), engineeringUsePermitted: z.literal(false),
+  qualificationPromotionGates: z.array(z.string()).min(1), engineeringUsePermitted: z.literal(false),
   automatedEvidenceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/), summary: z.string().min(1),
 }).strict();
 const tutorialSchema = z.object({
@@ -20,9 +20,17 @@ const tutorialSchema = z.object({
   warnings: z.array(z.string()).min(1), reproductionSteps: z.array(z.string()).min(4), referenceMatrixIds: z.array(z.string()).min(1),
 }).strict();
 const catalogSchema = z.object({
-  schema: z.literal('tunacad-simulation-public-beta-catalog/1.0'), targetOrigin: z.literal('https://tunacad.com'),
+  schema: z.literal('tunacad-simulation-public-beta-catalog/1.1'), targetOrigin: z.literal('https://tunacad.com'),
   releaseStatus: z.literal('public_beta'), recordedAt: z.iso.date(),
   disclaimer: z.literal('Experimental / Beta simulation capability. Internally validated against TunaCAD automated benchmarks. Critical engineering results should be independently verified.'),
+  developmentPolicy: z.object({
+    independentReviewRequiredForPublicBeta: z.literal(false),
+    independentReviewPurpose: z.literal('formal_qualification_promotion_only'),
+    revalidationTriggers: z.tuple([
+      z.literal('new_physics'), z.literal('affected_implementation_change'), z.literal('runtime_version_change'),
+      z.literal('hosted_reference_drift'), z.literal('qualification_assumption_or_tolerance_change'),
+    ]),
+  }).strict(),
   runtime: z.object({ os: z.literal('Windows x64'), node: z.literal('24'), gmsh: z.literal('4.15.2'), calculix: z.literal('2.16'), topology: z.literal('user-operated local Simulation Bridge') }).strict(),
   safetyBoundary: z.array(z.string()).min(8), capabilities: z.array(capabilitySchema).min(1), tutorials: z.array(tutorialSchema).min(7),
 }).strict();
@@ -44,7 +52,7 @@ for (const capability of catalog.capabilities) {
   assert.equal(matrix.lanes.filter((lane: any) => lane.state === 'failed').length, 0, `${capability.id} records a failed gate.`);
   assert.equal(byId.get('independent-engineering-review')?.state, 'pending', `${capability.id} independent-review state drifted.`);
   assert.equal(automatedRequired.length, capability.automatedPassCount);
-  assert.deepEqual(capability.pendingGates, ['independent-engineering-review']);
+  assert.deepEqual(capability.qualificationPromotionGates, ['independent-engineering-review']);
   const payload = {
     matrixId: matrix.matrixId, scope: matrix.scope,
     ...(matrix.prerequisiteMatrices ? { prerequisiteMatrices: matrix.prerequisiteMatrices } : {}),
@@ -85,4 +93,4 @@ if (gmsh && calculix) {
   assert.ok(limits?.cpuTimeLimitMs && limits.memoryLimitBytes && limits.maximumWorkingDirectoryBytes && limits.maximumResultFileBytes);
 }
 
-console.log(`Simulation public beta readiness PASS: ${catalog.capabilities.length} internally validated capabilities, ${catalog.tutorials.length} reproducible tutorials, engineeringUsePermitted=false, independent review pending for every capability.`);
+console.log(`Simulation public beta readiness PASS: ${catalog.capabilities.length} internally validated capabilities, ${catalog.tutorials.length} reproducible tutorials, engineeringUsePermitted=false; independent review is a dormant formal-qualification promotion gate.`);

@@ -3,7 +3,9 @@
 SIM-7B is internally validated for the recorded runtime tuple. The automated contract, adapter, material
 result, coupon, unloading/reloading, mesh/increment convergence, lifecycle, and
 plastic-hinge path gates pass on the recorded Windows/Gmsh/CalculiX tuple.
-Independent engineering review remains mandatory and
+Independent engineering review is required only if TunaCAD intentionally
+pursues formal engineering-use qualification. It is not required for continued
+development, tutorials, deployment, or public-beta use.
 `engineeringUsePermitted` remains false.
 
 ## Scope to review
@@ -94,7 +96,8 @@ permitted but is not engineering qualification.
 
 - PASS — 10 automated lanes.
 - FAIL — none recorded.
-- PENDING — independent engineering review.
+- DORMANT PROMOTION GATE — independent engineering review has not been opened
+  because formal qualification is not currently being pursued.
 - Automated-evidence digest —
   `sha256:7562db70af38d9f5fc470b510a24df8194b6350e07f2669a1b3a8da887eaeb60`.
 
