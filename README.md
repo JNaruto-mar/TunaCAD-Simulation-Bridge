@@ -400,10 +400,10 @@ and reproducible tutorial definitions are in
 `/docs/simulation-status` and follow the seven linked studies. Run
 `npm run test:public-beta-readiness` before publishing a Bridge commit.
 
-Production validation now begins in parallel with SIM-2 and proceeds through
-SIM-4, SIM-5, and SIM-6. See
-`qualification/PRODUCTION_ENGINEERING_VALIDATION_STATUS.md` for the current
-capability-specific PASS/FAIL/PENDING report.
+SIM-2 through SIM-7 are internally validated public-beta capabilities.
+Independent review is dormant unless formal engineering-use qualification is
+intentionally opened. See `qualification/VALIDATION_POLICY.md` and
+`qualification/PRODUCTION_ENGINEERING_VALIDATION_STATUS.md`.
 
 SIM-4B supports explicitly declared nonconformal `bonded_tie`, conformal
 `shared_topology`, and six-degree-of-freedom `rigid_connector` interactions. A
@@ -470,6 +470,20 @@ This public repository is the canonical source for:
 The private TunaCAD repository consumes this repository as a Git submodule.
 Bridge/provider changes must be committed and pushed here first, then the
 TunaCAD submodule pointer is updated.
+
+## SIM-8 steady-thermal foundation
+
+The additive v2 `steady_thermal` contract currently covers one domain, one
+constant-isotropic-conductivity material, positive inward surface heat flux,
+prescribed FACE temperature, a bounded temperature profile, and heat balance.
+`npm run test:sim8-steady-thermal` verifies the closed-form 100 x 10 x 10 mm
+slab response: 20–40 °C, 200 °C/m, 1 W applied, and -1 W reacted.
+
+This is a contract and analytical-fixture increment only. The real CalculiX
+provider does not advertise thermal capability, so thermal studies fail before
+approval or geometry transfer. Real deck generation and bounded NT/HFL/RFL
+recovery are the next increment. SIM-8 remains `proof_of_concept` with
+`engineeringUsePermitted: false`.
 
 ## Provider readiness
 

@@ -14,7 +14,7 @@ export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
-export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static';
+export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
@@ -45,6 +45,9 @@ export interface NeutralSimulationMaterial {
     hardening: 'isotropic';
     curve: Array<{ trueStressMPa: number; plasticStrain: number }>;
   };
+  /** Constant isotropic conductivity used by the bounded SIM-8 steady-state
+   * thermal foundation. Temperature-dependent properties are not admitted. */
+  thermalConductivityWPerMK?: number;
   source: { kind: 'library' | 'custom'; reference: string; revision?: string };
 }
 
@@ -287,12 +290,16 @@ export type NeutralSimulationLoadV2 =
   | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3; coordinateSystem: 'analysis' }
   | { id: string; name: string; type: 'pressure'; semanticReferenceIds: string[]; pressureMPa: number }
   | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3; coordinateSystem: 'analysis' }
-  | { id: string; name: string; type: 'remote_force'; connectorId: string; forceN: NeutralVector3; momentNmm: NeutralVector3; coordinateSystem: 'analysis' };
+  | { id: string; name: string; type: 'remote_force'; connectorId: string; forceN: NeutralVector3; momentNmm: NeutralVector3; coordinateSystem: 'analysis' }
+  /** Uniform inward surface heat flux. Positive values add heat to the
+   * domain; negative outward flux is intentionally deferred. */
+  | { id: string; name: string; type: 'surface_heat_flux'; semanticReferenceIds: string[]; heatFluxWPerM2: number };
 
 export type NeutralSimulationConstraintV2 =
   | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
   | { id: string; name: string; type: 'prescribed_displacement'; semanticReferenceIds: string[]; displacementMm: [number | null, number | null, number | null]; coordinateSystem: 'analysis' }
-  | { id: string; name: string; type: 'remote_displacement'; connectorId: string; translationMm: [number | null, number | null, number | null]; rotationRad: [number | null, number | null, number | null]; coordinateSystem: 'analysis' };
+  | { id: string; name: string; type: 'remote_displacement'; connectorId: string; translationMm: [number | null, number | null, number | null]; rotationRad: [number | null, number | null, number | null]; coordinateSystem: 'analysis' }
+  | { id: string; name: string; type: 'prescribed_temperature'; semanticReferenceIds: string[]; temperatureC: number };
 
 /** SIM-4B connected behavior is always explicit. No variant is separable
  * contact. Frictionless/frictional contact remains a separately
@@ -390,7 +397,12 @@ interface NeutralSimulationRequestV2Base {
     domains: NeutralSimulationDomainV2[];
     references: NeutralSimulationReferenceBindingV2[];
   };
-  units: NeutralSimulationRequest['units'];
+  units: NeutralSimulationRequest['units'] & {
+    temperature?: 'degC';
+    heatFlux?: 'W/m^2';
+    heatFlow?: 'W';
+    thermalConductivity?: 'W/(m*K)';
+  };
   materials: NeutralSimulationMaterial[];
   materialAssignments: NeutralMaterialAssignmentV2[];
   loads: NeutralSimulationLoadV2[];
@@ -460,6 +472,12 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
     };
   };
   requestedResults: Array<'von_mises_stress' | 'displacement' | 'reaction_force' | 'load_displacement_history' | 'increment_convergence' | 'equivalent_plastic_strain' | 'strain_energy_density' | 'internal_energy'>;
+} | {
+  analysis: {
+    type: 'steady_thermal';
+    assumptions: ['steady_state', 'isotropic_conduction', 'temperature_independent_properties'];
+  };
+  requestedResults: Array<'temperature' | 'heat_flux' | 'reaction_heat_flow'>;
 });
 
 export interface NeutralMeshJobRequestV2 {
@@ -683,6 +701,17 @@ export interface NeutralNonlinearMaterialStateV2 {
   yieldedElementCount: number;
 }
 
+export interface NeutralSteadyThermalResultV2 {
+  formulation: 'steady_state_isotropic_conduction';
+  minimumTemperatureC: number;
+  maximumTemperatureC: number;
+  maximumTemperatureGradientCPerM: number;
+  totalAppliedHeatW: number;
+  totalReactionHeatW: number;
+  heatBalanceResidualW: number;
+  temperatureSamples: Array<{ positionAnalysisMm: NeutralVector3; temperatureC: number }>;
+}
+
 export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
   analysisType: 'linear_static';
 } | {
@@ -735,6 +764,9 @@ export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
     history: NeutralNonlinearHistoryPointV2[];
     materialState: NeutralNonlinearMaterialStateV2 | null;
   };
+} | {
+  analysisType: 'steady_thermal';
+  thermal: NeutralSteadyThermalResultV2;
 });
 
 /** A small, immutable handle describing a solver-normalized visualization
@@ -865,6 +897,15 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       automaticIncrements: true;
       incrementHistory: true;
       loadDisplacementHistory: true;
+    };
+    steadyThermal?: {
+      maximumDomains: 1;
+      materialModel: 'constant_isotropic_conductivity';
+      loadTypes: readonly ['surface_heat_flux'];
+      constraintTypes: readonly ['prescribed_temperature'];
+      temperatureProfile: 'bounded_samples';
+      maximumTemperatureSamples: number;
+      heatBalance: true;
     };
     contact?: {
       maximumDomains: 2;

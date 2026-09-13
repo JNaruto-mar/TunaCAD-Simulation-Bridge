@@ -40,6 +40,7 @@
     "test:sim7-material-lifecycle-real": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear-real.mts --material-lifecycle-only",
     "test:sim7-material-hinge-real": "node --experimental-strip-types scripts/test-sim7-geometric-nonlinear-real.mts --material-hinge-only",
     "test:sim7b-qualification": "node --experimental-strip-types scripts/test-sim7b-qualification.mts",
+    "test:sim8-steady-thermal": "node --experimental-strip-types scripts/test-sim8-steady-thermal.mts",
     "test:public-beta-readiness": "node --experimental-strip-types scripts/test-public-beta-readiness.mts",
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
