@@ -188,7 +188,7 @@ export async function startSimulationBridge(options: {
               stepDomains: z.array(z.object({
                 domainId: z.string().min(1).max(160),
                 stepBase64: z.string().max(encodedLimit).regex(/^[A-Za-z0-9+/]+={0,2}$/),
-              }).strict()).min(2).max(MAX_DOMAINS),
+              }).strict()).min(1).max(MAX_DOMAINS),
             }).strict().parse(rawBody);
             const expectedDomainIds = permitted.request.model.domains.map(domain => domain.domainId);
             if (new Set(body.stepDomains.map(domain => domain.domainId)).size !== body.stepDomains.length
