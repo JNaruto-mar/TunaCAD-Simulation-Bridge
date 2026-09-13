@@ -1,6 +1,6 @@
 # Optional external CalculiX SolverProvider
 
-`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6/SIM-7 deck generation.
+`CalculiXMultiDomainDeck.mts` adds experimental SIM-4A/SIM-5/SIM-6/SIM-7/SIM-8 deck generation.
 It creates deterministic per-domain C3D10 element/node sets, per-material
 elastic and density cards, per-domain solid sections, analysis-coordinate
 loads and constraints, and per-domain result print requests. It emits explicit
@@ -84,6 +84,17 @@ requires independent-review evidence to bind the exact public commit and
 automated-evidence digest. The matrix is not advertised as an umbrella provider
 qualification. It supports `internally_validated` public-beta status on the
 exact tuple and does not change engineering-use authority automatically.
+
+The bounded SIM-8 path is separate from structural analysis. It accepts one
+domain, one material with constant isotropic conductivity, one positive inward
+surface-flux group, and one prescribed FACE-temperature group. Geometry remains
+in millimetres, so the deck explicitly converts W/(m*K) to W/(mm*K) and W/m^2
+to W/mm^2 before emitting DC3D10, `*CONDUCTIVITY`, `*DFLUX`, temperature
+DOF 11, and `*HEAT TRANSFER, STEADY STATE`. NT, HFL, and RFL text output is
+bounded and quarantined until node/element/reaction completeness, finite ranges,
+temperature extrema, maximum integration-point flux, and global heat balance
+all validate. Only a bounded 1D conduction fixture is currently proven; SIM-8
+remains proof-of-concept and engineering use is not permitted.
 
 This Node-only adapter consumes TunaCAD's neutral FEM model and writes a
 bounded C3D10 input deck for a user-installed CalculiX `ccx` executable. It

@@ -577,7 +577,9 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
     || (request.analysis.type === 'steady_thermal' && (!profile.study.steadyThermal
       || request.model.domains.length > profile.study.steadyThermal.maximumDomains
       || profile.study.steadyThermal.materialModel !== 'constant_isotropic_conductivity'
+      || request.loads.length > profile.study.steadyThermal.maximumHeatFluxLoads
       || request.loads.some(load => load.type !== 'surface_heat_flux' || !profile.study.steadyThermal!.loadTypes.includes(load.type))
+      || request.constraints.length > profile.study.steadyThermal.maximumPrescribedTemperatureConstraints
       || request.constraints.some(constraint => constraint.type !== 'prescribed_temperature' || !profile.study.steadyThermal!.constraintTypes.includes(constraint.type))
       || profile.study.steadyThermal.temperatureProfile !== 'bounded_samples'
       || profile.study.steadyThermal.maximumTemperatureSamples < 2

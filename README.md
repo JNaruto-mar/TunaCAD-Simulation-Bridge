@@ -473,17 +473,20 @@ TunaCAD submodule pointer is updated.
 
 ## SIM-8 steady-thermal foundation
 
-The additive v2 `steady_thermal` contract currently covers one domain, one
-constant-isotropic-conductivity material, positive inward surface heat flux,
-prescribed FACE temperature, a bounded temperature profile, and heat balance.
-`npm run test:sim8-steady-thermal` verifies the closed-form 100 x 10 x 10 mm
-slab response: 20–40 °C, 200 °C/m, 1 W applied, and -1 W reacted.
+The additive v2 `steady_thermal` contract and CalculiX provider currently cover
+one domain, one constant-isotropic-conductivity material, one positive inward
+surface-heat-flux group, one prescribed FACE-temperature group, a bounded
+temperature profile, and heat balance. `npm run test:sim8-steady-thermal`
+checks the sealed contract and hostile result parsing.
 
-This is a contract and analytical-fixture increment only. The real CalculiX
-provider does not advertise thermal capability, so thermal studies fail before
-approval or geometry transfer. Real deck generation and bounded NT/HFL/RFL
-recovery are the next increment. SIM-8 remains `proof_of_concept` with
-`engineeringUsePermitted: false`.
+With the configured Gmsh 4.15.2 and CalculiX 2.16 executables,
+`npm run test:sim8-steady-thermal-real` generates a deterministic DC3D10
+`*HEAT TRANSFER, STEADY STATE` deck and recovers bounded NT/HFL/RFL output for
+the 100 x 10 x 10 mm slab. It compares the solve against the closed-form
+20–40 °C, 200 °C/m, +1 W applied / -1 W reacted result. Browser/MCP study
+preparation, field visualization, additional boundary conditions, and
+convergence qualification remain deferred. SIM-8 remains `proof_of_concept`
+with `engineeringUsePermitted: false`.
 
 ## Provider readiness
 

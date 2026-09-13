@@ -13,6 +13,8 @@ import {
   pressureSurfaceLoads,
 } from './CalculiXSolverProvider.mts';
 
+type SteadyThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'steady_thermal' } }>;
+
 /** Generate a deterministic CalculiX C3D10 deck with explicit domain/material
  * ownership, optional nonconformal ties, and prevalidated shared-topology
  * interfaces. No contact behavior is inferred from proximity or assembly. */
@@ -21,6 +23,9 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   validateNeutralFemModelV2(model, request);
   if (model.element.geometryOrder !== 2 || model.element.solutionOrder !== 2 || model.volumeElements.connectivity.some(cell => cell.length !== 10)) {
     throw deckError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'The SIM-4A CalculiX deck requires complete second-order C3D10 tetrahedra.');
+  }
+  if (request.analysis.type === 'steady_thermal') {
+    return createCalculiXSteadyThermalInputDeckV2(request as SteadyThermalRequestV2, model);
   }
   if (request.analysis.type === 'static_contact') {
     validateContactInitialAdjustmentV2(request, model);
@@ -263,6 +268,65 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...analysisCards,
   ];
   return `${lines.join('\n')}\n`;
+}
+
+/** Deterministic SIM-8 foundation deck. The public provider deliberately
+ * admits one flux group and one prescribed-temperature group only. With mm as
+ * the model length unit, W/(m*K) becomes W/(mm*K) and W/m^2 becomes W/mm^2. */
+export function createCalculiXSteadyThermalInputDeckV2(request: SteadyThermalRequestV2, model: NeutralFemModelV2): string {
+  if (request.model.domains.length !== 1 || model.domainRegions.length !== 1 || request.materials.length !== 1
+    || request.loads.length !== 1 || request.constraints.length !== 1) {
+    throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'The CalculiX SIM-8 foundation requires exactly one domain, material, heat-flux group, and prescribed-temperature group.');
+  }
+  const load = request.loads[0];
+  const constraint = request.constraints[0];
+  const material = request.materials[0];
+  const conductivityWPerMK = material.thermalConductivityWPerMK;
+  if (load.type !== 'surface_heat_flux' || constraint.type !== 'prescribed_temperature' || !(conductivityWPerMK && conductivityWPerMK > 0)) {
+    throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'The CalculiX SIM-8 foundation received an unsupported thermal definition.');
+  }
+  const domain = model.domainRegions[0];
+  const constraintFacets = [...new Set(requireRegions(model, constraint.semanticReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+  const constraintNodes = [...new Set(constraintFacets.flatMap(index => model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b);
+  const fluxFacets = [...new Set(requireRegions(model, load.semanticReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+  if (!constraintNodes.length || !fluxFacets.length) {
+    throw deckError('SIMULATION_THERMAL_FACE_MAPPING_INVALID', 'Thermal FACE groups must map to non-empty quadratic boundary facets.');
+  }
+  const lines = [
+    '*HEADING',
+    'TunaCAD SIM-8 steady thermal study ' + safeComment(request.studyId),
+    '*NODE, NSET=NALL',
+    ...model.nodes.map((point, index) => String(index + 1) + ',' + point.map(solverNumber).join(',')),
+    '*ELEMENT, TYPE=DC3D10, ELSET=DOMAIN_001',
+    ...domain.elementIndices.map(index => String(index + 1) + ',' + neutralToCalculiXC3D10(model.volumeElements.connectivity[index]).map(node => node + 1).join(',')),
+    '*ELSET, ELSET=EALL',
+    ...wrapIds(domain.elementIndices.map(index => index + 1)),
+    '*NSET, NSET=THERMAL_TEMPERATURE_001',
+    ...wrapIds(constraintNodes.map(node => node + 1)),
+    '*NSET, NSET=THERMAL_REACTION_001',
+    ...wrapIds(constraintNodes.map(node => node + 1)),
+    '*SURFACE, NAME=THERMAL_FLUX_001, TYPE=ELEMENT',
+    ...calculixSurfaceFaces(model, fluxFacets),
+    '*MATERIAL, NAME=THERMAL_MATERIAL_001',
+    '*CONDUCTIVITY',
+    solverNumber(conductivityWPerMK / 1000),
+    '*SOLID SECTION, ELSET=DOMAIN_001, MATERIAL=THERMAL_MATERIAL_001',
+    '*STEP',
+    '*HEAT TRANSFER, STEADY STATE',
+    '1,1',
+    '*BOUNDARY',
+    'THERMAL_TEMPERATURE_001,11,11,' + solverNumber(constraint.temperatureC),
+    '*DFLUX',
+    'THERMAL_FLUX_001,S,' + solverNumber(load.heatFluxWPerM2 * 1e-6),
+    '*NODE PRINT, NSET=NALL',
+    'NT',
+    '*NODE PRINT, NSET=THERMAL_REACTION_001',
+    'RFL',
+    '*EL PRINT, ELSET=EALL',
+    'HFL',
+    '*END STEP',
+  ];
+  return lines.join('\n') + '\n';
 }
 
 /** Fail before solver launch when an explicit multi-domain connection graph

@@ -1,24 +1,26 @@
 import assert from 'node:assert/strict';
-import { CalculiXMultiDomainSolverProvider } from '../providers/calculix/CalculiXMultiDomainSolverProvider.mts';
-import type { NeutralSimulationRequestV2, NeutralSimulationResultV2, SimulationProviderCapabilitiesV2 } from '../src/simulation/externalSimulationContracts.ts';
+import { CalculiXMultiDomainSolverProvider, parseCalculiXSteadyThermalDatV2 } from '../providers/calculix/CalculiXMultiDomainSolverProvider.mts';
+import type { NeutralFemModelV2, NeutralSimulationRequestV2, NeutralSimulationResultV2, SimulationProviderCapabilitiesV2 } from '../src/simulation/externalSimulationContracts.ts';
 import { admitV2SimulationRequest, sealNeutralSimulationRequestV2, validateNeutralSimulationRequestV2, validateNeutralSimulationResultV2 } from '../simulation-bridge/v2Validation.mts';
 import { solveOneDimensionalSteadyConduction } from '../simulation-bridge/steadyThermalValidation.mts';
 
 const request = createThermalRequest();
 assert.deepEqual(validateNeutralSimulationRequestV2(request), request);
 
-const structuralProvider = new CalculiXMultiDomainSolverProvider({ executable: 'C:\\fixture\\ccx216.exe', runtimeVersion: '2.16' });
-assert.equal(admitV2SimulationRequest(request, structuralProvider.capabilities).accepted, false, 'The current structural provider must reject thermal work before transfer.');
+const thermalProvider = new CalculiXMultiDomainSolverProvider({ executable: 'C:\\fixture\\ccx216.exe', runtimeVersion: '2.16' });
+assert.deepEqual(admitV2SimulationRequest(request, thermalProvider.capabilities), { accepted: true });
+const unsupportedCapabilities = structuredClone(thermalProvider.capabilities) as SimulationProviderCapabilitiesV2;
+unsupportedCapabilities.analysisTypes = unsupportedCapabilities.analysisTypes.filter(type => type !== 'steady_thermal');
+delete unsupportedCapabilities.study.steadyThermal;
+assert.equal(admitV2SimulationRequest(request, unsupportedCapabilities).accepted, false, 'A provider without the explicit thermal profile must reject before transfer.');
 
-const thermalCapabilities = structuredClone(structuralProvider.capabilities) as SimulationProviderCapabilitiesV2;
-(thermalCapabilities.analysisTypes as string[]).push('steady_thermal');
-(thermalCapabilities.study.loadTypes as string[]).push('surface_heat_flux');
-(thermalCapabilities.study.constraintTypes as string[]).push('prescribed_temperature');
-thermalCapabilities.study.steadyThermal = {
+const boundedCapabilities = structuredClone(thermalProvider.capabilities) as SimulationProviderCapabilitiesV2;
+boundedCapabilities.study.steadyThermal = {
   maximumDomains: 1, materialModel: 'constant_isotropic_conductivity', loadTypes: ['surface_heat_flux'],
-  constraintTypes: ['prescribed_temperature'], temperatureProfile: 'bounded_samples', maximumTemperatureSamples: 256, heatBalance: true,
+  maximumHeatFluxLoads: 1, constraintTypes: ['prescribed_temperature'], maximumPrescribedTemperatureConstraints: 1,
+  temperatureProfile: 'bounded_samples', maximumTemperatureSamples: 256, heatBalance: true,
 };
-assert.deepEqual(admitV2SimulationRequest(request, thermalCapabilities), { accepted: true });
+assert.deepEqual(admitV2SimulationRequest(request, boundedCapabilities), { accepted: true });
 
 const analytical = solveOneDimensionalSteadyConduction({
   lengthMm: 100, areaMm2: 100, thermalConductivityWPerMK: 50,
@@ -52,7 +54,30 @@ assert.throws(() => validateNeutralSimulationRequestV2(createThermalRequest({ th
 assert.throws(() => validateNeutralSimulationRequestV2(createThermalRequest({ heatFluxWPerM2: -1 })), /BRIDGE_V2_REQUEST_INVALID/);
 assert.throws(() => solveOneDimensionalSteadyConduction({ lengthMm: 100, areaMm2: 100, thermalConductivityWPerMK: 0, prescribedTemperatureC: 20, inwardHeatFluxWPerM2: 10_000 }), { code: 'SIMULATION_THERMAL_FIXTURE_INVALID' });
 
-console.log('SIM-8 steady-thermal foundation PASS: sealed single-domain contract, provider pre-transfer rejection, explicit capable-provider admission, 1D 20-40 C profile, 1 W heat balance, malformed-result rejection, engineeringUsePermitted=false.');
+const parserModel = {
+  nodes: [[0, 0, 0], [100, 0, 0]],
+  volumeElements: { connectivity: [[0, 1, 0, 1, 0, 1, 0, 1, 0, 1]] },
+} as unknown as NeutralFemModelV2;
+const parsed = parseCalculiXSteadyThermalDatV2([
+  ' temperatures for set NALL and time 1',
+  ' 1 20',
+  ' 2 40',
+  ' heat generation for set THERMAL_REACTION_001 and time 1',
+  ' 1 -1',
+  ' heat flux (elem, integ.pnt.,qx,qy,qz) for set EALL and time 1',
+  ' 1 1 -0.01 0 0',
+].join('\n'), parserModel, ['THERMAL_REACTION_001']);
+assert.deepEqual([...parsed.temperaturesByNode.values()], [20, 40]);
+assert.equal(parsed.maximumHeatFluxMagnitudeWPerMm2, 0.01);
+assert.equal(parsed.reactionHeatBySetW.THERMAL_REACTION_001, -1);
+assert.throws(() => parseCalculiXSteadyThermalDatV2('temperatures for set NALL\n1 20\n2 40', parserModel, ['THERMAL_REACTION_001']), /complete bounded NT, HFL, and RFL/);
+assert.throws(() => parseCalculiXSteadyThermalDatV2([
+  'temperatures for set OTHER', '1 20', '2 40',
+  'heat generation for set THERMAL_REACTION_001', '1 -1',
+  'heat flux (elem, integ.pnt.,qx,qy,qz) for set EALL', '1 1 -0.01 0 0',
+].join('\n'), parserModel, ['THERMAL_REACTION_001']), /complete bounded NT, HFL, and RFL/);
+
+console.log('SIM-8 steady-thermal foundation PASS: sealed contract, bounded provider admission, 1D 20-40 C oracle, 1 W heat balance, quarantined NT/HFL/RFL parsing, malformed-result rejection, engineeringUsePermitted=false.');
 
 function createThermalRequest(overrides: { thermalConductivityWPerMK?: number; heatFluxWPerM2?: number } = {}): NeutralSimulationRequestV2 {
   const now = Date.now();

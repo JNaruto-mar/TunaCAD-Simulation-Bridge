@@ -902,7 +902,9 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       maximumDomains: 1;
       materialModel: 'constant_isotropic_conductivity';
       loadTypes: readonly ['surface_heat_flux'];
+      maximumHeatFluxLoads: number;
       constraintTypes: readonly ['prescribed_temperature'];
+      maximumPrescribedTemperatureConstraints: number;
       temperatureProfile: 'bounded_samples';
       maximumTemperatureSamples: number;
       heatBalance: true;
