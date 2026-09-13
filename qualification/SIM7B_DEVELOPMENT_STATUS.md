@@ -72,9 +72,24 @@ qualified capability and `engineeringUsePermitted` remains false.
 - PENDING: a separate formal qualification matrix and independent engineering
   review after the automated SIM-7B exit gates pass.
 
-The single next increment is a formal SIM-7B qualification matrix and reviewer
-packet that consolidates the completed coupon, unloading/reloading,
-mesh/increment convergence, lifecycle, and plastic-hinge path gates. It must
-remain `proof_of_concept` until the matrix is complete and independently
-reviewed; reordered multi-axis loading should remain an explicit unsupported
-limitation rather than delaying that capability-specific review.
+## Formal qualification checkpoint
+
+- PASS: the capability-specific
+  `sim7b-windows-x64-gmsh-4.15.2-calculix-2.16` matrix consolidates 10
+  automated contract, adapter, mechanics, convergence, lifecycle, and
+  authority lanes.
+- PASS: the validator checks numerical acceptance values, prerequisite matrix
+  identities, required-lane completeness, unsupported claims, runtime versions,
+  v2 provider admission, and fail-closed engineering authority.
+- PASS: automated evidence is bound by
+  `sha256:7562db70af38d9f5fc470b510a24df8194b6350e07f2669a1b3a8da887eaeb60`.
+- FAIL: none recorded.
+- PENDING: independent engineering review of the exact public commit and
+  digest-bound evidence.
+- PENDING: a separate reviewed promotion change even after an approved review;
+  reviewer evidence alone does not edit provider authority.
+
+The capability is internally validated and eligible for experimental public
+beta deployment. Independent engineering review and a separate scope approval
+remain required before `qualified` or engineering use can be claimed.
+Reordered multi-axis loading remains an explicit unsupported limitation.

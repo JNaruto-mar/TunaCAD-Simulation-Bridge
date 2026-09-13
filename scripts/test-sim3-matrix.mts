@@ -10,7 +10,7 @@ const lane = z.object({
 const schema = z.object({
   schema: z.literal('tunacad-simulation-qualification-matrix/1.0'), matrixId: z.string().min(1), scope: z.string().min(1),
   environment: z.object({ os: z.literal('win32'), architecture: z.literal('x64'), nodeMajor: z.literal(24), gmshVersion: z.literal('4.15.2'), calculixVersion: z.literal('2.16') }).strict(),
-  qualification: z.object({ status: z.literal('proof_of_concept'), engineeringUsePermitted: z.literal(false), recordedAt: z.iso.date() }).strict(),
+  qualification: z.object({ status: z.literal('internally_validated'), engineeringUsePermitted: z.literal(false), recordedAt: z.iso.date() }).strict(),
   promotionPolicy: z.object({ requiredLaneIds: z.array(z.string()).min(1), requiresAllPassed: z.literal(true), requiresEngineeringReview: z.literal(true) }).strict(),
   lanes: z.array(lane).min(1),
 }).strict();
@@ -39,4 +39,4 @@ if (gmsh && calculix) {
   assert.equal(pipeline.provider?.capabilities.qualification.engineeringUsePermitted, false);
 }
 
-console.log('SIM-3 experimental matrix is valid; all four automated lanes pass and independent engineering review remains pending.');
+console.log('SIM-3 internally validated matrix is valid; all four automated lanes pass and independent engineering review remains pending.');

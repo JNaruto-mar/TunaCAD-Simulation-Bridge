@@ -78,9 +78,9 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
     durableReferenceMapping: 'supported' as const,
     authority: 'engineering' as const,
     qualification: {
-      status: 'proof_of_concept' as const,
+      status: 'internally_validated' as const,
       engineeringUsePermitted: false,
-      statement: 'Local CalculiX adapter with version-bound benchmark evidence; independent engineering review is still required before qualified use.',
+      statement: 'Internally validated local CalculiX adapter with version-bound automated benchmark evidence; independent engineering review is still required before qualified use.',
       limitations: ['Windows development-host evidence only', 'Small-displacement linear statics only', 'One isotropic linear-elastic material', 'Pressure, gravity, prescribed-displacement, and simultaneous-load superposition are experimental SIM-3 capabilities outside the SIM-2 qualification matrix'],
       evidence: {
         schema: 'tunacad-simulation-qualification-matrix/1.0' as const,
@@ -128,6 +128,8 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       });
     } else if (nodeMajorVersion() !== 24 || options.runtimeVersion !== '2.16') {
       Object.assign(this.capabilities.qualification, {
+        status: 'proof_of_concept' as const,
+        engineeringUsePermitted: false,
         statement: `Local CalculiX ${options.runtimeVersion} adapter on Node ${process.versions.node} is outside the recorded Windows x64 / Node 24 / CalculiX 2.16 qualification matrix.`,
         evidence: null,
       });

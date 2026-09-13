@@ -38,7 +38,7 @@ assert.equal(pipeline.provider?.capabilities.study.maximumLoads, 64);
 assert.deepEqual(pipeline.provider?.capabilities.study.constraintTypes, ['fixed', 'prescribed_displacement']);
 assert.equal(pipeline.provider?.capabilities.study.maximumConstraints, 64);
 const quotaSupportedHost = process.platform === 'win32' && process.arch === 'x64';
-assert.equal(pipeline.provider?.capabilities.qualification.status, quotaSupportedHost ? 'proof_of_concept' : 'unsupported');
+assert.equal(pipeline.provider?.capabilities.qualification.status, quotaSupportedHost ? 'internally_validated' : 'unsupported');
 assert.equal(pipeline.provider?.capabilities.qualification.engineeringUsePermitted, false);
 if (quotaSupportedHost && Number.parseInt(process.versions.node.split('.')[0] ?? '', 10) === 24) {
   assert.deepEqual(pipeline.provider?.capabilities.qualification.evidence?.pendingLaneIds, ['independent-engineering-review']);

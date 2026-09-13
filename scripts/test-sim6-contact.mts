@@ -343,7 +343,7 @@ expectMessage('complete, ordered', () => parseCalculiXContactStaV2('1 1 1 4 0 0.
 
 const matrix = JSON.parse(readFileSync(new URL('../qualification/sim6a-windows-gmsh-4.15.2-calculix-2.16.json', import.meta.url), 'utf8'));
 assert.equal(matrix.matrixId, 'sim6a-windows-x64-gmsh-4.15.2-calculix-2.16');
-assert.equal(matrix.qualification.status, 'proof_of_concept');
+assert.equal(matrix.qualification.status, 'internally_validated');
 assert.equal(matrix.qualification.engineeringUsePermitted, false);
 assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'passed').map((lane: any) => lane.id), ['contract-and-admission', 'deterministic-contact-deck', 'bounded-contact-normalization', 'real-patch-equilibrium', 'opening-and-closing', 'bounded-initial-adjustment', 'penetration-and-refinement-trends', 'nonconvergence-and-cancellation', 'frictional-sliding', 'finite-sliding', 'curved-initial-adjustment']);
 assert.deepEqual(matrix.lanes.filter((lane: any) => lane.state === 'pending').map((lane: any) => lane.id), ['independent-engineering-review']);

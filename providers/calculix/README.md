@@ -34,8 +34,9 @@ check treats contact as normal-only restraint. The deck requests final
 interface pressure/gap/tangential-slip/shear/status/force, ordered increment history, and paginated
 contact-pressure, normal-gap, tangential-slip, and contact-shear fields. Missing
 open-node output is recovered against the closest deformed primary triangle.
-This path is proof-of-concept only. Finite sliding includes geometric
-nonlinearity, but material nonlinearity is not supported.
+The exact recorded runtime tuple is internally validated for experimental
+public beta; other tuples remain proof-of-concept or unsupported. Finite
+sliding includes geometric nonlinearity. Engineering use is not permitted.
 
 The separate SIM-7 `nonlinear_static` path admits one domain with an elastic or
 tabulated isotropic elastic-plastic material, fixed FACE supports,
@@ -56,7 +57,8 @@ elastic response from the 3.7655 mm elastic-plastic response while recovering
 density, 104210.9 N·mm internal energy, and the axial reaction. Missing native
 material output is quarantined. SIM-7B mesh/increment convergence,
 plastic-hinge/path-order fixtures, and SIM-7B-specific failure qualification
-remain pending. The focused two-step load/unload/reload coupon lane now
+are included in the formal automated matrix. The focused two-step
+load/unload/reload coupon lane
 verifies matched elastic branch slopes, residual elongation, nondecreasing
 PEEQ, reaction equilibrium, and external-work/internal-energy agreement while
 keeping the capability experimental. The same lane now checks monotonic and
@@ -76,13 +78,19 @@ root-zone chord rotation; paginated PEEQ is reduced into root/transition/far
 zones; per-step energy and reaction endpoints retain the path history. The
 overload path leaves root-localized plastic strain and larger rotation/energy
 while preserving final and incremental equilibrium.
+The formal SIM-7B matrix consolidates these contract, material-result,
+mechanics, convergence, lifecycle, hinge, and authority gates. Its validator
+requires independent-review evidence to bind the exact public commit and
+automated-evidence digest. The matrix is not advertised as an umbrella provider
+qualification. It supports `internally_validated` public-beta status on the
+exact tuple and does not change engineering-use authority automatically.
 
 This Node-only adapter consumes TunaCAD's neutral FEM model and writes a
 bounded C3D10 input deck for a user-installed CalculiX `ccx` executable. It
 parses requested ASCII displacement, integration-point stress, reaction-force,
 eigen, and contact output into TunaCAD's normalized simulation-result contract.
 
-The adapter supports the current POC subset only: one isotropic material,
+The v1 adapter supports the bounded linear-static subset only: one isotropic material,
 multiple fixed durable FACE groups, multiple total surface-force durable FACE
 groups, positive-inward/negative-suction pressure FACE groups, uniform
 part-local gravity vectors using material density, and complete second-order

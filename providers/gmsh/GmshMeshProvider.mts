@@ -60,9 +60,9 @@ export class GmshMeshProvider implements ExternalMeshProvider {
     cancellation: true as const,
     durableReferenceMapping: 'supported' as const,
     qualification: {
-      status: 'proof_of_concept' as const,
+      status: 'internally_validated' as const,
       engineeringUsePermitted: false,
-      statement: 'Local Gmsh meshing adapter with version-bound benchmark evidence; independent engineering review is still required before qualified use.',
+      statement: 'Internally validated local Gmsh meshing adapter with version-bound automated benchmark evidence; independent engineering review is still required before qualified use.',
       limitations: ['Windows development-host evidence only', 'Second-order tetrahedral volume meshes only'],
       evidence: {
         schema: 'tunacad-simulation-qualification-matrix/1.0' as const,
@@ -110,6 +110,8 @@ export class GmshMeshProvider implements ExternalMeshProvider {
       });
     } else if (nodeMajorVersion() !== 24 || options.runtimeVersion !== '4.15.2') {
       Object.assign(this.capabilities.qualification, {
+        status: 'proof_of_concept' as const,
+        engineeringUsePermitted: false,
         statement: `Local Gmsh ${options.runtimeVersion} adapter on Node ${process.versions.node} is outside the recorded Windows x64 / Node 24 / Gmsh 4.15.2 qualification matrix.`,
         evidence: null,
       });

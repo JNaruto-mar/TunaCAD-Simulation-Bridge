@@ -32,5 +32,6 @@ npm run test:sim4b-matrix
 
 Any approval evidence must identify the reviewer and qualification, reviewed
 commit, review date, exact matrix ID, and SHA-256 digest of the signed report.
-Until that evidence is incorporated and validated, the matrix must remain
-`proof_of_concept` with `engineeringUsePermitted: false`.
+Until that evidence is incorporated and validated, the matrix remains
+`internally_validated` and may be deployed as experimental public beta, with
+`engineeringUsePermitted: false`.

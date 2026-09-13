@@ -83,5 +83,6 @@ self-referential matrix-file digest.
   rerun the qualification command on the reviewed commit and use its printed
   value if the evidence changes.
 
-The capability therefore remains `proof_of_concept` with
-`engineeringUsePermitted: false`.
+The capability is `internally_validated` for the exact runtime tuple and may be
+deployed as experimental public beta. It is not independently reviewed or
+qualified, and `engineeringUsePermitted` remains `false`.

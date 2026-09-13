@@ -1,6 +1,6 @@
 # Production-engineering validation status
 
-Recorded 2026-09-12 for the public Simulation Bridge. Qualification is
+Updated 2026-09-13 for the public Simulation Bridge. Qualification is
 capability-specific; a decision for one row cannot promote another analysis,
 provider version, operating system, or architecture.
 
@@ -38,8 +38,9 @@ Required review order:
 - PENDING: independent review of definitions, beam/plate assumptions,
   tolerances, equilibrium, repeatability, failure/security/resource behavior,
   exact runtime tuple, and reviewed public commit.
-- Decision: production review is active priority 1. Remain
-  `proof_of_concept`; `engineeringUsePermitted: false`.
+- Decision: automated gates satisfy `internally_validated` for the exact
+  runtime tuple and allow experimental public-beta deployment. Production
+  review remains priority 1; `engineeringUsePermitted: false`.
 
 ### SIM-4A and SIM-4B — PASS / PENDING
 
@@ -78,12 +79,13 @@ Required review order:
 
 ## Experimental development boundary
 
-SIM-7, SIM-8, and SIM-9 remain experimental and require separate later
-qualification matrices. Their development may reuse validated infrastructure,
-but no earlier capability review authorizes geometric/material nonlinearity,
-thermal coupling, fatigue, dynamics, or optimization. Every result continues
-to require warnings, independent engineering review, and
-`engineeringUsePermitted: false`.
+SIM-7A and SIM-7B now have capability-specific automated matrices and are
+internally validated for the exact runtime tuple; they may be exposed as
+experimental public beta. SIM-8 and SIM-9 remain proof-of-concept development.
+No earlier capability status authorizes thermal coupling, fatigue, dynamics,
+optimization, or professional engineering use. Every result continues to
+require warnings and `engineeringUsePermitted: false` until a separately
+defined engineering scope is independently reviewed and approved.
 
 ## 2026-09-12 SIM-7B development checkpoint
 
@@ -113,3 +115,15 @@ review PENDING.
 The SIM-7B single-load plastic-hinge path fixture is likewise experimental and
 does not alter SIM-2/SIM-4/SIM-5/SIM-6 qualification. SIM-2 remains automated
 PASS / no recorded FAIL / independent engineering review PENDING.
+
+## 2026-09-13 qualification scheduling decision
+
+The SIM-7B formal matrix is ready with 10 automated PASS, no recorded FAIL, and
+independent review PENDING. It remains an experimental capability and does not
+move ahead of the mature-capability production-review order.
+
+SIM-2 remains priority 1. Its automated matrix and digest-bound reviewer packet
+already pass, so additional architecture or substitute automated gates would
+not be useful. The next SIM-2 action is independent review of the exact
+published public commit. SIM-7B review can be prepared in parallel, but must
+remain capability-specific and cannot promote SIM-2, SIM-4, SIM-5, or SIM-6.

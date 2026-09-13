@@ -1,6 +1,7 @@
 # SIM-7A independent engineering review packet
 
-SIM-7A is proof-of-concept only. The first contract, deterministic deck,
+SIM-7A is internally validated for the exact runtime tuple and may be exposed
+as experimental public beta. The contract, deterministic deck,
 bounded history, native large-deflection, mesh/increment convergence,
 deliberate non-convergence, and cancellation lanes pass. Independent review is
 the sole pending SIM-7A gate. Engineering use is not permitted.

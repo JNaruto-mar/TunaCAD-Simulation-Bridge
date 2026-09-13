@@ -12,7 +12,7 @@ assert.throws(() => reviewEvidence.parse({ decision: 'approved' }), 'Incomplete 
 const schema = z.object({
   schema: z.literal('tunacad-simulation-qualification-matrix/1.0'), matrixId: z.literal('sim4a-windows-x64-gmsh-4.15.2-calculix-2.16'), scope: z.string().min(1),
   environment: z.object({ os: z.literal('win32'), architecture: z.literal('x64'), nodeMajor: z.literal(24), gmshVersion: z.literal('4.15.2'), calculixVersion: z.literal('2.16') }).strict(),
-  qualification: z.object({ status: z.enum(['proof_of_concept', 'qualified']), engineeringUsePermitted: z.boolean(), recordedAt: z.iso.date() }).strict(),
+  qualification: z.object({ status: z.enum(['internally_validated', 'independently_reviewed', 'qualified']), engineeringUsePermitted: z.boolean(), recordedAt: z.iso.date() }).strict(),
   promotionPolicy: z.object({ requiredLaneIds: z.array(z.string()).min(1), requiresAllPassed: z.literal(true), requiresEngineeringReview: z.literal(true) }).strict(), lanes: z.array(lane).min(1),
 }).strict();
 const matrix = schema.parse(JSON.parse(await readFile(new URL('../qualification/sim4a-windows-gmsh-4.15.2-calculix-2.16.json', import.meta.url), 'utf8')));
@@ -26,13 +26,14 @@ for (const entry of matrix.lanes) {
 const review = byId.get('independent-engineering-review');
 if (review?.state === 'passed') reviewEvidence.parse(review.evidence);
 const pending = matrix.promotionPolicy.requiredLaneIds.filter(id => byId.get(id)?.state !== 'passed');
-const computedStatus = pending.length ? 'proof_of_concept' : 'qualified';
-assert.equal(matrix.qualification.status, computedStatus); assert.equal(matrix.qualification.engineeringUsePermitted, computedStatus === 'qualified');
+assert.deepEqual(pending.filter(id => id !== 'independent-engineering-review'), []);
+const computedStatus = review?.state === 'passed' ? 'independently_reviewed' : 'internally_validated';
+assert.equal(matrix.qualification.status, computedStatus); assert.equal(matrix.qualification.engineeringUsePermitted, false);
 
 const gmsh = process.env.TUNACAD_GMSH_EXECUTABLE; const calculix = process.env.TUNACAD_CALCULIX_EXECUTABLE;
 if (gmsh && calculix) {
   const pipeline = await loadExternalPipeline(gmsh, calculix); const qualification = pipeline.providerV2!.capabilities.qualification;
-  assert.equal(qualification.status, matrix.qualification.status); assert.equal(qualification.engineeringUsePermitted, matrix.qualification.engineeringUsePermitted);
-  assert.equal(qualification.evidence?.matrixId, matrix.matrixId); assert.deepEqual(qualification.evidence?.pendingLaneIds, pending);
+  assert.equal(qualification.status, 'internally_validated'); assert.equal(qualification.engineeringUsePermitted, false);
+  assert.equal(qualification.evidence, null, 'The multi-capability v2 provider must not advertise one matrix as umbrella qualification evidence.');
 }
 console.log(`SIM-4A qualification matrix is valid and remains ${computedStatus}; pending required lanes: ${pending.join(', ') || 'none'}.`);

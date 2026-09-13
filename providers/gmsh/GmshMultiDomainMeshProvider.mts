@@ -37,9 +37,9 @@ export class GmshMultiDomainMeshProvider {
       interactionTypes: ['shared_topology'],
       qualification: {
         ...this.local.capabilities.qualification,
-        status: this.local.capabilities.qualification.status === 'unsupported' ? 'unsupported' : 'proof_of_concept',
+        status: this.local.capabilities.qualification.status,
         engineeringUsePermitted: false,
-        statement: `${this.local.capabilities.qualification.statement} SIM-4A per-domain composition and fail-closed conformal node sharing are experimental.`,
+        statement: `${this.local.capabilities.qualification.statement} SIM-4A per-domain composition and fail-closed conformal node sharing pass TunaCAD internal validation and remain experimental.`,
         limitations: [...this.local.capabilities.qualification.limitations, 'Domains are meshed independently; shared topology requires an exact one-to-one quadratic interface match, otherwise an explicit solver-side bonded tie is required'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim4a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },

@@ -3,7 +3,7 @@
   "matrixId": "sim6a-windows-x64-gmsh-4.15.2-calculix-2.16",
   "scope": "Experimental SIM-6 two-domain frictionless or Coulomb-penalty node-to-surface contact with small or finite sliding, finite-deformation kinematics for finite sliding, linear penalty normal behavior, optional bounded planar/curved initial adjustment, and bounded quasi-static increments.",
   "environment": { "os": "win32", "architecture": "x64", "nodeMajor": 24, "gmshVersion": "4.15.2", "calculixVersion": "2.16" },
-  "qualification": { "status": "proof_of_concept", "engineeringUsePermitted": false, "recordedAt": "2026-09-12" },
+  "qualification": { "status": "internally_validated", "engineeringUsePermitted": false, "recordedAt": "2026-09-13" },
   "promotionPolicy": {
     "requiredLaneIds": ["contract-and-admission", "deterministic-contact-deck", "bounded-contact-normalization", "real-patch-equilibrium", "opening-and-closing", "bounded-initial-adjustment", "penetration-and-refinement-trends", "nonconvergence-and-cancellation", "frictional-sliding", "finite-sliding", "curved-initial-adjustment", "independent-engineering-review"],
     "requiresAllPassed": true,

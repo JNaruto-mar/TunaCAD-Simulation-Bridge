@@ -29,7 +29,7 @@ assert.throws(() => independentReviewEvidence.parse({ decision: 'approved' }), '
 const schema = z.object({
   schema: z.literal('tunacad-simulation-qualification-matrix/1.0'), matrixId: z.string().min(1), scope: z.string().min(1),
   environment: z.object({ os: z.literal('win32'), architecture: z.literal('x64'), nodeMajor: z.literal(24), gmshVersion: z.string(), calculixVersion: z.string() }).strict(),
-  qualification: z.object({ status: z.enum(['proof_of_concept', 'qualified']), engineeringUsePermitted: z.boolean(), recordedAt: z.iso.date() }).strict(),
+  qualification: z.object({ status: z.enum(['proof_of_concept', 'internally_validated', 'independently_reviewed', 'qualified']), engineeringUsePermitted: z.boolean(), recordedAt: z.iso.date() }).strict(),
   promotionPolicy: z.object({ requiredLaneIds: z.array(z.string()).min(1), requiresAllPassed: z.literal(true), requiresEngineeringReview: z.literal(true) }).strict(),
   lanes: z.array(lane).min(1),
 }).strict();
@@ -65,9 +65,11 @@ assert.equal(repeatability.runCount, repeatability.elementCounts.length);
 assert.ok(repeatability.maximumRelativeSpread <= repeatability.maximumAllowedRelativeSpread, 'Recorded repeatability exceeds its declared tolerance.');
 const pending = matrix.promotionPolicy.requiredLaneIds.filter(id => byId.get(id)?.state !== 'passed');
 assert.ok(matrix.promotionPolicy.requiredLaneIds.includes('independent-engineering-review'), 'Engineering qualification requires an explicit independent-review gate.');
-const computedStatus = pending.length === 0 ? 'qualified' : 'proof_of_concept';
+const automatedPending = pending.filter(id => id !== 'independent-engineering-review');
+assert.deepEqual(automatedPending, [], 'SIM-2 cannot be internally validated while an automated lane is pending.');
+const computedStatus = reviewLane?.state === 'passed' ? 'independently_reviewed' : 'internally_validated';
 assert.equal(matrix.qualification.status, computedStatus, 'Declared qualification status does not match required lane evidence.');
-assert.equal(matrix.qualification.engineeringUsePermitted, computedStatus === 'qualified', 'Engineering-use permission must fail closed until every required lane passes.');
+assert.equal(matrix.qualification.engineeringUsePermitted, false, 'Internal validation or independent review cannot permit engineering use automatically.');
 
 const gmsh = process.env.TUNACAD_GMSH_EXECUTABLE;
 const calculix = process.env.TUNACAD_CALCULIX_EXECUTABLE;

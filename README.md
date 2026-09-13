@@ -59,9 +59,11 @@ the Bridge.
 - no contacts.
 
 The Bridge advertises this exact admission profile. TunaCAD rejects unsupported
-studies before creating an approvable job or transferring geometry. Results
-are explicitly advertised as `proof_of_concept`, never permit engineering use,
-and require qualified-engineer review.
+studies before creating an approvable job or transferring geometry. The exact
+recorded Windows/Gmsh/CalculiX tuple is `internally_validated` and may be
+presented on tunacad.com as `public_beta`; other runtime tuples remain
+`proof_of_concept` or unsupported. All beta results deny engineering use and
+require independent verification for critical decisions.
 
 TunaCAD can orchestrate three sequential v1 jobs as a mesh-convergence parent.
 The shared public contract includes the normalized
@@ -125,9 +127,9 @@ npm run test:qualification
 
 The real Gmsh/CalculiX suite covers an analytical cantilever, a plate-with-hole
 stress/refinement trend, and deterministic near-singular behavior. Those
-mechanical lanes pass for the recorded Windows/version tuple. The matrix still
-remains `proof_of_concept` because the independent engineering-review gate is
-pending, so `engineeringUsePermitted` remains `false`.
+mechanical lanes pass for the recorded Windows/version tuple. The matrix is
+`internally_validated`; independent engineering review remains pending and
+`engineeringUsePermitted` remains `false`.
 
 The required independent reviewer should use
 `qualification/INDEPENDENT_ENGINEERING_REVIEW.md`. Promotion evidence must name
@@ -141,7 +143,7 @@ Its real-solve lane covers mixed load types across three meshes, six-node
 curved-pressure quadrature and sign reversal, diagonal plus axis-aligned
 gravity with an analytical distributed-body-force comparison, and axial plus
 multi-component prescribed displacement with `EAδ/L` and superposition. All
-automated lanes pass, but this matrix remains proof-of-concept and is not
+automated lanes pass. This matrix is `internally_validated`, but is not
 advertised as qualified provider evidence while independent review is pending.
 
 The SIM-5 v2 envelope supports homogeneously restrained modal studies,
@@ -193,8 +195,9 @@ IDs. Displacement and von Mises surface fields are retained only as normalized,
 digest-verified triangle pages; native solver files never cross the Bridge.
 TunaCAD uses the same MCP lifecycle tools for v1 and v2 and rechecks the CAD
 revision around every domain export. The formal SIM-4A matrix records all
-automated lanes as passed, but independent engineering review is still pending,
-so the pipeline remains `proof_of_concept` and engineering use is not permitted.
+automated lanes as passed. The exact-tuple pipeline is `internally_validated`
+and eligible for public beta; independent review is pending and engineering
+use is not permitted.
 
 ## SIM-5 modal and linear-buckling increment
 
@@ -383,6 +386,20 @@ and 1.3862x the internal energy. The overload/return reaction endpoints are
 a single-load plastic-hinge path effect without claiming reordered multi-axis
 loading or engineering qualification.
 
+SIM-7B now has a formal capability-specific matrix and reviewer packet:
+`qualification/sim7b-windows-gmsh-4.15.2-calculix-2.16.json` and
+`qualification/SIM7B_INDEPENDENT_ENGINEERING_REVIEW.md`. Run
+`npm run test:sim7b-qualification` to validate the 10 automated lanes and
+print the digest an independent reviewer must reproduce. Automated gates pass,
+and status is `internally_validated`; independent review remains pending and
+engineering use remains denied.
+
+The canonical public-beta capability catalog, warnings, version-bound evidence,
+and reproducible tutorial definitions are in
+`qualification/public-beta-capabilities.json`. On tunacad.com, start at
+`/docs/simulation-status` and follow the seven linked studies. Run
+`npm run test:public-beta-readiness` before publishing a Bridge commit.
+
 Production validation now begins in parallel with SIM-2 and proceeds through
 SIM-4, SIM-5, and SIM-6. See
 `qualification/PRODUCTION_ENGINEERING_VALIDATION_STATUS.md` for the current
@@ -414,8 +431,8 @@ in `qualification/sim4b-bolted-bracket-rigid-connectors.json`. It meshes a
 two-domain bonded L-bracket, applies an eccentric load through one rigid
 connector, and supports the base through a second connector representing a
 bolt group. The expected support resultants are `[-1000, 0, 0]` N and
-`[0, -45000, 0]` N·mm. The matching SIM-4B matrix remains proof-of-concept
-until independent engineering review. The reviewer packet is
+`[0, -45000, 0]` N·mm. The matching SIM-4B matrix is internally validated but
+not qualified while independent engineering review is pending. The reviewer packet is
 `qualification/SIM4B_INDEPENDENT_ENGINEERING_REVIEW.md`.
 
 Before CalculiX launch, the v2 deck now forms connected components exclusively

@@ -993,7 +993,7 @@ export interface SimulationProviderCapabilities {
   durableReferenceMapping: 'supported' | 'partial' | 'unavailable';
   authority: NeutralResultAuthority;
   qualification: {
-    status: 'proof_of_concept' | 'qualified' | 'unsupported';
+    status: 'proof_of_concept' | 'internally_validated' | 'public_beta' | 'independently_reviewed' | 'qualified' | 'unsupported';
     engineeringUsePermitted: boolean;
     statement: string;
     limitations: readonly string[];

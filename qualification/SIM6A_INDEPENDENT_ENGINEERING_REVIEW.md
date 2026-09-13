@@ -1,8 +1,9 @@
 # SIM-6 independent engineering review packet
 
-SIM-6 is proof-of-concept only. All automated matrix lanes now pass,
-but it must not be promoted for engineering use until an independent qualified
-engineer reviews the exact commit.
+SIM-6 is internally validated for the exact runtime tuple and may be exposed as
+experimental public beta. All automated matrix lanes pass, but it must not be
+promoted for engineering use until an independent qualified engineer reviews
+the exact commit.
 
 The review must cover the node-to-surface penalty formulation, secondary and
 primary selection, small- versus finite-sliding semantics, `NLGEOM`
@@ -22,4 +23,4 @@ penetration/refinement, deliberate non-convergence, and cancellation lanes.
 Approval evidence must name the reviewer and relevant qualification, exact reviewed
 commit, environment and solver versions, commands, raw result digests, and any
 accepted deviations. Until that evidence is recorded, the matrix stays
-`proof_of_concept` with `engineeringUsePermitted: false`.
+`internally_validated` with `engineeringUsePermitted: false`.

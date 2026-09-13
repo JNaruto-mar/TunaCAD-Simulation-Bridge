@@ -3,7 +3,7 @@
   "matrixId": "sim5-windows-x64-gmsh-4.15.2-calculix-2.16",
   "scope": "Experimental SIM-5 constrained/free-free and multi-domain modal analysis plus single-domain linear-eigenvalue buckling on the Windows x64 Gmsh/CalculiX pipeline.",
   "environment": { "os": "win32", "architecture": "x64", "nodeMajor": 24, "gmshVersion": "4.15.2", "calculixVersion": "2.16" },
-  "qualification": { "status": "proof_of_concept", "engineeringUsePermitted": false, "recordedAt": "2026-09-09" },
+  "qualification": { "status": "internally_validated", "engineeringUsePermitted": false, "recordedAt": "2026-09-13" },
   "promotionPolicy": {
     "requiredLaneIds": ["constrained-cantilever-frequency", "normalized-mode-field-transport", "free-free-rigid-modes", "plate-analytical-frequency", "eigenvalue-mesh-convergence", "multi-domain-modal-coupling", "euler-column-linear-buckling", "independent-engineering-review"],
     "requiresAllPassed": true,

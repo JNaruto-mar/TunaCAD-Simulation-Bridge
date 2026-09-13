@@ -20,7 +20,10 @@ export class ComposedSimulationProviderV2 implements ExternalSimulationProviderV
 
   constructor(options: { id: string; version: string; meshProvider: GmshMultiDomainMeshProvider; solverProvider: ExternalSolverProviderV2 }) {
     this.id = options.id; this.version = options.version; this.meshProvider = options.meshProvider; this.solverProvider = options.solverProvider;
-    const unsupported = options.meshProvider.capabilities.qualification.status === 'unsupported' || options.solverProvider.capabilities.qualification.status === 'unsupported';
+    const qualificationStatuses = [options.meshProvider.capabilities.qualification.status, options.solverProvider.capabilities.qualification.status];
+    const qualificationOrder = ['proof_of_concept', 'internally_validated', 'public_beta', 'independently_reviewed', 'qualified'] as const;
+    const qualificationStatus = qualificationStatuses.includes('unsupported') ? 'unsupported' as const
+      : qualificationOrder[Math.min(...qualificationStatuses.map(status => qualificationOrder.indexOf(status as typeof qualificationOrder[number])))];
     const meshEvidence = options.meshProvider.capabilities.qualification.evidence; const solverEvidence = options.solverProvider.capabilities.qualification.evidence;
     const evidence = meshEvidence && solverEvidence && meshEvidence.matrixId === solverEvidence.matrixId ? {
       schema: 'tunacad-simulation-qualification-matrix/1.0' as const, matrixId: meshEvidence.matrixId,
@@ -35,7 +38,9 @@ export class ComposedSimulationProviderV2 implements ExternalSimulationProviderV
       },
       geometryFormats: options.meshProvider.capabilities.geometryFormats,
       qualification: {
-        status: unsupported ? 'unsupported' as const : 'proof_of_concept' as const, engineeringUsePermitted: false,
+        status: qualificationStatus, engineeringUsePermitted: qualificationStatus === 'qualified'
+          && options.meshProvider.capabilities.qualification.engineeringUsePermitted
+          && options.solverProvider.capabilities.qualification.engineeringUsePermitted,
         statement: `${options.meshProvider.capabilities.qualification.statement} ${options.solverProvider.capabilities.qualification.statement}`,
         limitations: [...new Set([...options.meshProvider.capabilities.qualification.limitations, ...options.solverProvider.capabilities.qualification.limitations])], evidence,
       },

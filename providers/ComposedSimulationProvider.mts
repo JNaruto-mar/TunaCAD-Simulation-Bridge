@@ -216,11 +216,10 @@ function combineQualification(
   mesh: ExternalMeshProvider['capabilities']['qualification'],
   solver: ExternalSolverProvider['capabilities']['qualification'],
 ): ExternalSolverProvider['capabilities']['qualification'] {
+  const maturity = ['proof_of_concept', 'internally_validated', 'public_beta', 'independently_reviewed', 'qualified'] as const;
   const status = mesh.status === 'unsupported' || solver.status === 'unsupported'
     ? 'unsupported' as const
-    : mesh.status === 'proof_of_concept' || solver.status === 'proof_of_concept'
-      ? 'proof_of_concept' as const
-      : 'qualified' as const;
+    : maturity[Math.min(maturity.indexOf(mesh.status), maturity.indexOf(solver.status))] ?? 'proof_of_concept';
   return {
     status,
     engineeringUsePermitted: status === 'qualified' && mesh.engineeringUsePermitted && solver.engineeringUsePermitted,

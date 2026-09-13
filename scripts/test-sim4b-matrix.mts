@@ -17,7 +17,7 @@ const matrixSchema = z.object({
   schema: z.literal('tunacad-simulation-qualification-matrix/1.0'),
   matrixId: z.literal('sim4b-windows-x64-gmsh-4.15.2-calculix-2.16'), scope: z.string().min(1),
   environment: z.object({ os: z.literal('win32'), architecture: z.literal('x64'), nodeMajor: z.literal(24), gmshVersion: z.literal('4.15.2'), calculixVersion: z.literal('2.16') }).strict(),
-  qualification: z.object({ status: z.enum(['proof_of_concept', 'qualified']), engineeringUsePermitted: z.boolean(), recordedAt: z.iso.date() }).strict(),
+  qualification: z.object({ status: z.enum(['internally_validated', 'independently_reviewed', 'qualified']), engineeringUsePermitted: z.boolean(), recordedAt: z.iso.date() }).strict(),
   promotionPolicy: z.object({ requiredLaneIds: z.array(z.string()).min(1), requiresAllPassed: z.literal(true), requiresEngineeringReview: z.literal(true) }).strict(),
   lanes: z.array(lane).min(1),
 }).strict();
@@ -62,8 +62,9 @@ assert.equal(failureLane.evidence?.independentlySupportedDisconnectedDomains, 'a
 const review = byId.get('independent-engineering-review');
 if (review?.state === 'passed') reviewEvidence.parse(review.evidence);
 const pending = matrix.promotionPolicy.requiredLaneIds.filter(id => byId.get(id)?.state !== 'passed');
-const computedStatus = pending.length ? 'proof_of_concept' : 'qualified';
+assert.deepEqual(pending.filter(id => id !== 'independent-engineering-review'), []);
+const computedStatus = review?.state === 'passed' ? 'independently_reviewed' : 'internally_validated';
 assert.equal(matrix.qualification.status, computedStatus);
-assert.equal(matrix.qualification.engineeringUsePermitted, computedStatus === 'qualified');
+assert.equal(matrix.qualification.engineeringUsePermitted, false);
 
 console.log(`SIM-4B connector qualification matrix is valid and remains ${computedStatus}; pending required lanes: ${pending.join(', ') || 'none'}.`);

@@ -10,9 +10,9 @@
     "calculixVersion": "2.16"
   },
   "qualification": {
-    "status": "proof_of_concept",
+    "status": "internally_validated",
     "engineeringUsePermitted": false,
-    "recordedAt": "2026-09-09"
+    "recordedAt": "2026-09-13"
   },
   "promotionPolicy": {
     "requiredLaneIds": [

@@ -4,7 +4,7 @@
   "scope": "Experimental single-domain geometric-nonlinear static analysis with finite-deformation kinematics, isotropic linear-elastic material, ordered proportional load steps, automatic increments, explicit iteration/cutback controls, and normalized force-displacement history.",
   "prerequisiteMatrices": ["sim2-windows-x64-gmsh-4.15.2-calculix-2.16", "sim3-windows-x64-gmsh-4.15.2-calculix-2.16", "sim4a-windows-x64-gmsh-4.15.2-calculix-2.16", "sim4b-windows-x64-gmsh-4.15.2-calculix-2.16", "sim5-windows-x64-gmsh-4.15.2-calculix-2.16", "sim6a-windows-x64-gmsh-4.15.2-calculix-2.16"],
   "environment": { "os": "win32", "architecture": "x64", "nodeMajor": 24, "gmshVersion": "4.15.2", "calculixVersion": "2.16" },
-  "qualification": { "status": "proof_of_concept", "engineeringUsePermitted": false, "recordedAt": "2026-09-12" },
+  "qualification": { "status": "internally_validated", "engineeringUsePermitted": false, "recordedAt": "2026-09-13" },
   "promotionPolicy": {
     "requiredLaneIds": ["contract-and-admission", "deterministic-nlgeom-deck", "bounded-history-normalization", "large-deflection-beam", "mesh-and-increment-convergence", "nonconvergence-and-cancellation", "independent-engineering-review"],
     "requiresAllPassed": true,

@@ -42,5 +42,6 @@ npm run test:sim5-matrix
 Any approval evidence must identify the reviewer and qualification, reviewed
 public commit, review date, exact matrix ID, and SHA-256 digest of the signed
 report. Any material concern keeps the decision rejected until corrected and
-re-reviewed. Until validated approval evidence is incorporated, the matrix
-must remain `proof_of_concept` with `engineeringUsePermitted: false`.
+re-reviewed. Until validated approval evidence is incorporated, the matrix is
+`internally_validated` for experimental public beta, with
+`engineeringUsePermitted: false`.

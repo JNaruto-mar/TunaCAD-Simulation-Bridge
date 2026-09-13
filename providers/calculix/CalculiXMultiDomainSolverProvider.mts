@@ -61,9 +61,9 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
       durableReferenceMapping: 'supported', authority: 'engineering',
       qualification: {
-        status: 'proof_of_concept', engineeringUsePermitted: false,
-        statement: 'Experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
-        limitations: ['Windows development-host evidence only', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support proof-of-concept only; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        status: 'internally_validated', engineeringUsePermitted: false,
+        statement: 'Internally validated but experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
+        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim7a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
@@ -81,6 +81,10 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     if (!hasEnforcedProviderProcessQuotas()) Object.assign(this.capabilities.qualification, {
       status: 'unsupported' as const, engineeringUsePermitted: false,
       statement: `SIM-4A CalculiX execution on ${process.platform}/${process.arch} is unsupported because OS-enforced quotas are unavailable.`, evidence: null,
+    });
+    else if (Number.parseInt(process.versions.node.split('.')[0] ?? '', 10) !== 24 || options.runtimeVersion !== '2.16') Object.assign(this.capabilities.qualification, {
+      status: 'proof_of_concept' as const, engineeringUsePermitted: false,
+      statement: `The SIM-4 through SIM-7 CalculiX ${options.runtimeVersion} adapter on Node ${process.versions.node} is outside the internally validated Windows x64 / Node 24 / CalculiX 2.16 tuple.`, evidence: null,
     });
   }
 

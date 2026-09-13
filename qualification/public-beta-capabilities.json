@@ -1,0 +1,105 @@
+{
+  "schema": "tunacad-simulation-public-beta-catalog/1.0",
+  "targetOrigin": "https://tunacad.com",
+  "releaseStatus": "public_beta",
+  "recordedAt": "2026-09-13",
+  "disclaimer": "Experimental / Beta simulation capability. Internally validated against TunaCAD automated benchmarks. Critical engineering results should be independently verified.",
+  "runtime": { "os": "Windows x64", "node": "24", "gmsh": "4.15.2", "calculix": "2.16", "topology": "user-operated local Simulation Bridge" },
+  "safetyBoundary": ["Two explicit geometry-transfer approvals", "Provider capability admission before transfer", "Result and late-exit quarantine", "OS-enforced CPU and memory quotas", "Bounded files, diagnostics, timeouts, and retention", "Revision and digest identity checks", "Warnings and engineer review required", "No automatic CAD mutation"],
+  "capabilities": [
+    { "id": "SIM-2", "name": "Single-part linear static", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim2-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim2-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 9, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:fa68057b7c45c1068a69b21dd5a34f9c2a6d54a3da697b8512cc38375d9c6077", "summary": "Small-displacement, isotropic linear-elastic, second-order tetrahedral structural analysis with bounded convergence studies." },
+    { "id": "SIM-3", "name": "Extended linear-static loads", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim3-experimental-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim3-experimental-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 4, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:352c1a79ecb7e33f92eeb359176de2bf2fff62afa0acd153186c2efcdb60e1c8", "summary": "Pressure, gravity, prescribed displacement, simultaneous load cases, and refined linear-static fixtures." },
+    { "id": "SIM-4A", "name": "Multi-domain and multi-material statics", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim4a-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim4a-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 4, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:bef439ca8260c18e9211969f4b06f3fbf0e43c5d1395cbb36f1a880e669e9fd0", "summary": "Explicit domains, per-domain materials and transforms, normalized ownership, pagination, and quarantine." },
+    { "id": "SIM-4B", "name": "Connected behavior and remote points", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim4b-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim4b-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 4, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:db5d6364c476254750809590eeed8f97dfbcb46e2ef743f4d966dce9ec368371", "summary": "Bonded/shared interfaces, rigid connectors, remote loads/supports, connector moments, and stable model-failure admission." },
+    { "id": "SIM-5", "name": "Modal analysis and linear buckling", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim5-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim5-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 7, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:313013af0409f34fa4ce11f4e94914f2fbfa2fe915e256628f49ff222fd1c734", "summary": "Constrained/free-free and multi-domain modal analysis plus idealized linear-eigenvalue buckling." },
+    { "id": "SIM-6", "name": "Frictionless and frictional contact", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim6a-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim6a-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 11, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:f9fa24356a3eb0dd75791aaa5aac745988c31629c525aa32b6432bf11a175f44", "summary": "Two-domain penalty contact with small/finite sliding, Coulomb friction, and bounded planar/curved adjustment." },
+    { "id": "SIM-7A", "name": "Geometric nonlinear static", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim7a-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim7a-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 6, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:14a6343f493bd1afe7c7723e4a4bf907b1bde0dbcd0386a7362e769fb51cf50f", "summary": "Single-domain finite-deformation elastic statics with ordered steps, amplitudes, increments, path history, convergence, and lifecycle handling." },
+    { "id": "SIM-7B", "name": "Elastic-plastic nonlinear static", "status": "public_beta", "validationStatus": "internally_validated", "matrixFile": "sim7b-windows-gmsh-4.15.2-calculix-2.16.json", "matrixId": "sim7b-windows-x64-gmsh-4.15.2-calculix-2.16", "automatedPassCount": 10, "automatedFailCount": 0, "pendingGates": ["independent-engineering-review"], "engineeringUsePermitted": false, "automatedEvidenceDigest": "sha256:7562db70af38d9f5fc470b510a24df8194b6350e07f2669a1b3a8da887eaeb60", "summary": "Tabulated isotropic hardening with PEEQ, energy, unload/reload, path, convergence, failure/cancellation, and plastic-hinge evidence." }
+  ],
+  "tutorials": [
+    {
+      "slug": "tutorials/simulation-linear-static", "title": "SIM-2 Linear Static Cantilever", "capabilityIds": ["SIM-2"], "difficulty": "Intermediate", "duration": "20 minutes", "summary": "Reproduce the version-bound 100 x 10 x 10 mm cantilever benchmark.",
+      "modelSetup": ["Create one Part containing a 100 x 10 x 10 mm box aligned with +X.", "Create persistent FACE references for the x=0 support face and x=100 load face."],
+      "materialProperties": ["Isotropic steel: E=210000 MPa, Poisson ratio=0.30, yield strength=355 MPa."],
+      "loadsAndRestraints": ["Fix the x=0 FACE.", "Apply [0, 0, -100] N as a surface force on the x=100 FACE."],
+      "meshSettings": ["3D second-order tetrahedra; global sizes 6, 4.5, and 3.5 mm; minimum quality 0.04."],
+      "expectedResults": ["Analytical tip displacement: 0.1919619 mm.", "Fine result: 0.1908403 mm on 1618 elements.", "Support reaction balances 100 N; recorded maximum von Mises stress is 55.5959 MPa."],
+      "acceptedComparison": ["Fine displacement within 8% of the beam reference.", "Medium-to-fine displacement change at most 4%.", "Hosted/reference displacement, stress, and reaction must stay within the recorded tutorial comparison limits."],
+      "warnings": ["Small-displacement assumptions must be checked.", "Stress peaks need mesh-convergence review.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Open https://tunacad.com/workspace and build the box and FACE references.", "Start and pair the public Simulation Bridge, then configure Gmsh and CalculiX.", "Ask Connect AI to prepare the SIM-2 study with the values above.", "Review the immutable study summary; approve geometry transfer in TunaCAD and again in the Bridge terminal.", "Run all three mesh sizes, retrieve normalized results, and compare them with the expected values and tolerances."],
+      "referenceMatrixIds": ["sim2-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    },
+    {
+      "slug": "tutorials/simulation-multimaterial", "title": "SIM-4 Multi-Domain Steel and Aluminum", "capabilityIds": ["SIM-4A", "SIM-4B"], "difficulty": "Advanced", "duration": "30 minutes", "summary": "Solve two explicit repeated domains while preserving material and result ownership.",
+      "modelSetup": ["Create a 40 x 10 x 10 mm bar Part and place two occurrences; translate the aluminum occurrence +25 mm in analysis Y.", "Bind separate support and load FACE references to each occurrence."],
+      "materialProperties": ["Steel: E=210000 MPa, Poisson ratio=0.30, density=7850 kg/m^3.", "Aluminum: E=70000 MPa, Poisson ratio=0.33, density=2700 kg/m^3."],
+      "loadsAndRestraints": ["Fix each x=0 end FACE.", "Apply +100 N in X to each x=40 end FACE; total applied force is 200 N."],
+      "meshSettings": ["Per-domain 3D second-order tetrahedra; global size 5 mm, minimum size 1.25 mm, minimum quality 0.04."],
+      "expectedResults": ["Composed model: 1854 nodes and 846 elements.", "Total reaction: [-200, 0, 0] N.", "Aluminum maximum displacement is more than 2.9 times the steel displacement; field pages retain exact domain ownership."],
+      "acceptedComparison": ["Absolute total reaction error at most 0.05 N.", "Aluminum/steel displacement ratio greater than 2.9.", "Every requested field page must pass chunk and dataset digest checks."],
+      "warnings": ["Touching occurrences and assembly mates do not imply a connection.", "Every domain/material/interaction must be explicit.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Open https://tunacad.com/workspace and create the Part plus two occurrences.", "Assign steel and aluminum by explicit domain ID and create occurrence-owned FACE references.", "Pair the local Bridge and request a v2 linear-static study.", "Verify the approval summary lists both domains, transforms, materials, loads, and supports.", "Approve both transfer gates, solve, page through both domain datasets, and compare the reaction and displacement ratio."],
+      "referenceMatrixIds": ["sim4a-windows-x64-gmsh-4.15.2-calculix-2.16", "sim4b-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    },
+    {
+      "slug": "tutorials/simulation-modal", "title": "SIM-5 Modal Cantilever", "capabilityIds": ["SIM-5"], "difficulty": "Advanced", "duration": "25 minutes", "summary": "Recover the first bending mode of a density-backed fixed cantilever.",
+      "modelSetup": ["Create one 100 x 10 x 5 mm bar aligned with +X and reference the x=0 end FACE."],
+      "materialProperties": ["Steel: E=210000 MPa, Poisson ratio=0.30, density=7850 kg/m^3."],
+      "loadsAndRestraints": ["Fix the x=0 FACE; apply no static load.", "Request six modes between 0 and 2000 Hz with consistent mass."],
+      "meshSettings": ["3D second-order tetrahedra; global size 7 mm, minimum size 2 mm, minimum quality 0.04."],
+      "expectedResults": ["Euler-Bernoulli reference first frequency: 417.7583 Hz.", "Recorded calculated first frequency: 420.2946 Hz.", "Mode-shape fields are normalized to maximum vector magnitude 1 for visualization."],
+      "acceptedComparison": ["First frequency within 18% of the analytical reference; recorded difference is 0.607%.", "No rigid-body mode is accepted for the fixed fixture."],
+      "warnings": ["Modes are undamped linear-elastic eigenmodes.", "Visualization normalization is not solver mass normalization.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Build the beam at https://tunacad.com/workspace and assign density-backed steel.", "Create the fixed FACE reference and pair the local Bridge.", "Ask Connect AI to prepare a v2 modal study with the settings above.", "Approve both transfer gates, solve, retrieve the first mode and its paginated shape field.", "Compare the first frequency and confirm the constraint/ridgid-mode diagnostics."],
+      "referenceMatrixIds": ["sim5-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    },
+    {
+      "slug": "tutorials/simulation-contact", "title": "SIM-6 Frictionless and Frictional Contact", "capabilityIds": ["SIM-6"], "difficulty": "Advanced", "duration": "35 minutes", "summary": "Compare small-sliding frictionless and Coulomb-penalty contact between two blocks.",
+      "modelSetup": ["Create two touching 10 x 10 x 10 mm steel blocks as explicit domains.", "Identify primary/secondary contact faces, foundation support faces, and driven faces."],
+      "materialProperties": ["Both domains: isotropic steel, E=210000 MPa, Poisson ratio=0.30."],
+      "loadsAndRestraints": ["Fix the foundation.", "Prescribe -0.001 mm normal and 0.02 mm tangential motion on the driven block.", "Run frictionless, then frictional with coefficient 0.2 and stick slope 5000 MPa/mm."],
+      "meshSettings": ["3D second-order tetrahedra; global size 2.5 mm; node-to-surface linear penalty, small sliding."],
+      "expectedResults": ["Frictionless tangential force: approximately -0.00220 N.", "Frictional secondary force: [1058.743, -211.678, -0.814] N.", "Maximum pressure 13.5182 MPa, maximum shear 2.70364 MPa, maximum slip 0.0186929 mm."],
+      "acceptedComparison": ["Tangential equilibrium relative error below 3%.", "Normalized shear remains within 1.08 times the Coulomb limit.", "Frictionless tangential force remains negligible relative to the frictional case."],
+      "warnings": ["Penalty results depend on mesh and penalty stiffness.", "Primary/secondary choice and signs must be reviewed.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Build the two-domain block assembly at https://tunacad.com/workspace.", "Create explicit contact, support, and driven FACE references.", "Pair the Bridge and prepare the frictionless study; inspect and approve both transfer gates.", "Repeat with explicit Coulomb coefficient and stick slope.", "Compare contact force, pressure, shear, slip, reactions, warnings, and field pages with the stated ranges."],
+      "referenceMatrixIds": ["sim6a-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    },
+    {
+      "slug": "tutorials/simulation-finite-curved-contact", "title": "SIM-6 Finite Sliding and Curved Contact", "capabilityIds": ["SIM-6"], "difficulty": "Advanced", "duration": "45 minutes", "summary": "Exercise finite-sliding projection and bounded curved-surface initial adjustment.",
+      "modelSetup": ["Study A uses two touching 10 x 10 x 10 mm blocks.", "Study B uses an R10 x 10 mm half-cylinder starting 0.05 mm above a planar foundation."],
+      "materialProperties": ["Both studies use isotropic steel, E=210000 MPa and Poisson ratio=0.30."],
+      "loadsAndRestraints": ["Study A: fix the foundation, prescribe -0.001 mm normal motion and 4 mm tangential travel, frictionless finite sliding.", "Study B: fix the foundation, use bounded-to-contact adjustment with maximum 0.06 mm, then apply the recorded displacement-controlled approach."],
+      "meshSettings": ["Study A global size 2.5 mm with finite-deformation kinematics.", "Study B global size 2.25 mm; expected composed mesh 3758 nodes and 2013 elements."],
+      "expectedResults": ["Study A remains active with 3.99930 mm maximum slip, 71.5926 MPa maximum pressure, and 15 converged increments.", "Study B becomes active with 53458.1 MPa peak pressure, 0.0509125 mm maximum penetration, and balanced 87689.33 N contact/driven resultants."],
+      "acceptedComparison": ["Study A slip follows the 4 mm travel and tangential resultant remains negligible.", "Study B initial capture stays within 0.06 mm and force-equilibrium relative error remains within the recorded zero-to-roundoff range."],
+      "warnings": ["The curved fixture has a severe local pressure and is a numerical verification case, not a design recommendation.", "Initial adjustment never changes the CAD model.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Create each model at https://tunacad.com/workspace with explicit contact faces.", "Pair the Bridge and select finite sliding for Study A; confirm finite-deformation assumptions.", "For Study B, enter the 0.05 mm clearance and explicit 0.06 mm adjustment bound.", "Approve each immutable study in TunaCAD and in the Bridge terminal.", "Compare activity, slip/penetration, pressure, increments, force equilibrium, and mandatory warnings."],
+      "referenceMatrixIds": ["sim6a-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    },
+    {
+      "slug": "tutorials/simulation-geometric-nonlinear", "title": "SIM-7A Geometric Nonlinear Cantilever", "capabilityIds": ["SIM-7A"], "difficulty": "Advanced", "duration": "35 minutes", "summary": "Compare finite-deformation and small-displacement response of a slender cantilever.",
+      "modelSetup": ["Create one 150 x 10 x 5 mm steel cantilever aligned with +X.", "Reference the x=0 fixed face and x=150 load face."],
+      "materialProperties": ["Isotropic linear-elastic steel: E=210000 MPa, Poisson ratio=0.30, density=7850 kg/m^3."],
+      "loadsAndRestraints": ["Fix the x=0 FACE.", "Apply [0, 0, -500] N at the free-end FACE in two ordered ramps: 0 to 50%, then 50% to 100%."],
+      "meshSettings": ["Second-order tetrahedra; reference global size 7.5 mm, with 10, 7.5, and 6 mm convergence levels.", "Automatic increments: initial 0.1, minimum 0.0001, maximum 0.2; compare 0.2, 0.1, and 0.05 ceilings."],
+      "expectedResults": ["Linear displacement: 25.53123 mm.", "Nonlinear displacement: 24.94863 mm with seven converged increments per step.", "Linear/nonlinear separation: 2.2819%; support reaction balances 500 N."],
+      "acceptedComparison": ["Medium-to-fine mesh displacement change below 4%.", "Medium-to-fine force-displacement curve change below 1%.", "All requested steps and converged increments must be present."],
+      "warnings": ["This is force-controlled and has no arc-length/limit-point continuation.", "Material remains linear elastic.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Build and reference the beam at https://tunacad.com/workspace.", "Pair the Bridge and prepare a v2 nonlinear-static study with the ordered ramps and controls above.", "Review the full step/amplitude/increment summary before both approvals.", "Run the nonlinear and linear comparison studies, then the mesh and increment levels.", "Compare path history, reactions, displacement separation, convergence, and warnings."],
+      "referenceMatrixIds": ["sim7a-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    },
+    {
+      "slug": "tutorials/simulation-elastic-plastic", "title": "SIM-7B Elastic-Plastic Coupon", "capabilityIds": ["SIM-7B"], "difficulty": "Advanced", "duration": "40 minutes", "summary": "Reproduce the axial hardening coupon and inspect plastic strain and energy.",
+      "modelSetup": ["Create one 100 x 10 x 10 mm coupon aligned with +X.", "Reference the x=0 support and x=100 loading faces."],
+      "materialProperties": ["E=210000 MPa, Poisson ratio=0.30, density=7850 kg/m^3, yield strength=250 MPa.", "Isotropic true-stress/plastic-strain curve: (250 MPa, 0), (300 MPa, 0.02), (340 MPa, 0.08)."],
+      "loadsAndRestraints": ["Fix the x=0 FACE.", "Ramp a +30000 N axial surface force on the x=100 FACE in one nonlinear step."],
+      "meshSettings": ["Second-order tetrahedra; global size 5 mm, minimum size 1.25 mm, minimum quality 0.04.", "Initial increment 0.05, minimum 0.0001, maximum 0.1, at most 250 increments and 32 iterations."],
+      "expectedResults": ["434 elements; elastic-plastic displacement 3.7655 mm versus 0.1421 mm elastic reference.", "Maximum PEEQ 0.03863676; maximum energy density 11.28585 MPa; total internal energy 104210.9 N*mm.", "All 434 elements yield; support reaction is -30000.02 N."],
+      "acceptedComparison": ["Reaction error at most 3 N.", "Hosted/reference displacement within 3%, PEEQ within 8%, and internal energy within 5%.", "PEEQ, ENER, and ELSE must be complete, finite, nonnegative, and digest-verified."],
+      "warnings": ["Only tabulated isotropic hardening is supported.", "No kinematic/combined hardening, damage, fracture, creep, or multi-domain plasticity.", "Engineering use is not permitted."],
+      "reproductionSteps": ["Build and reference the coupon at https://tunacad.com/workspace.", "Define the exact true-stress/plastic-strain material data and pair the local Bridge.", "Ask Connect AI for the v2 material-nonlinear study and request displacement, stress, reaction, PEEQ, energy density, and internal energy.", "Review material and increment controls, then approve geometry transfer in TunaCAD and in the Bridge terminal.", "Compare the normalized summary and paginated fields with the expected values and tolerance ranges."],
+      "referenceMatrixIds": ["sim7b-windows-x64-gmsh-4.15.2-calculix-2.16"]
+    }
+  ]
+}
