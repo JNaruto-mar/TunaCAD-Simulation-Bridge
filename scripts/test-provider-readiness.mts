@@ -16,7 +16,7 @@ assert.equal(pipeline.providerV2?.capabilities.study.maximumDomains, 16);
 assert.equal(pipeline.providerV2?.capabilities.study.perDomainMaterials, true);
 assert.deepEqual(pipeline.providerV2?.capabilities.study.interactionTypes, ['bonded_tie', 'shared_topology', 'rigid_connector', 'frictionless_contact', 'frictional_contact']);
 assert.equal(pipeline.providerV2?.capabilities.fieldResults.paginated, true);
-assert.deepEqual(pipeline.providerV2?.capabilities.analysisTypes, ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static']);
+assert.deepEqual(pipeline.providerV2?.capabilities.analysisTypes, ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal']);
 assert.deepEqual(pipeline.providerV2?.capabilities.study.modal, { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 });
 assert.ok(pipeline.providerV2?.capabilities.fieldResults.components.includes('mode_shape_magnitude'));
 assert.deepEqual(pipeline.providerV2?.capabilities.study.buckling, { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] });
@@ -32,6 +32,7 @@ assert.deepEqual(pipeline.providerV2?.capabilities.study.contact?.sliding, ['sma
 assert.equal(pipeline.providerV2?.capabilities.study.contact?.nonlinearIncrementReporting, true);
 assert.deepEqual(pipeline.providerV2?.capabilities.study.contact?.initialAdjustments, ['none', 'bounded_to_contact']);
 assert.deepEqual(pipeline.providerV2?.capabilities.study.nonlinearStatic, { maximumDomains: 1, maximumSteps: 8, maximumAmplitudePoints: 32, amplitudeModes: ['shared_shape_per_step'], loadTypes: ['surface_force', 'pressure', 'gravity'], constraintTypes: ['fixed'], geometricNonlinearity: true, materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], materialNonlinearity: true, hardeningModels: ['isotropic'], plasticStrainResults: true, energyResults: true, automaticIncrements: true, incrementHistory: true, loadDisplacementHistory: true });
+assert.deepEqual(pipeline.providerV2?.capabilities.study.steadyThermal, { maximumDomains: 1, materialModel: 'constant_isotropic_conductivity', loadTypes: ['surface_heat_flux'], maximumHeatFluxLoads: 1, constraintTypes: ['prescribed_temperature'], maximumPrescribedTemperatureConstraints: 1, temperatureProfile: 'bounded_samples', maximumTemperatureSamples: 256, heatBalance: true });
 assert.equal(pipeline.providerV2?.capabilities.qualification.evidence, null, 'Composed v2 evidence remains null until the Gmsh and CalculiX adapters share one reviewed umbrella matrix.');
 assert.deepEqual(pipeline.provider?.capabilities.study.loadTypes, ['surface_force', 'pressure', 'gravity']);
 assert.equal(pipeline.provider?.capabilities.study.maximumLoads, 64);

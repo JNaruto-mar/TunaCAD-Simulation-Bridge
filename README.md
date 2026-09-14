@@ -483,10 +483,13 @@ With the configured Gmsh 4.15.2 and CalculiX 2.16 executables,
 `npm run test:sim8-steady-thermal-real` generates a deterministic DC3D10
 `*HEAT TRANSFER, STEADY STATE` deck and recovers bounded NT/HFL/RFL output for
 the 100 x 10 x 10 mm slab. It compares the solve against the closed-form
-20–40 °C, 200 °C/m, +1 W applied / -1 W reacted result. Browser/MCP study
-preparation, field visualization, additional boundary conditions, and
-convergence qualification remain deferred. SIM-8 remains `proof_of_concept`
-with `engineeringUsePermitted: false`.
+20–40 °C, 200 °C/m, +1 W applied / -1 W reacted result.
+`npm run test:sim8-steady-thermal-convergence` checks 10 / 6 / 4 mm meshes
+(209 / 350 / 944 elements), exact repeatability of the 4 mm case, analytical
+profile agreement, heat balance, and cross-mesh drift. Browser/MCP study
+preparation, field visualization, and additional boundary conditions remain
+deferred. SIM-8 remains `proof_of_concept` with
+`engineeringUsePermitted: false`.
 
 ## Provider readiness
 

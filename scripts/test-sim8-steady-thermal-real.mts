@@ -14,6 +14,10 @@ import type { NeutralSimulationRequestV2, NeutralSimulationResultV2, NeutralVect
 const gmsh = process.env.TUNACAD_GMSH_EXECUTABLE;
 const calculix = process.env.TUNACAD_CALCULIX_EXECUTABLE;
 if (!gmsh || !calculix) throw new Error('Set TUNACAD_GMSH_EXECUTABLE and TUNACAD_CALCULIX_EXECUTABLE to run SIM-8 real acceptance.');
+const globalSizeMm = Number(process.env.TUNACAD_SIM8_GLOBAL_SIZE_MM ?? 8);
+if (!Number.isFinite(globalSizeMm) || globalSizeMm < 2 || globalSizeMm > 20) {
+  throw new Error('TUNACAD_SIM8_GLOBAL_SIZE_MM must be a finite value from 2 through 20 mm.');
+}
 
 const directory = await mkdtemp(join(tmpdir(), 'tunacad-sim8-real-'));
 try {
@@ -27,7 +31,7 @@ try {
   ].join('\n'), 'utf8');
   execFileSync(gmsh, [geoPath, '-0', '-v', '2'], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const step = new Uint8Array(await readFile(stepPath));
-  const request = createRequest();
+  const request = createRequest(globalSizeMm);
   const mesher = new GmshMultiDomainMeshProvider({ executable: gmsh, runtimeVersion: '4.15.2' });
   const model = await mesher.mesh(request, {
     descriptor: request.model,
@@ -81,7 +85,7 @@ try {
     status: 'PASS',
     fixture: '100x10x10-mm-one-dimensional-conduction',
     versions: { gmsh: '4.15.2', calculix: '2.16' },
-    mesh: { nodes: model.nodes.length, elements: model.volumeElements.connectivity.length },
+    mesh: { globalSizeMm, nodes: model.nodes.length, elements: model.volumeElements.connectivity.length },
     calculated: {
       minimumTemperatureC: thermal.minimumTemperatureC,
       maximumTemperatureC: thermal.maximumTemperatureC,
@@ -105,7 +109,7 @@ try {
   await rm(directory, { recursive: true, force: true });
 }
 
-function createRequest(): NeutralSimulationRequestV2 {
+function createRequest(meshSizeMm: number): NeutralSimulationRequestV2 {
   const projectRevision = 'sim8-real-r1';
   const geometryDigest = digest({ fixture: '100x10x10-slab-step' });
   const face = (semanticReferenceId: string, role: 'load' | 'constraint', x: number) => ({
@@ -150,7 +154,7 @@ function createRequest(): NeutralSimulationRequestV2 {
     loads: [{ id: 'inward-flux', name: 'Inward heat flux', type: 'surface_heat_flux', semanticReferenceIds: ['heated-face'], heatFluxWPerM2: 10_000 }],
     constraints: [{ id: 'cold-temperature', name: 'Cold face', type: 'prescribed_temperature', semanticReferenceIds: ['cold-face'], temperatureC: 20 }],
     interactions: [],
-    mesh: { dimensionality: '3d', elementFamily: 'tetrahedral', order: 2, globalSizeMm: 8, minimumSizeMm: 2, maximumNodes: 100_000, maximumElements: 50_000, qualityMetric: 'provider_normalized', minimumQuality: 0.04 },
+    mesh: { dimensionality: '3d', elementFamily: 'tetrahedral', order: 2, globalSizeMm: meshSizeMm, minimumSizeMm: meshSizeMm / 4, maximumNodes: 100_000, maximumElements: 50_000, qualityMetric: 'provider_normalized', minimumQuality: 0.04 },
     requestedResults: ['temperature', 'heat_flux', 'reaction_heat_flow'],
   });
 }

@@ -42,6 +42,7 @@
     "test:sim7b-qualification": "node --experimental-strip-types scripts/test-sim7b-qualification.mts",
     "test:sim8-steady-thermal": "node --experimental-strip-types scripts/test-sim8-steady-thermal.mts",
     "test:sim8-steady-thermal-real": "node --experimental-strip-types scripts/test-sim8-steady-thermal-real.mts",
+    "test:sim8-steady-thermal-convergence": "node --experimental-strip-types scripts/test-sim8-steady-thermal-convergence.mts",
     "test:public-beta-readiness": "node --experimental-strip-types scripts/test-public-beta-readiness.mts",
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
