@@ -12,15 +12,17 @@ const capabilitySchema = z.object({
   qualificationPromotionGates: z.array(z.string()).min(1), engineeringUsePermitted: z.literal(false),
   automatedEvidenceDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/), summary: z.string().min(1),
 }).strict();
+const tutorialList = z.array(z.string().min(1)).min(1);
 const tutorialSchema = z.object({
   slug: z.string().regex(/^tutorials\/simulation-[a-z-]+$/), title: z.string().min(1), capabilityIds: z.array(z.string()).min(1),
   difficulty: z.enum(['Intermediate', 'Advanced']), duration: z.string().min(1), summary: z.string().min(1),
-  modelSetup: z.array(z.string()).min(1), materialProperties: z.array(z.string()).min(1), loadsAndRestraints: z.array(z.string()).min(1),
-  meshSettings: z.array(z.string()).min(1), expectedResults: z.array(z.string()).min(1), acceptedComparison: z.array(z.string()).min(1),
-  warnings: z.array(z.string()).min(1), reproductionSteps: z.array(z.string()).min(4), referenceMatrixIds: z.array(z.string()).min(1),
+  whatYouWillBuild: tutorialList, modelSetup: tutorialList, analysisSetup: tutorialList, materialProperties: tutorialList,
+  restraintSteps: tutorialList, loadSteps: tutorialList, meshSettings: tutorialList, runSteps: tutorialList,
+  resultSteps: tutorialList, expectedResults: tutorialList, acceptedComparison: tutorialList, physicalMeaning: tutorialList,
+  warnings: tutorialList, feedback: z.string().min(1), aiPrompt: z.string().min(80), reproductionSteps: tutorialList, referenceMatrixIds: z.array(z.string()).min(1),
 }).strict();
 const catalogSchema = z.object({
-  schema: z.literal('tunacad-simulation-public-beta-catalog/1.1'), targetOrigin: z.literal('https://tunacad.com'),
+  schema: z.literal('tunacad-simulation-public-beta-catalog/1.2'), targetOrigin: z.literal('https://tunacad.com'),
   releaseStatus: z.literal('public_beta'), recordedAt: z.iso.date(),
   disclaimer: z.literal('Experimental / Beta simulation capability. Internally validated against TunaCAD automated benchmarks. Critical engineering results should be independently verified.'),
   developmentPolicy: z.object({
@@ -68,11 +70,27 @@ const requiredTutorials = [
   'tutorials/simulation-geometric-nonlinear', 'tutorials/simulation-elastic-plastic',
 ];
 assert.deepEqual(catalog.tutorials.map(item => item.slug), requiredTutorials);
+assert.deepEqual(catalog.tutorials.map(item => item.title), [
+  'Linear Static Analysis', 'Multi-Part and Multi-Material Analysis', 'Modal and Vibration Analysis',
+  'Frictionless and Frictional Contact', 'Finite Sliding and Curved Contact',
+  'Geometric Nonlinear Analysis', 'Elastic-Plastic Material Analysis',
+]);
 for (const tutorial of catalog.tutorials) {
   assert.ok(tutorial.capabilityIds.every(id => requiredCapabilities.includes(id)), `${tutorial.slug} names an unknown capability.`);
   assert.ok(tutorial.referenceMatrixIds.every(id => catalog.capabilities.some(item => item.matrixId === id)), `${tutorial.slug} has an unknown matrix.`);
-  assert.ok(tutorial.reproductionSteps.some(step => step.includes('https://tunacad.com/workspace')), `${tutorial.slug} is not reproducible on the hosted application.`);
-  assert.ok(tutorial.warnings.some(warning => /Engineering use is not permitted/i.test(warning)), `${tutorial.slug} omits the engineering-use warning.`);
+  for (const field of ['whatYouWillBuild', 'modelSetup', 'analysisSetup', 'materialProperties', 'restraintSteps', 'loadSteps', 'meshSettings', 'runSteps', 'resultSteps', 'expectedResults', 'acceptedComparison', 'physicalMeaning', 'reproductionSteps'] as const) {
+    assert.ok(Array.isArray(tutorial[field]) && tutorial[field].length > 0, `${tutorial.slug} omits hands-on field ${field}.`);
+  }
+  const publicContent = [
+    tutorial.title, tutorial.summary, ...tutorial.whatYouWillBuild, ...tutorial.modelSetup, ...tutorial.analysisSetup,
+    ...tutorial.materialProperties, ...tutorial.restraintSteps, ...tutorial.loadSteps, ...tutorial.meshSettings,
+    ...tutorial.runSteps, ...tutorial.resultSteps, ...tutorial.expectedResults, ...tutorial.acceptedComparison,
+    ...tutorial.physicalMeaning, ...tutorial.reproductionSteps, tutorial.aiPrompt, tutorial.feedback,
+  ].join(' ');
+  assert.doesNotMatch(publicContent, /\bSIM-(?:2|4|5|6|7[A-B]?)\b/i, `${tutorial.slug} exposes an internal roadmap name.`);
+  assert.equal(tutorial.warnings.length, 1, `${tutorial.slug} should contain one friendly beta notice.`);
+  assert.match(tutorial.warnings[0], /currently experimental\/beta/i);
+  assert.match(tutorial.feedback, /report it/i);
 }
 
 const gmsh = process.env.TUNACAD_GMSH_EXECUTABLE;
