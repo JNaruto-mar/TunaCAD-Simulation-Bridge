@@ -8,7 +8,7 @@ import { CalculiXMultiDomainSolverProvider } from '../providers/calculix/Calculi
 import { GmshMultiDomainMeshProvider } from '../providers/gmsh/GmshMultiDomainMeshProvider.mts';
 import { digest } from '../simulation-bridge/stableDigest.mts';
 import { solveOneDimensionalSteadyConduction } from '../simulation-bridge/steadyThermalValidation.mts';
-import { admitV2SimulationRequest, sealNeutralSimulationRequestV2, validateNeutralSimulationResultV2 } from '../simulation-bridge/v2Validation.mts';
+import { admitV2SimulationRequest, sealNeutralSimulationRequestV2, validateNeutralSimulationFieldPageV2, validateNeutralSimulationResultV2 } from '../simulation-bridge/v2Validation.mts';
 import type { NeutralSimulationRequestV2, NeutralSimulationResultV2, NeutralVector3 } from '../src/simulation/externalSimulationContracts.ts';
 
 const gmsh = process.env.TUNACAD_GMSH_EXECUTABLE;
@@ -77,9 +77,59 @@ try {
   const maximumProfileErrorC = Math.max(...thermal.temperatureSamples.map(sample =>
     Math.abs(sample.temperatureC - (20 + 0.2 * sample.positionAnalysisMm[0]))));
   assert.ok(maximumProfileErrorC <= 0.05, 'The recovered NT samples must follow the analytical linear profile.');
-  assert.equal(result.perDomain[0].fieldDatasetIds.length, 0);
+  assert.equal(result.perDomain[0].fieldDatasetIds.length, 2);
+  const fieldEvidence: Array<{ component: string; triangles: number; pages: number; minimum: number; maximum: number; unit: string }> = [];
+  const viewerFields: Record<string, unknown> = {};
+  for (const [index, expected] of ([['temperature', 'degC'], ['heat_flux_magnitude', 'W/m^2']] as const).entries()) {
+    const datasetId = result.perDomain[0].fieldDatasetIds[index];
+    const triangles = []; let cursor: string | null = '0'; let pages = 0;
+    let descriptor = null;
+    while (cursor !== null) {
+      const page = await solver.getFieldDataset(submission.providerRunId, datasetId, cursor, 128);
+      validateNeutralSimulationFieldPageV2(page);
+      assert.equal(page.dataset.analysisType, 'steady_thermal');
+      assert.equal(page.dataset.component, expected[0]);
+      assert.equal(page.dataset.unit, expected[1]);
+      assert.equal(page.triangleOffset, triangles.length);
+      assert.equal(page.cursor, cursor);
+      assert.ok(page.triangleCount >= 1 && page.triangleCount <= 128);
+      assert.equal(page.chunkDigest, digest(page.triangles));
+      if (descriptor) assert.deepEqual(page.dataset, descriptor);
+      descriptor = page.dataset;
+      triangles.push(...page.triangles);
+      cursor = page.nextCursor;
+      pages += 1;
+      assert.ok(pages <= 100, 'The bounded field must not contain an unbounded page sequence.');
+    }
+    assert.ok(descriptor);
+    assert.equal(triangles.length, descriptor.totalTriangles);
+    assert.equal(digest(triangles), descriptor.datasetDigest);
+    viewerFields[datasetId] = { dataset: descriptor, triangles };
+    assert.ok(pages > 1, 'The focused slab must exercise pagination.');
+    assert.ok(triangles.every(triangle => triangle.displacementsMm.every(vector => vector.every(value => value === 0))));
+    if (expected[0] === 'temperature') {
+      assert.ok(Math.abs(descriptor.valueRange.minimum - 20) <= .05);
+      assert.ok(Math.abs(descriptor.valueRange.maximum - 40) <= .05);
+    } else {
+      assert.ok(Math.abs(descriptor.valueRange.maximum - 10_000) <= 100);
+    }
+    const first = await solver.getFieldDataset(submission.providerRunId, datasetId, '0', 128);
+    const tampered = structuredClone(first);
+    tampered.triangles[0].values[0] += 1;
+    assert.throws(() => validateNeutralSimulationFieldPageV2(tampered), /BRIDGE_V2_FIELD_PAGE_INVALID/);
+    const missing = structuredClone(first);
+    missing.nextCursor = null;
+    assert.throws(() => validateNeutralSimulationFieldPageV2(missing), /BRIDGE_V2_FIELD_PAGE_INVALID/);
+    fieldEvidence.push({ component: expected[0], triangles: triangles.length, pages,
+      minimum: descriptor.valueRange.minimum, maximum: descriptor.valueRange.maximum, unit: expected[1] });
+  }
+  await assert.rejects(() => solver.getFieldDataset(submission.providerRunId, result.perDomain[0].fieldDatasetIds[0], 'bad', 128));
+  await assert.rejects(() => solver.getFieldDataset(submission.providerRunId, result.perDomain[0].fieldDatasetIds[0], '0', 129));
   assert.ok(result.warnings.some(warning => warning.code === 'SIMULATION_STEADY_THERMAL_POC'));
   assert.equal(result.review.engineeringUsePermitted, false);
+  if (process.env.TUNACAD_SIM8_VIEWER_PAYLOAD === '1') {
+    console.log('SIM8_VIEWER_PAYLOAD=' + JSON.stringify({ result, pages: viewerFields }));
+  }
 
   console.log(JSON.stringify({
     status: 'PASS',
@@ -103,6 +153,7 @@ try {
       totalReactionHeatW: reference.totalReactionHeatW,
     },
     maximumProfileErrorC,
+    fieldEvidence,
     engineeringUsePermitted: result.review.engineeringUsePermitted,
   }, null, 2));
 } finally {

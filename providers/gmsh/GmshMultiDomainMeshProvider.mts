@@ -34,7 +34,7 @@ export class GmshMultiDomainMeshProvider {
       multiDomain: true,
       rigidOccurrenceTransforms: true,
       domainRegionMapping: true,
-      interactionTypes: ['shared_topology'],
+      interactionTypes: ['shared_topology', 'thermal_interface_conductance'],
       qualification: {
         ...this.local.capabilities.qualification,
         status: this.local.capabilities.qualification.status,

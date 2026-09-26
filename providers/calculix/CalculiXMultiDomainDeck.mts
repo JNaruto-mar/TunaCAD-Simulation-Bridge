@@ -7,6 +7,8 @@ import type {
   NeutralVector3,
 } from '../../src/simulation/externalSimulationContracts.ts';
 import { validateNeutralFemModelV2, validateNeutralSimulationRequestV2 } from '../../simulation-bridge/v2Validation.mts';
+import { quadraticTriangleSurfaceSamples } from '../../src/simulation/neutralFemMesh.ts';
+import { validateNonconformalThermalInterface } from './CalculiXThermalInterface.mts';
 import {
   buildConstraintSets,
   consistentSurfaceLoads,
@@ -270,63 +272,129 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   return `${lines.join('\n')}\n`;
 }
 
-/** Deterministic SIM-8 foundation deck. The public provider deliberately
- * admits one flux group and one prescribed-temperature group only. With mm as
- * the model length unit, W/(m*K) becomes W/(mm*K) and W/m^2 becomes W/mm^2. */
+/** Deterministic SIM-8 foundation deck. One flux, total-power, or convection FACE group
+ * opposes one prescribed-temperature group. With mm as the model length unit,
+ * W/(m*K) becomes W/(mm*K), and W/m^2 or W/(m^2*K) becomes the mm^2 form. */
 export function createCalculiXSteadyThermalInputDeckV2(request: SteadyThermalRequestV2, model: NeutralFemModelV2): string {
-  if (request.model.domains.length !== 1 || model.domainRegions.length !== 1 || request.materials.length !== 1
+  const thermalInterface = request.interactions[0]?.type === 'thermal_interface_conductance' ? request.interactions[0] : null;
+  const twoMaterialInterface = request.model.domains.length === 2 && model.domainRegions.length === 2
+    && request.materials.length === 2 && request.interactions.length === 1
+    && (request.interactions[0].type === 'shared_topology' || thermalInterface !== null)
+    && request.loads[0]?.type === 'surface_heat_flux';
+  if (!(request.model.domains.length === 1 && model.domainRegions.length === 1
+      && request.materials.length === 1 && request.interactions.length === 0 || twoMaterialInterface)
     || request.loads.length !== 1 || request.constraints.length !== 1) {
-    throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'The CalculiX SIM-8 foundation requires exactly one domain, material, heat-flux group, and prescribed-temperature group.');
+    throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'The CalculiX SIM-8 foundation requires one domain or an explicit two-material shared-topology/conductance interface.');
   }
   const load = request.loads[0];
+  if (twoMaterialInterface && !thermalInterface) validateSharedTopology(request, model);
+  const mappedInterface = thermalInterface ? validateNonconformalThermalInterface(model, thermalInterface) : null;
   const constraint = request.constraints[0];
-  const material = request.materials[0];
-  const conductivityWPerMK = material.thermalConductivityWPerMK;
-  if (load.type !== 'surface_heat_flux' || constraint.type !== 'prescribed_temperature' || !(conductivityWPerMK && conductivityWPerMK > 0)) {
+  const assignments = new Map(request.materialAssignments.map(assignment => [assignment.domainId, assignment.materialId]));
+  const materials = new Map(request.materials.map(material => [material.id, material]));
+  const domains = [...model.domainRegions].sort((a, b) => a.domainId.localeCompare(b.domainId, 'en'));
+  if ((load.type !== 'surface_heat_flux' && load.type !== 'surface_heat_power' && load.type !== 'surface_convection') || constraint.type !== 'prescribed_temperature'
+    || domains.some(domain => {
+      const material = materials.get(assignments.get(domain.domainId) ?? '');
+      return !material || !(material.thermalConductivityWPerMK! > 0) && !material.thermalConductivityCurve;
+    })) {
     throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'The CalculiX SIM-8 foundation received an unsupported thermal definition.');
   }
-  const domain = model.domainRegions[0];
   const constraintFacets = [...new Set(requireRegions(model, constraint.semanticReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
   const constraintNodes = [...new Set(constraintFacets.flatMap(index => model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b);
-  const fluxFacets = [...new Set(requireRegions(model, load.semanticReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
-  if (!constraintNodes.length || !fluxFacets.length) {
+  const loadFacets = [...new Set(requireRegions(model, load.semanticReferenceIds).flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+  if (!constraintNodes.length || !loadFacets.length) {
     throw deckError('SIMULATION_THERMAL_FACE_MAPPING_INVALID', 'Thermal FACE groups must map to non-empty quadratic boundary facets.');
+  }
+  if (load.type === 'surface_heat_power' && loadFacets.some(facet => constraintFacets.includes(facet))) {
+    throw deckError('SIMULATION_THERMAL_FACE_MAPPING_INVALID', 'A heat-power FACE cannot also prescribe temperature.');
+  }
+  const powerFluxWPerMm2 = load.type === 'surface_heat_power'
+    ? load.heatPowerW / mappedThermalFaceAreaMm2(model, loadFacets)
+    : null;
+  if (powerFluxWPerMm2 !== null && (!Number.isFinite(powerFluxWPerMm2) || powerFluxWPerMm2 > 1e6)) {
+    throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'Mapped heat-power flux exceeds the bounded 1e12 W/m^2 thermal range.');
   }
   const lines = [
     '*HEADING',
     'TunaCAD SIM-8 steady thermal study ' + safeComment(request.studyId),
     '*NODE, NSET=NALL',
     ...model.nodes.map((point, index) => String(index + 1) + ',' + point.map(solverNumber).join(',')),
-    '*ELEMENT, TYPE=DC3D10, ELSET=DOMAIN_001',
-    ...domain.elementIndices.map(index => String(index + 1) + ',' + neutralToCalculiXC3D10(model.volumeElements.connectivity[index]).map(node => node + 1).join(',')),
+    '*ELEMENT, TYPE=DC3D10, ELSET=' + (twoMaterialInterface ? 'EALL' : 'DOMAIN_001'),
+    ...domains.flatMap(domain => domain.elementIndices).sort((a, b) => a - b).map(index => String(index + 1) + ',' + neutralToCalculiXC3D10(model.volumeElements.connectivity[index]).map(node => node + 1).join(',')),
     '*ELSET, ELSET=EALL',
-    ...wrapIds(domain.elementIndices.map(index => index + 1)),
+    ...wrapIds(domains.flatMap(domain => domain.elementIndices).sort((a, b) => a - b).map(index => index + 1)),
+    ...(twoMaterialInterface ? domains.flatMap((domain, index) => ['*ELSET, ELSET=THERMAL_DOMAIN_' + String(index + 1).padStart(3, '0'),
+      ...wrapIds(domain.elementIndices.map(element => element + 1))]) : []),
     '*NSET, NSET=THERMAL_TEMPERATURE_001',
     ...wrapIds(constraintNodes.map(node => node + 1)),
     '*NSET, NSET=THERMAL_REACTION_001',
     ...wrapIds(constraintNodes.map(node => node + 1)),
-    '*SURFACE, NAME=THERMAL_FLUX_001, TYPE=ELEMENT',
-    ...calculixSurfaceFaces(model, fluxFacets),
-    '*MATERIAL, NAME=THERMAL_MATERIAL_001',
-    '*CONDUCTIVITY',
-    solverNumber(conductivityWPerMK / 1000),
-    '*SOLID SECTION, ELSET=DOMAIN_001, MATERIAL=THERMAL_MATERIAL_001',
+    ...(load.type === 'surface_convection' ? [
+      '*SURFACE, NAME=THERMAL_BASE_001, TYPE=ELEMENT',
+      ...calculixSurfaceFaces(model, constraintFacets),
+    ] : []),
+    '*SURFACE, NAME=' + (load.type === 'surface_convection' ? 'THERMAL_CONVECTION_001' : 'THERMAL_FLUX_001') + ', TYPE=ELEMENT',
+    ...calculixSurfaceFaces(model, loadFacets),
+    ...(mappedInterface ? [
+      '*SURFACE, NAME=THERMAL_SECONDARY_001, TYPE=ELEMENT',
+      ...calculixSurfaceFaces(model, mappedInterface.secondaryFacets),
+      '*SURFACE, NAME=THERMAL_PRIMARY_001, TYPE=ELEMENT',
+      ...calculixSurfaceFaces(model, mappedInterface.primaryFacets),
+    ] : []),
+    ...domains.flatMap((domain, index) => {
+      const number = String(index + 1).padStart(3, '0');
+      const material = materials.get(assignments.get(domain.domainId)!)!;
+      const conductivityRows = material.thermalConductivityCurve
+        ? material.thermalConductivityCurve.map(point => solverNumber(point.conductivityWPerMK / 1000) + ',' + solverNumber(point.temperatureC))
+        : [solverNumber(material.thermalConductivityWPerMK! / 1000)];
+      return ['*MATERIAL, NAME=THERMAL_MATERIAL_' + number, '*CONDUCTIVITY', ...conductivityRows,
+        '*SOLID SECTION, ELSET=' + (twoMaterialInterface ? 'THERMAL_DOMAIN_' : 'DOMAIN_') + number + ', MATERIAL=THERMAL_MATERIAL_' + number];
+    }),
+    ...(thermalInterface ? [
+      '*CONTACT PAIR, INTERACTION=THERMAL_CONDUCTANCE_001, TYPE=SURFACE TO SURFACE',
+      'THERMAL_SECONDARY_001,THERMAL_PRIMARY_001',
+      '*SURFACE INTERACTION, NAME=THERMAL_CONDUCTANCE_001',
+      '*SURFACE BEHAVIOR, PRESSURE-OVERCLOSURE=TIED', '1000000',
+      '*FRICTION', '0.2,10000',
+      '*GAP CONDUCTANCE', solverNumber(thermalInterface.conductanceWPerM2K * 1e-6) + ',,20',
+    ] : []),
     '*STEP',
     '*HEAT TRANSFER, STEADY STATE',
     '1,1',
     '*BOUNDARY',
     'THERMAL_TEMPERATURE_001,11,11,' + solverNumber(constraint.temperatureC),
-    '*DFLUX',
-    'THERMAL_FLUX_001,S,' + solverNumber(load.heatFluxWPerM2 * 1e-6),
+    ...(load.type === 'surface_heat_flux' || load.type === 'surface_heat_power'
+      ? ['*DFLUX', 'THERMAL_FLUX_001,S,' + solverNumber(load.type === 'surface_heat_power' ? powerFluxWPerMm2! : load.heatFluxWPerM2 * 1e-6)]
+      : ['*FILM', 'THERMAL_CONVECTION_001,F0,' + solverNumber(load.sinkTemperatureC) + ',' + solverNumber(load.filmCoefficientWPerM2K * 1e-6)]),
     '*NODE PRINT, NSET=NALL',
     'NT',
     '*NODE PRINT, NSET=THERMAL_REACTION_001',
     'RFL',
+    ...(load.type === 'surface_convection' ? ['*SECTION PRINT, NAME=THERMAL_BASE_FLUX, SURFACE=THERMAL_BASE_001', 'FLUX'] : []),
+    ...(thermalInterface ? [
+      '*SECTION PRINT, NAME=THERMAL_SECONDARY_FLUX, SURFACE=THERMAL_SECONDARY_001', 'FLUX',
+      '*SECTION PRINT, NAME=THERMAL_PRIMARY_FLUX, SURFACE=THERMAL_PRIMARY_001', 'FLUX',
+    ] : []),
     '*EL PRINT, ELSET=EALL',
     'HFL',
     '*END STEP',
   ];
   return lines.join('\n') + '\n';
+}
+
+/** Quadratic mapped FACE area used for both total-power distribution and
+ * normalization; each facet is integrated once regardless of reference order. */
+export function mappedThermalFaceAreaMm2(model: NeutralFemModelV2, facetIndices: number[]): number {
+  const uniqueFacets = [...new Set(facetIndices)].sort((a, b) => a - b);
+  const area = uniqueFacets.reduce((sum, index) => {
+    const facet = model.boundaryFacets.connectivity[index];
+    if (!facet || facet.length !== 6) throw deckError('SIMULATION_THERMAL_FACE_MAPPING_INVALID', 'Heat-power FACE requires a complete quadratic boundary facet.');
+    return sum + quadraticTriangleSurfaceSamples(facet.map(node => model.nodes[node]))
+      .reduce((facetArea, sample) => facetArea + sample.areaWeightMm2, 0);
+  }, 0);
+  if (!Number.isFinite(area) || area <= 1e-12) throw deckError('SIMULATION_THERMAL_FACE_MAPPING_INVALID', 'Heat-power FACE has zero or invalid mapped area.');
+  return area;
 }
 
 /** Fail before solver launch when an explicit multi-domain connection graph
@@ -803,7 +871,7 @@ function addLoads(target: Map<number, NeutralVector3>, source: Map<number, Neutr
   }
 }
 
-function neutralToCalculiXC3D10(cell: number[]): number[] {
+export function neutralToCalculiXC3D10(cell: number[]): number[] {
   if (cell.length !== 10) throw deckError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'CalculiX C3D10 translation requires ten neutral nodes.');
   return [...cell.slice(0, 8), cell[9], cell[8]];
 }

@@ -10,11 +10,13 @@ import type {
 } from '../../src/simulation/externalSimulationContracts.ts';
 import { validateNeutralSimulationFieldPageV2, validateNeutralSimulationResultV2 } from '../../simulation-bridge/v2Validation.mts';
 import { digest } from '../../simulation-bridge/stableDigest.mts';
+import { interpolateThermalConductivity } from '../../simulation-bridge/thermalConductivity.mts';
 import {
   LOCAL_PROVIDER_RESOURCE_LIMITS, hasEnforcedProviderProcessQuotas, monitorWorkingDirectory,
   readUtf8FileBounded, removeWorkingDirectory, spawnProviderProcess, terminateChildProcess,
 } from '../processLifecycle.mts';
-import { asV1Mesh, createCalculiXInputDeckV2 } from './CalculiXMultiDomainDeck.mts';
+import { asV1Mesh, createCalculiXInputDeckV2, mappedThermalFaceAreaMm2 } from './CalculiXMultiDomainDeck.mts';
+import { thermalInterfaceMeanTemperatureC, validateNonconformalThermalInterface } from './CalculiXThermalInterface.mts';
 import { buildConstraintSets, consistentSurfaceLoads, gravityNodalLoads, pressureSurfaceLoads } from './CalculiXSolverProvider.mts';
 
 interface Run {
@@ -42,13 +44,13 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     const maximumDomains = options.maximumDomains ?? 16;
     this.capabilities = {
       interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal'],
-      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density'], topology: 'triangle_soup' },
+      fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density', 'temperature', 'heat_flux_magnitude'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
-        materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force', 'surface_heat_flux'], maximumLoads: 64,
+        materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force', 'surface_heat_flux', 'surface_heat_power', 'surface_convection'], maximumLoads: 64,
         maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement', 'prescribed_temperature'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
-        multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'rigid_connector', 'frictionless_contact', 'frictional_contact'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
+        multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'thermal_interface_conductance', 'rigid_connector', 'frictionless_contact', 'frictional_contact'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
         modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 },
         buckling: { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] },
         nonlinearStatic: {
@@ -58,9 +60,11 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
           plasticStrainResults: true, energyResults: true, incrementHistory: true, loadDisplacementHistory: true,
         },
         steadyThermal: {
-          maximumDomains: 1, materialModel: 'constant_isotropic_conductivity', loadTypes: ['surface_heat_flux'],
-          maximumHeatFluxLoads: 1, constraintTypes: ['prescribed_temperature'], maximumPrescribedTemperatureConstraints: 1,
+          maximumDomains: 2, materialModel: 'constant_isotropic_conductivity', loadTypes: ['surface_heat_flux', 'surface_heat_power', 'surface_convection'],
+          maximumHeatFluxLoads: 1, maximumHeatPowerLoads: 1, maximumConvectionLoads: 1, constraintTypes: ['prescribed_temperature'], maximumPrescribedTemperatureConstraints: 1,
           temperatureProfile: 'bounded_samples', maximumTemperatureSamples: 256, heatBalance: true,
+          temperatureDependentConductivity: { maximumPoints: 16, increasingOnly: true },
+          interfaceConductance: { maximumInterfaces: 1, planarCoincidentOnly: true },
         },
         contact: { maximumDomains: 2, maximumInteractions: 8, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small', 'finite'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
       },
@@ -69,7 +73,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       qualification: {
         status: 'internally_validated', engineeringUsePermitted: false,
         statement: 'Internally validated but experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
-        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-8 steady thermal is proof-of-concept and limited to one domain, one constant-isotropic-conductivity material, one inward surface-flux group, and one prescribed-temperature group', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim7a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
@@ -148,8 +152,16 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     try {
       const contents = await readUtf8FileBounded(join(run.directory, 'tunacadv2.dat'));
       if (isStopped(run)) return;
+      const thermalIterations = run.request.analysis.type === 'steady_thermal'
+        && run.request.materials.some(material => material.thermalConductivityCurve)
+        ? parseCalculiXNonlinearStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta')), [1])
+          .flatMap(step => step.increments).reduce((sum, increment) => sum + increment.iterations, 0)
+        : null;
       const normalized = run.request.analysis.type === 'steady_thermal'
-        ? normalizeSteadyThermal(run, parseCalculiXSteadyThermalDatV2(contents, run.model, [thermalReactionName(0)]), this.id, this.version, this.runtimeVersion)
+        ? normalizeSteadyThermal(run, parseCalculiXSteadyThermalDatV2(contents, run.model, [thermalReactionName(0)],
+          run.request.loads.some(load => load.type === 'surface_convection') ? 'THERMAL_BASE_001' : null,
+          run.request.interactions[0]?.type === 'thermal_interface_conductance'
+            ? ['THERMAL_SECONDARY_001', 'THERMAL_PRIMARY_001'] : []), this.id, this.version, this.runtimeVersion, thermalIterations)
         : run.request.analysis.type === 'modal'
         ? normalizeModal(run, parseCalculiXModalDatV2(contents), parseCalculiXModalFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
         : run.request.analysis.type === 'linear_buckling'
@@ -225,8 +237,11 @@ export function parseCalculiXDatV2(text: string, model: NeutralFemModelV2, react
 export interface CalculiXSteadyThermalDatV2 {
   temperaturesByNode: Map<number, number>;
   heatFluxByElementWPerMm2: Map<number, NeutralVector3>;
+  maximumHeatFluxMagnitudeByElementWPerMm2: Map<number, number>;
   maximumHeatFluxMagnitudeWPerMm2: number;
   reactionHeatBySetW: Record<string, number>;
+  sectionBaseHeatFlowW: number | null;
+  interfaceFluxBySurfaceW: Record<string, number>;
 }
 
 /** Parse the single-step text output requested by the bounded SIM-8 deck.
@@ -237,6 +252,8 @@ export function parseCalculiXSteadyThermalDatV2(
   text: string,
   model: NeutralFemModelV2,
   reactionSets: string[],
+  sectionFluxSet: string | null = null,
+  interfaceFluxSets: string[] = [],
 ): CalculiXSteadyThermalDatV2 {
   const lines = text.split(/\r?\n/);
   if (lines.length > 2_000_000) throw new Error('CalculiX steady-thermal result contains too many records.');
@@ -245,15 +262,29 @@ export function parseCalculiXSteadyThermalDatV2(
   const reactionHeatBySetW: Record<string, number> = {};
   const heatFluxSums = new Map<number, NeutralVector3>();
   const heatFluxCounts = new Map<number, number>();
+  const maximumHeatFluxMagnitudeByElementWPerMm2 = new Map<number, number>();
   const reactionBlocks = new Map<string, number>();
+  let sectionBaseHeatFlowW: number | null = null;
+  const interfaceFluxBySurfaceW: Record<string, number> = {};
+  const interfaceBlocks = new Map<string, number>();
+  let sectionBlocks = 0;
   let temperatureBlocks = 0;
   let heatFluxBlocks = 0;
   let maximumHeatFluxMagnitudeWPerMm2 = 0;
-  let mode: 'temperature' | 'reaction_heat' | 'heat_flux' | null = null;
+  let mode: 'temperature' | 'reaction_heat' | 'heat_flux' | 'section_total' | 'interface_total' | null = null;
   let reactionSet: string | null = null;
+  let interfaceSet: string | null = null;
   for (const raw of lines) {
     if (raw.length > 4096) throw new Error('CalculiX steady-thermal result contains an oversized record.');
     const lower = raw.toLowerCase();
+    if (lower.includes('total surface flux (q)') && lower.includes('for set')) {
+      const outputSet = /for set\s+([a-z0-9_-]+)/i.exec(raw)?.[1]?.toUpperCase() ?? null;
+      mode = outputSet === sectionFluxSet ? 'section_total' : outputSet && interfaceFluxSets.includes(outputSet) ? 'interface_total' : null;
+      reactionSet = null; interfaceSet = mode === 'interface_total' ? outputSet : null;
+      if (mode === 'section_total') sectionBlocks += 1;
+      if (mode === 'interface_total') interfaceBlocks.set(interfaceSet!, (interfaceBlocks.get(interfaceSet!) ?? 0) + 1);
+      continue;
+    }
     if (lower.includes('temperatures') && lower.includes('for set')) {
       const outputSet = /for set\s+([a-z0-9_-]+)/i.exec(raw)?.[1]?.toUpperCase() ?? null;
       mode = outputSet === 'NALL' ? 'temperature' : null; reactionSet = null;
@@ -276,7 +307,15 @@ export function parseCalculiXSteadyThermalDatV2(
     if (!trimmed || !mode) continue;
     const values = trimmed.split(/\s+/).map(value => Number(value.replace(/[dD]/g, 'E')));
     if (!values.length || values.some(value => !Number.isFinite(value))) continue;
-    if (mode === 'temperature' && values.length >= 2) {
+    if (mode === 'section_total') {
+      if (values.length !== 1 || sectionBaseHeatFlowW !== null || Math.abs(values[0]) > 1e15) throw new Error('CalculiX steady-thermal section FLUX output is malformed or repeated.');
+      sectionBaseHeatFlowW = values[0]; mode = null;
+    } else if (mode === 'interface_total' && interfaceSet) {
+      if (values.length !== 1 || interfaceFluxBySurfaceW[interfaceSet] !== undefined || Math.abs(values[0]) > 1e15) {
+        throw new Error('CalculiX interface section FLUX output is malformed or repeated.');
+      }
+      interfaceFluxBySurfaceW[interfaceSet] = values[0]; mode = null; interfaceSet = null;
+    } else if (mode === 'temperature' && values.length >= 2) {
       const node = values[0] - 1; const temperatureC = values.at(-1)!;
       if (!Number.isSafeInteger(values[0]) || node < 0 || node >= model.nodes.length || temperatureC < -273.15 || temperatureC > 1e6) {
         throw new Error('CalculiX steady-thermal NT output contains an invalid node or temperature.');
@@ -301,11 +340,14 @@ export function parseCalculiXSteadyThermalDatV2(
       heatFluxSums.set(element, add(heatFluxSums.get(element) ?? [0, 0, 0], heatFlux));
       heatFluxCounts.set(element, (heatFluxCounts.get(element) ?? 0) + 1);
       maximumHeatFluxMagnitudeWPerMm2 = Math.max(maximumHeatFluxMagnitudeWPerMm2, Math.hypot(...heatFlux));
+      maximumHeatFluxMagnitudeByElementWPerMm2.set(element, Math.max(maximumHeatFluxMagnitudeByElementWPerMm2.get(element) ?? 0, Math.hypot(...heatFlux)));
     }
   }
   if (temperatureBlocks !== 1 || heatFluxBlocks !== 1 || temperaturesByNode.size !== model.nodes.length
     || heatFluxSums.size !== model.volumeElements.connectivity.length
-    || reactionSets.some(name => reactionBlocks.get(name) !== 1 || !Number.isFinite(reactionHeatBySetW[name]))) {
+    || reactionSets.some(name => reactionBlocks.get(name) !== 1 || !Number.isFinite(reactionHeatBySetW[name]))
+    || interfaceFluxSets.some(name => interfaceBlocks.get(name) !== 1 || !Number.isFinite(interfaceFluxBySurfaceW[name]))
+    || (sectionFluxSet !== null && (sectionBlocks !== 1 || sectionBaseHeatFlowW === null))) {
     throw new Error('CalculiX did not produce complete bounded NT, HFL, and RFL output for the SIM-8 study.');
   }
   const heatFluxByElementWPerMm2 = new Map<number, NeutralVector3>();
@@ -317,7 +359,7 @@ export function parseCalculiXSteadyThermalDatV2(
   if (!(maximumHeatFluxMagnitudeWPerMm2 > 0) || !Number.isFinite(maximumHeatFluxMagnitudeWPerMm2)) {
     throw new Error('CalculiX steady-thermal HFL output has no finite non-zero heat flux.');
   }
-  return { temperaturesByNode, heatFluxByElementWPerMm2, maximumHeatFluxMagnitudeWPerMm2, reactionHeatBySetW };
+  return { temperaturesByNode, heatFluxByElementWPerMm2, maximumHeatFluxMagnitudeByElementWPerMm2, maximumHeatFluxMagnitudeWPerMm2, reactionHeatBySetW, sectionBaseHeatFlowW, interfaceFluxBySurfaceW };
 }
 
 export interface CalculiXContactNodeOutput { normalGapMm: number; tangentialSlipMm: number; pressureMPa: number; shearMPa: number }
@@ -536,15 +578,37 @@ function normalizeSteadyThermal(
   adapterId: string,
   adapterVersion: string,
   runtimeVersion: string,
+  nonlinearIterations: number | null = null,
 ) {
   const request = run.request as SteadyThermalRequestV2;
   const conductivityWPerMK = request.materials[0].thermalConductivityWPerMK!;
+  const conductivityCurve = request.materials[0].thermalConductivityCurve;
   const temperatures = [...parsed.temperaturesByNode.values()];
   const minimumTemperatureC = Math.min(...temperatures);
   const maximumTemperatureC = Math.max(...temperatures);
+  if (conductivityCurve && (minimumTemperatureC < conductivityCurve[0].temperatureC - 1e-4
+    || maximumTemperatureC > conductivityCurve.at(-1)!.temperatureC + 1e-4)) {
+    throw new Error('SIM-8 temperature-dependent conductivity result exceeds its declared material interval.');
+  }
   const referenceById = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference]));
   let totalAppliedHeatW = 0;
   for (const load of request.loads) {
+    if (load.type === 'surface_convection') {
+      totalAppliedHeatW -= integratedConvectionLossW(run.model, parsed.temperaturesByNode, load.semanticReferenceIds,
+        load.filmCoefficientWPerM2K, load.sinkTemperatureC);
+      continue;
+    }
+    if (load.type === 'surface_heat_power') {
+      const regions = load.semanticReferenceIds.map(referenceId => {
+        const matches = run.model.boundaryRegions.filter(region => region.semanticReferenceIds.includes(referenceId));
+        if (matches.length !== 1) throw new Error('SIM-8 normalization could not uniquely resolve a heat-power FACE.');
+        return matches[0];
+      });
+      const facets = [...new Set(regions.flatMap(region => region.facetIndices))];
+      mappedThermalFaceAreaMm2(run.model, facets);
+      totalAppliedHeatW += load.heatPowerW;
+      continue;
+    }
     if (load.type !== 'surface_heat_flux') throw new Error('SIM-8 normalization received a non-thermal load.');
     const areaMm2 = load.semanticReferenceIds.reduce((sum, referenceId) => {
       const reference = referenceById.get(referenceId);
@@ -553,10 +617,57 @@ function normalizeSteadyThermal(
     }, 0);
     totalAppliedHeatW += load.heatFluxWPerM2 * areaMm2 * 1e-6;
   }
-  const totalReactionHeatW = Object.values(parsed.reactionHeatBySetW).reduce((sum, heatW) => sum + heatW, 0);
+  const nodalRflReactionHeatW = Object.values(parsed.reactionHeatBySetW).reduce((sum, heatW) => sum + heatW, 0);
+  const convection = request.loads[0].type === 'surface_convection';
+  if (convection && parsed.sectionBaseHeatFlowW === null) throw new Error('SIM-8 convection lacks the independent base-section heat-flow integral.');
+  const totalReactionHeatW = convection ? -parsed.sectionBaseHeatFlowW! : nodalRflReactionHeatW;
+  const reactionDisagreementW = Math.abs(totalReactionHeatW - nodalRflReactionHeatW);
+  if (convection && reactionDisagreementW > Math.max(1e-6, Math.abs(totalReactionHeatW) * .02)) {
+    throw new Error('SIM-8 convection base-section and nodal-RFL reactions disagree by more than 2%.');
+  }
   const heatBalanceResidualW = Math.abs(totalAppliedHeatW + totalReactionHeatW);
-  const maximumTemperatureGradientCPerM = parsed.maximumHeatFluxMagnitudeWPerMm2 * 1e6 / conductivityWPerMK;
-  const temperatureSamples = boundedThermalSamples(run.model, parsed.temperaturesByNode, 256);
+  const interfaceInteraction = request.interactions[0]?.type === 'shared_topology' ? request.interactions[0] : null;
+  const conductanceInteraction = request.interactions[0]?.type === 'thermal_interface_conductance' ? request.interactions[0] : null;
+  const mappedConductance = conductanceInteraction ? validateNonconformalThermalInterface(run.model, conductanceInteraction) : null;
+  const interfaceConductance = conductanceInteraction && mappedConductance ? (() => {
+    const secondaryTemperatureC = thermalInterfaceMeanTemperatureC(run.model, parsed.temperaturesByNode, mappedConductance.secondaryFacets);
+    const primaryTemperatureC = thermalInterfaceMeanTemperatureC(run.model, parsed.temperaturesByNode, mappedConductance.primaryFacets);
+    const temperatureJumpC = primaryTemperatureC - secondaryTemperatureC;
+    const secondaryRawW = parsed.interfaceFluxBySurfaceW.THERMAL_SECONDARY_001;
+    const primaryRawW = parsed.interfaceFluxBySurfaceW.THERMAL_PRIMARY_001;
+    if (!(temperatureJumpC > 0) || !Number.isFinite(secondaryRawW) || !Number.isFinite(primaryRawW)
+      || secondaryRawW * primaryRawW >= 0) throw new Error('SIM-8 interface lacks opposed, finite heat-flow evidence and a positive temperature jump.');
+    const secondaryHeatFlowW = Math.abs(secondaryRawW);
+    const primaryHeatFlowW = Math.abs(primaryRawW);
+    return {
+      interactionId: conductanceInteraction.id, secondaryTemperatureC, primaryTemperatureC, temperatureJumpC,
+      secondaryHeatFlowW, primaryHeatFlowW,
+      interfaceHeatImbalanceW: Math.abs(secondaryHeatFlowW - primaryHeatFlowW),
+      conductancePredictedHeatFlowW: conductanceInteraction.conductanceWPerM2K * mappedConductance.areaMm2 * 1e-6 * temperatureJumpC,
+    };
+  })() : null;
+  const materialById = new Map(request.materials.map(material => [material.id, material]));
+  const assignmentByDomain = new Map(request.materialAssignments.map(assignment => [assignment.domainId, assignment]));
+  const maximumTemperatureGradientCPerM = interfaceInteraction || conductanceInteraction
+    ? Math.max(...run.model.domainRegions.flatMap(domain => {
+      const conductivity = materialById.get(assignmentByDomain.get(domain.domainId)?.materialId ?? '')?.thermalConductivityWPerMK;
+      if (!(conductivity && conductivity > 0)) throw new Error('SIM-8 interface domain has no positive conductivity.');
+      return domain.elementIndices.map(element => (parsed.maximumHeatFluxMagnitudeByElementWPerMm2.get(element) ?? 0) * 1e6 / conductivity);
+    }))
+    : conductivityCurve
+      ? Math.max(...run.model.volumeElements.connectivity.map((nodes, element) => {
+        const minimumElementTemperatureC = Math.min(...nodes.map(node => parsed.temperaturesByNode.get(node)!));
+        const boundedTemperatureC = Math.max(conductivityCurve[0].temperatureC, Math.min(conductivityCurve.at(-1)!.temperatureC, minimumElementTemperatureC));
+        return (parsed.maximumHeatFluxMagnitudeByElementWPerMm2.get(element) ?? 0) * 1e6
+          / interpolateThermalConductivity(conductivityCurve, boundedTemperatureC);
+      }))
+      : parsed.maximumHeatFluxMagnitudeWPerMm2 * 1e6 / conductivityWPerMK;
+  const interfaceNodes = interfaceInteraction || conductanceInteraction
+    ? [...new Set(run.model.boundaryRegions.filter(region => (interfaceInteraction ?? conductanceInteraction)!.secondaryReferenceIds.some(id => region.semanticReferenceIds.includes(id)))
+      .flatMap(region => region.facetIndices).flatMap(index => run.model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b)
+    : [];
+  if ((interfaceInteraction || conductanceInteraction) && !interfaceNodes.length) throw new Error('SIM-8 interface lacks a mapped temperature witness.');
+  const temperatureSamples = boundedThermalSamples(run.model, parsed.temperaturesByNode, 256, interfaceNodes.slice(0, 1));
   const completedAt = new Date().toISOString();
   const emptyMetrics = { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null };
   const result: NeutralSimulationResultV2 = {
@@ -570,17 +681,30 @@ function normalizeSteadyThermal(
     status: 'succeeded',
     authority: 'engineering',
     metrics: emptyMetrics,
-    perDomain: [{ domainId: request.model.domains[0].domainId, metrics: { ...emptyMetrics }, fieldDatasetIds: [] }],
+    perDomain: request.model.domains.map(domain => ({ domainId: domain.domainId, metrics: { ...emptyMetrics },
+      fieldDatasetIds: [run.providerRunId + ':' + domain.domainId + ':temperature', run.providerRunId + ':' + domain.domainId + ':heat-flux'] })),
     reactions: [],
     criticalRegions: [],
     failedConstraints: [],
     warnings: [{
       code: 'SIMULATION_STEADY_THERMAL_POC',
-      message: 'Experimental SIM-8 CalculiX steady-thermal result; only the bounded one-domain conduction foundation is implemented.',
+      message: interfaceInteraction
+        ? 'Experimental SIM-8 CalculiX steady-thermal result; bounded two-material shared-topology conduction only.'
+        : conductanceInteraction
+          ? 'Experimental SIM-8 CalculiX steady-thermal result; bounded nonconformal planar interface conductance with no mesh repair.'
+        : conductivityCurve
+          ? 'Experimental SIM-8 CalculiX steady-thermal result; bounded increasing tabulated conductivity, one domain and one inward FACE load only.'
+        : request.loads[0].type === 'surface_heat_power'
+          ? 'Experimental SIM-8 CalculiX steady-thermal result; one bounded total-power FACE group is distributed uniformly over mapped quadratic area.'
+          : 'Experimental SIM-8 CalculiX steady-thermal result; only bounded one-domain conduction with one flux or convection group is implemented.',
       severity: 'warning',
-    }],
-    convergence: { status: 'converged', iterations: null, residual: heatBalanceResidualW, providerDeclared: true },
-    suggestedEngineeringIssues: ['Verify conductivity and thermal units, FACE mapping, flux sign, heat balance, and mesh convergence.'],
+    }, ...(convection && reactionDisagreementW > Math.abs(totalReactionHeatW) * .005 ? [{
+      code: 'SIMULATION_THERMAL_REACTION_METHOD_DISAGREEMENT',
+      message: 'CalculiX section-FLUX and nodal-RFL base heat-flow recoveries differ; inspect the reported method evidence before relying on this experimental result.',
+      severity: 'warning' as const,
+    }] : [])],
+    convergence: { status: 'converged', iterations: nonlinearIterations, residual: heatBalanceResidualW, providerDeclared: true },
+    suggestedEngineeringIssues: ['Verify conductivity and thermal units, FACE mapping, flux or convection sign, heat balance, and mesh convergence.'],
     thermal: {
       formulation: 'steady_state_isotropic_conduction',
       minimumTemperatureC,
@@ -589,6 +713,12 @@ function normalizeSteadyThermal(
       totalAppliedHeatW,
       totalReactionHeatW,
       heatBalanceResidualW,
+      ...(interfaceConductance ? { interfaceConductance } : {}),
+      ...(convection ? { reactionHeatFlowEvidence: {
+        sectionBaseReactionHeatW: totalReactionHeatW,
+        nodalRflReactionHeatW,
+        disagreementW: reactionDisagreementW,
+      } } : {}),
       temperatureSamples,
     },
     provenance: {
@@ -602,13 +732,113 @@ function normalizeSteadyThermal(
     },
     mutation: { occurred: false, projectRevisionBefore: request.model.projectRevision, projectRevisionAfter: request.model.projectRevision },
   };
-  return { result, datasets: new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>() };
+  return { result, datasets: buildThermalFieldDatasets(run, parsed) };
+}
+
+/** Reuse the bounded boundary-triangle page transport. NT stays nodal; HFL is
+ * the finite, complete element-mean flux magnitude in W/m^2. Thermal pages
+ * contain zero displacement vectors and cannot masquerade as structural data. */
+function buildThermalFieldDatasets(run: Run, parsed: CalculiXSteadyThermalDatV2) {
+  const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
+  const elementByFace = new Map<string, number>();
+  run.model.volumeElements.connectivity.forEach((cell, elementIndex) => {
+    const corners = cell.slice(0, 4);
+    for (const face of [[corners[0], corners[2], corners[1]], [corners[0], corners[1], corners[3]], [corners[1], corners[2], corners[3]], [corners[2], corners[0], corners[3]]]) {
+      elementByFace.set([...face].sort((a, b) => a - b).join(':'), elementIndex);
+    }
+  });
+  for (const domain of run.model.domainRegions) {
+    const temperature: NeutralSimulationFieldTriangleV2[] = [];
+    const heatFlux: NeutralSimulationFieldTriangleV2[] = [];
+    run.model.boundaryFacets.connectivity.forEach((facet, facetIndex) => {
+      if (run.model.boundaryFacets.domainIds[facetIndex] !== domain.domainId) return;
+      if (facet.length !== 6) throw new Error('SIM-8 visualization requires complete quadratic boundary facets.');
+      const elementIndex = elementByFace.get(facet.slice(0, 3).sort((a, b) => a - b).join(':'));
+      if (elementIndex === undefined) throw new Error('SIM-8 boundary facet lacks an owning thermal volume element.');
+      const flux = parsed.heatFluxByElementWPerMm2.get(elementIndex);
+      if (!flux || flux.some(value => !Number.isFinite(value))) throw new Error('SIM-8 HFL field is incomplete.');
+      const fluxMagnitudeWPerM2 = Math.hypot(...flux) * 1e6;
+      for (const indices of [[0, 3, 5], [3, 1, 4], [5, 4, 2], [3, 4, 5]]) {
+        const nodes = indices.map(index => facet[index]);
+        const values = nodes.map(node => parsed.temperaturesByNode.get(node));
+        if (values.some(value => value === undefined || !Number.isFinite(value))) throw new Error('SIM-8 NT field is incomplete.');
+        const triangle = {
+          facetIndex, elementIndex,
+          positionsAnalysisMm: nodes.map(node => run.model.nodes[node]) as [NeutralVector3, NeutralVector3, NeutralVector3],
+          displacementsMm: [[0, 0, 0], [0, 0, 0], [0, 0, 0]] as [NeutralVector3, NeutralVector3, NeutralVector3],
+        };
+        temperature.push({ ...triangle, values: values as [number, number, number] });
+        heatFlux.push({ ...triangle, values: [fluxMagnitudeWPerM2, fluxMagnitudeWPerM2, fluxMagnitudeWPerM2] });
+      }
+    });
+    if (!temperature.length) throw new Error('SIM-8 thermal domain has no renderable boundary facets.');
+    const references = [...new Set(run.model.boundaryRegions.filter(region => region.domainId === domain.domainId)
+      .flatMap(region => region.semanticReferenceIds))].sort(compareText);
+    for (const [suffix, component, unit, triangles] of [
+      ['temperature', 'temperature', 'degC', temperature],
+      ['heat-flux', 'heat_flux_magnitude', 'W/m^2', heatFlux],
+    ] as const) {
+      const datasetId = run.providerRunId + ':' + domain.domainId + ':' + suffix;
+      const descriptor: NeutralSimulationFieldDatasetV2 = {
+        schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId,
+        jobId: run.providerRunId, domainId: domain.domainId,
+        analysisType: 'steady_thermal', step: { index: 0, label: 'steady_thermal' },
+        component, unit, location: 'boundary_facet', topology: 'triangle_soup',
+        valueRange: fieldExtrema(triangles),
+        deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: 1 },
+        mapping: { domain: 'exact', cadRegions: 'partial', semanticReferenceIds: references },
+        totalTriangles: triangles.length, maximumPageTriangles: 128, datasetDigest: digest(triangles),
+      };
+      datasets.set(datasetId, { descriptor, triangles });
+    }
+  }
+  return datasets;
+}
+
+/** Integrate q=h(T-T_inf) on the explicitly mapped quadratic boundary facets.
+ * For a planar six-node triangle the area average of quadratic temperature
+ * interpolation is the mean of its three mid-edge temperatures. */
+function integratedConvectionLossW(
+  model: NeutralFemModelV2,
+  temperaturesByNode: Map<number, number>,
+  referenceIds: string[],
+  filmCoefficientWPerM2K: number,
+  sinkTemperatureC: number,
+): number {
+  const facets = new Set<number>();
+  for (const referenceId of referenceIds) {
+    const matches = model.boundaryRegions.filter(region => region.semanticReferenceIds.includes(referenceId));
+    if (matches.length !== 1) throw new Error('SIM-8 convection FACE mapping is missing or ambiguous.');
+    for (const index of matches[0].facetIndices) {
+      if (facets.has(index)) throw new Error('SIM-8 convection FACE groups overlap.');
+      facets.add(index);
+    }
+  }
+  if (!facets.size) throw new Error('SIM-8 convection has no mapped boundary facets.');
+  let heatLossW = 0;
+  for (const index of facets) {
+    const nodes = model.boundaryFacets.connectivity[index];
+    if (nodes?.length !== 6 || new Set(nodes).size !== 6) throw new Error('SIM-8 convection requires complete quadratic triangular facets.');
+    const [a, b, c] = nodes.slice(0, 3).map(node => model.nodes[node]);
+    const ab = b.map((value, axis) => value - a[axis]) as NeutralVector3;
+    const ac = c.map((value, axis) => value - a[axis]) as NeutralVector3;
+    const areaMm2 = Math.hypot(ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]) / 2;
+    const midTemperatures = nodes.slice(3).map(node => temperaturesByNode.get(node));
+    if (!(areaMm2 > 0) || midTemperatures.some(value => value === undefined || !Number.isFinite(value))) {
+      throw new Error('SIM-8 convection lacks finite mid-edge temperatures or positive facet area.');
+    }
+    const averageTemperatureC = (midTemperatures[0]! + midTemperatures[1]! + midTemperatures[2]!) / 3;
+    heatLossW += filmCoefficientWPerM2K * areaMm2 * 1e-6 * (averageTemperatureC - sinkTemperatureC);
+  }
+  if (!Number.isFinite(heatLossW)) throw new Error('SIM-8 integrated convection heat flow is not finite.');
+  return heatLossW;
 }
 
 function boundedThermalSamples(
   model: NeutralFemModelV2,
   temperaturesByNode: Map<number, number>,
   maximumSamples: number,
+  requiredNodeIds: number[] = [],
 ) {
   const ordered = [...temperaturesByNode.entries()].sort(([left], [right]) => {
     const a = model.nodes[left]; const b = model.nodes[right];
@@ -618,6 +848,7 @@ function boundedThermalSamples(
   const minimum = [...ordered].sort((a, b) => a[1] - b[1] || a[0] - b[0])[0];
   const maximum = [...ordered].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
   for (const entry of [ordered[0], ordered.at(-1), minimum, maximum]) if (entry) selected.add(entry[0]);
+  for (const node of requiredNodeIds) if (temperaturesByNode.has(node)) selected.add(node);
   for (let index = 0; index < maximumSamples && selected.size < maximumSamples; index += 1) {
     const position = Math.round(index * (ordered.length - 1) / Math.max(1, maximumSamples - 1));
     selected.add(ordered[position][0]);

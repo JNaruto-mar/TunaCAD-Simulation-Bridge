@@ -11,6 +11,7 @@ import type {
   SimulationProviderCapabilitiesV2,
 } from '../src/simulation/externalSimulationContracts.ts';
 import { digest } from './stableDigest.mts';
+import { isBoundedThermalConductivityCurve } from './thermalConductivity.mts';
 
 const text = z.string().min(1).max(500).regex(/^[^\u0000-\u001f\u007f]*$/);
 const finite = z.number().finite();
@@ -42,7 +43,9 @@ const material = z.discriminatedUnion('model', [
     id: text, name: text, model: z.literal('isotropic_linear_elastic'),
     densityKgM3: positive.max(100000).optional(),
     youngsModulusMPa: positive.max(100000000), poissonRatio: finite.min(0).lt(0.5),
-    yieldStrengthMPa: positive.optional(), thermalConductivityWPerMK: positive.max(1e7).optional(), source: materialSource,
+    yieldStrengthMPa: positive.optional(), thermalConductivityWPerMK: positive.max(1e7).optional(),
+    thermalConductivityCurve: z.array(z.object({ temperatureC: finite.min(-273.15).max(1e6), conductivityWPerMK: positive.max(1e7) }).strict()).min(2).max(16).optional(),
+    thermalExpansionPerK: positive.max(1e-2).optional(), source: materialSource,
   }).strict(),
   z.object({
     id: text, name: text, model: z.literal('isotropic_elastic_plastic'),
@@ -120,7 +123,8 @@ const requestSchema = z.object({
     }).strict(),
     z.object({
       type: z.literal('steady_thermal'),
-      assumptions: z.tuple([z.literal('steady_state'), z.literal('isotropic_conduction'), z.literal('temperature_independent_properties')]),
+      assumptions: z.tuple([z.literal('steady_state'), z.literal('isotropic_conduction'),
+        z.enum(['temperature_independent_properties', 'tabulated_temperature_dependent_conductivity'])]),
     }).strict(),
   ]),
   model: z.object({
@@ -162,6 +166,9 @@ const requestSchema = z.object({
       && Math.hypot(...(value.forceN as [number, number, number])) <= 1e12
       && Math.hypot(...(value.momentNmm as [number, number, number])) <= 1e15),
     z.object({ id: text, name: text, type: z.literal('surface_heat_flux'), semanticReferenceIds: uniqueReferences, heatFluxWPerM2: positive.max(1e12) }).strict(),
+    z.object({ id: text, name: text, type: z.literal('surface_heat_power'), semanticReferenceIds: uniqueReferences, heatPowerW: positive.max(1e12) }).strict(),
+    z.object({ id: text, name: text, type: z.literal('surface_convection'), semanticReferenceIds: uniqueReferences,
+      filmCoefficientWPerM2K: positive.max(1e9), sinkTemperatureC: finite.min(-273.15).max(1e6) }).strict(),
   ])).max(64),
   constraints: z.array(z.discriminatedUnion('type', [
     z.object({ id: text, name: text, type: z.literal('fixed'), semanticReferenceIds: uniqueReferences }).strict(),
@@ -189,6 +196,12 @@ const requestSchema = z.object({
       id: text, name: text, type: z.literal('shared_topology'),
       secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
       adjustment: z.literal('none'), positionToleranceMm: positive.max(1000),
+    }).strict(),
+    z.object({
+      id: text, name: text, type: z.literal('thermal_interface_conductance'),
+      secondaryReferenceIds: uniqueReferences, primaryReferenceIds: uniqueReferences,
+      adjustment: z.literal('none'), positionToleranceMm: positive.max(.001),
+      conductanceWPerM2K: positive.max(1e9),
     }).strict(),
     z.object({
       id: text, name: text, type: z.literal('rigid_connector'), semanticReferenceIds: uniqueReferences,
@@ -374,6 +387,29 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
     const primaryDomains = new Set(interaction.primaryReferenceIds.map(id => references.get(`interaction:${id}`)?.domainId));
     if (secondaryDomains.size !== 1 || primaryDomains.size !== 1 || [...secondaryDomains][0] === [...primaryDomains][0]
       || interaction.secondaryReferenceIds.some(id => interaction.primaryReferenceIds.includes(id))) fail('BRIDGE_V2_INTERACTION_INVALID');
+    if (interaction.type === 'thermal_interface_conductance') {
+      if (interaction.secondaryReferenceIds.length !== 1 || interaction.primaryReferenceIds.length !== 1) fail('BRIDGE_V2_THERMAL_INTERFACE_INVALID');
+      const secondary = references.get('interaction:' + interaction.secondaryReferenceIds[0])!;
+      const primary = references.get('interaction:' + interaction.primaryReferenceIds[0])!;
+      const secondaryDomain = domainsById.get(secondary.domainId)!;
+      const primaryDomain = domainsById.get(primary.domainId)!;
+      const secondaryNormal = secondary.faceOwnerLocal.outwardDirection;
+      const primaryNormal = primary.faceOwnerLocal.outwardDirection;
+      if (secondary.faceOwnerLocal.geometryType !== 'plane' || primary.faceOwnerLocal.geometryType !== 'plane'
+        || !secondaryNormal || !primaryNormal) fail('BRIDGE_V2_THERMAL_INTERFACE_INVALID');
+      const a = transformDirection(secondaryDomain.transformToAnalysis, secondaryNormal);
+      const b = transformDirection(primaryDomain.transformToAnalysis, primaryNormal);
+      const pa = transformPoint(secondaryDomain.transformToAnalysis, secondary.faceOwnerLocal.centroidPartLocalMm);
+      const pb = transformPoint(primaryDomain.transformToAnalysis, primary.faceOwnerLocal.centroidPartLocalMm);
+      if (a[0] * b[0] + a[1] * b[1] + a[2] * b[2] > -.99
+        || Math.hypot(...pa.map((value, index) => value - pb[index])) > interaction.positionToleranceMm
+        || Math.abs(secondary.faceOwnerLocal.areaMm2 - primary.faceOwnerLocal.areaMm2)
+          > Math.max(1e-6, secondary.faceOwnerLocal.areaMm2 * .001)
+        || faceBoundsDistance(secondary.faceOwnerLocal.boundingBoxMm, secondaryDomain.transformToAnalysis,
+          primary.faceOwnerLocal.boundingBoxMm, primaryDomain.transformToAnalysis) > interaction.positionToleranceMm) {
+        fail('BRIDGE_V2_THERMAL_INTERFACE_INVALID');
+      }
+    }
     if (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') {
       const secondaryDomain = domainsById.get([...secondaryDomains][0]!); const primaryDomain = domainsById.get([...primaryDomains][0]!);
       if (!secondaryDomain || !primaryDomain) fail('BRIDGE_V2_CONTACT_GEOMETRY_INVALID');
@@ -425,21 +461,44 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   if ([...connectors.values()].some(connector => connector.semanticReferenceIds.some(id => directReferenceIds.has(id)))) fail('BRIDGE_V2_CONNECTOR_INVALID');
   const entryIds = [...request.loads, ...request.constraints, ...request.interactions].map(entry => entry.id);
   if (!unique(entryIds)) fail('BRIDGE_V2_REQUEST_INVALID');
-  const hasThermalEntries = request.loads.some(load => load.type === 'surface_heat_flux')
+  const hasThermalEntries = request.loads.some(load => load.type === 'surface_heat_flux' || load.type === 'surface_heat_power' || load.type === 'surface_convection')
     || request.constraints.some(constraint => constraint.type === 'prescribed_temperature');
   if (request.analysis.type === 'steady_thermal') {
     const expectedResults = ['heat_flux', 'reaction_heat_flow', 'temperature'];
-    if (request.model.domains.length !== 1 || request.materials.length !== 1 || request.interactions.length
-      || !request.loads.length || request.loads.some(load => load.type !== 'surface_heat_flux')
+    const twoMaterialInterface = request.model.domains.length === 2
+      && request.materials.length === 2 && request.interactions.length === 1
+      && (request.interactions[0].type === 'shared_topology' || request.interactions[0].type === 'thermal_interface_conductance')
+      && request.loads[0]?.type === 'surface_heat_flux';
+    const temperatureDependent = request.materials.some(material => material.thermalConductivityCurve !== undefined);
+    const conductanceInterface = request.interactions[0]?.type === 'thermal_interface_conductance' ? request.interactions[0] : null;
+    if (!((request.model.domains.length === 1 && request.materials.length === 1 && !request.interactions.length) || twoMaterialInterface)
+      || conductanceInterface !== null && (request.constraints[0]?.type !== 'prescribed_temperature'
+        || request.model.references.find(reference => reference.semanticReferenceId
+          === request.constraints.find(constraint => constraint.type === 'prescribed_temperature')?.semanticReferenceIds[0])?.domainId
+          !== request.model.references.find(reference => reference.semanticReferenceId === conductanceInterface.secondaryReferenceIds[0])?.domainId
+        || request.model.references.find(reference => reference.semanticReferenceId
+          === request.loads.find(load => load.type === 'surface_heat_flux')?.semanticReferenceIds[0])?.domainId
+          !== request.model.references.find(reference => reference.semanticReferenceId === conductanceInterface.primaryReferenceIds[0])?.domainId)
+      || request.loads.length !== 1 || request.loads.some(load => load.type !== 'surface_heat_flux' && load.type !== 'surface_heat_power' && load.type !== 'surface_convection')
       || !request.constraints.length || request.constraints.some(constraint => constraint.type !== 'prescribed_temperature')
-      || request.materials.some(entry => entry.model !== 'isotropic_linear_elastic' || !(entry.thermalConductivityWPerMK && entry.thermalConductivityWPerMK > 0))
+      || request.materials.some(entry => entry.model !== 'isotropic_linear_elastic'
+        || !!entry.thermalConductivityWPerMK === !!entry.thermalConductivityCurve
+        || entry.thermalConductivityCurve !== undefined && (!isBoundedThermalConductivityCurve(entry.thermalConductivityCurve)
+          || !request.model.domains.length || request.model.domains.length !== 1
+          || request.loads[0]?.type === 'surface_convection'
+          || request.constraints.some(constraint => constraint.type === 'prescribed_temperature'
+            && (constraint.temperatureC < entry.thermalConductivityCurve![0].temperatureC
+              || constraint.temperatureC > entry.thermalConductivityCurve!.at(-1)!.temperatureC))))
+      || (request.analysis.assumptions[2] === 'tabulated_temperature_dependent_conductivity') !== temperatureDependent
       || request.units.temperature !== 'degC' || request.units.heatFlux !== 'W/m^2' || request.units.heatFlow !== 'W'
       || request.units.thermalConductivity !== 'W/(m*K)'
       || request.requestedResults.length !== expectedResults.length
       || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
       fail('BRIDGE_V2_THERMAL_REQUEST_INVALID');
     }
-  } else if (hasThermalEntries) {
+  } else if (hasThermalEntries || request.interactions.some(interaction => interaction.type === 'thermal_interface_conductance')) {
+    fail('BRIDGE_V2_THERMAL_REQUEST_INVALID');
+  } else if (request.materials.some(material => material.thermalConductivityCurve !== undefined)) {
     fail('BRIDGE_V2_THERMAL_REQUEST_INVALID');
   } else if (request.analysis.type === 'modal') {
     const settings = request.analysis.settings;
@@ -576,9 +635,18 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
           || !profile.fieldResults.components.includes('strain_energy_density')))))
     || (request.analysis.type === 'steady_thermal' && (!profile.study.steadyThermal
       || request.model.domains.length > profile.study.steadyThermal.maximumDomains
+      || request.interactions.some(interaction => interaction.type === 'thermal_interface_conductance'
+        && (!profile.study.steadyThermal!.interfaceConductance
+          || !profile.study.steadyThermal!.interfaceConductance.planarCoincidentOnly))
       || profile.study.steadyThermal.materialModel !== 'constant_isotropic_conductivity'
-      || request.loads.length > profile.study.steadyThermal.maximumHeatFluxLoads
-      || request.loads.some(load => load.type !== 'surface_heat_flux' || !profile.study.steadyThermal!.loadTypes.includes(load.type))
+      || request.materials.some(material => material.thermalConductivityCurve !== undefined
+        && (!profile.study.steadyThermal!.temperatureDependentConductivity
+          || material.thermalConductivityCurve.length > profile.study.steadyThermal!.temperatureDependentConductivity.maximumPoints
+          || !profile.study.steadyThermal!.temperatureDependentConductivity.increasingOnly))
+      || request.loads.some(load => load.type === 'surface_heat_flux' && request.loads.length > profile.study.steadyThermal!.maximumHeatFluxLoads
+        || load.type === 'surface_heat_power' && request.loads.length > (profile.study.steadyThermal!.maximumHeatPowerLoads ?? 0)
+        || load.type === 'surface_convection' && (request.loads.length > (profile.study.steadyThermal!.maximumConvectionLoads ?? 0)))
+      || request.loads.some(load => !profile.study.steadyThermal!.loadTypes.includes(load.type as 'surface_heat_flux' | 'surface_heat_power' | 'surface_convection'))
       || request.constraints.length > profile.study.steadyThermal.maximumPrescribedTemperatureConstraints
       || request.constraints.some(constraint => constraint.type !== 'prescribed_temperature' || !profile.study.steadyThermal!.constraintTypes.includes(constraint.type))
       || profile.study.steadyThermal.temperatureProfile !== 'bounded_samples'
@@ -787,8 +855,23 @@ const nonlinearResult = z.object({
 const steadyThermalResult = z.object({
   formulation: z.literal('steady_state_isotropic_conduction'),
   minimumTemperatureC: finite.min(-273.15).max(1e6), maximumTemperatureC: finite.min(-273.15).max(1e6),
-  maximumTemperatureGradientCPerM: nonNegative.max(1e12), totalAppliedHeatW: positive.max(1e15),
-  totalReactionHeatW: finite.min(-1e15).max(0), heatBalanceResidualW: nonNegative.max(1e15),
+  maximumTemperatureGradientCPerM: nonNegative.max(1e12), totalAppliedHeatW: finite.min(-1e15).max(1e15).refine(value => value !== 0),
+  totalReactionHeatW: finite.min(-1e15).max(1e15), heatBalanceResidualW: nonNegative.max(1e15),
+  reactionHeatFlowEvidence: z.object({
+    sectionBaseReactionHeatW: finite.min(-1e15).max(1e15),
+    nodalRflReactionHeatW: finite.min(-1e15).max(1e15),
+    disagreementW: nonNegative.max(1e15),
+  }).strict().optional(),
+  interfaceConductance: z.object({
+    interactionId: text,
+    secondaryTemperatureC: finite.min(-273.15).max(1e6),
+    primaryTemperatureC: finite.min(-273.15).max(1e6),
+    temperatureJumpC: positive.max(1e6),
+    secondaryHeatFlowW: positive.max(1e15),
+    primaryHeatFlowW: positive.max(1e15),
+    interfaceHeatImbalanceW: nonNegative.max(1e15),
+    conductancePredictedHeatFlowW: positive.max(1e15),
+  }).strict().optional(),
   temperatureSamples: z.array(z.object({ positionAnalysisMm: analysisPoint, temperatureC: finite.min(-273.15).max(1e6) }).strict()).min(2).max(256),
 }).strict();
 const resultSchema = z.object({
@@ -840,17 +923,49 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
     || result.criticalRegions.some(region => !domainIds.includes(region.domainId))) fail('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID');
   if (result.analysisType !== request.analysis.type) fail('BRIDGE_V2_RESULT_IDENTITY_INVALID');
   if (request.analysis.type === 'steady_thermal') {
+    const convection = request.loads[0]?.type === 'surface_convection';
+    const conductivityCurve = request.materials[0]?.thermalConductivityCurve;
+    const conductanceInteraction = request.interactions[0]?.type === 'thermal_interface_conductance' ? request.interactions[0] : null;
+    const methodEvidence = result.thermal?.reactionHeatFlowEvidence;
+    const interfaceEvidence = result.thermal?.interfaceConductance;
     if (result.analysisType !== 'steady_thermal' || !('thermal' in result) || !result.thermal
       || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
       || ('contact' in result && result.contact !== undefined) || ('nonlinear' in result && result.nonlinear !== undefined)
-      || result.reactions.length || result.criticalRegions.length || datasetIds.length
+      || result.reactions.length || result.criticalRegions.length
+      || (result.authority === 'engineering' && (datasetIds.length !== request.model.domains.length * 2
+        || result.perDomain.some(domain => domain.fieldDatasetIds.length !== 2
+          || !domain.fieldDatasetIds[0].endsWith(':temperature')
+          || !domain.fieldDatasetIds[1].endsWith(':heat-flux'))))
+      || (result.authority !== 'engineering' && datasetIds.length !== 0
+        && (datasetIds.length !== request.model.domains.length * 2
+          || result.perDomain.some(domain => domain.fieldDatasetIds.length !== 2)))
       || Object.values(result.metrics).some(value => value !== null)
       || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
       || result.thermal.minimumTemperatureC > result.thermal.maximumTemperatureC
+      || (conductivityCurve && (result.thermal.minimumTemperatureC < conductivityCurve[0].temperatureC - 1e-4
+        || result.thermal.maximumTemperatureC > conductivityCurve.at(-1)!.temperatureC + 1e-4
+        || result.convergence.status !== 'converged'
+        || result.convergence.iterations === null || result.convergence.iterations < 1))
       || result.thermal.temperatureSamples.some(sample => sample.temperatureC < result.thermal.minimumTemperatureC - 1e-9
         || sample.temperatureC > result.thermal.maximumTemperatureC + 1e-9)
       || Math.abs(Math.abs(result.thermal.totalAppliedHeatW + result.thermal.totalReactionHeatW) - result.thermal.heatBalanceResidualW) > 1e-9
-      || result.thermal.heatBalanceResidualW > Math.max(1e-9, result.thermal.totalAppliedHeatW * 1e-6)
+      || result.thermal.heatBalanceResidualW > Math.max(1e-9, Math.abs(result.thermal.totalAppliedHeatW) * (convection ? .005 : 1e-6))
+      || (conductanceInteraction ? !interfaceEvidence
+        || interfaceEvidence.interactionId !== conductanceInteraction.id
+        || Math.abs(interfaceEvidence.primaryTemperatureC - interfaceEvidence.secondaryTemperatureC - interfaceEvidence.temperatureJumpC) > 1e-6
+        || Math.abs(interfaceEvidence.secondaryHeatFlowW - interfaceEvidence.primaryHeatFlowW - interfaceEvidence.interfaceHeatImbalanceW) > 1e-6
+          && Math.abs(interfaceEvidence.primaryHeatFlowW - interfaceEvidence.secondaryHeatFlowW - interfaceEvidence.interfaceHeatImbalanceW) > 1e-6
+        || interfaceEvidence.interfaceHeatImbalanceW > Math.max(1e-5, result.thermal.totalAppliedHeatW * .02)
+        || Math.abs(interfaceEvidence.secondaryHeatFlowW - result.thermal.totalAppliedHeatW) > Math.max(1e-5, result.thermal.totalAppliedHeatW * .02)
+        || Math.abs(interfaceEvidence.primaryHeatFlowW - result.thermal.totalAppliedHeatW) > Math.max(1e-5, result.thermal.totalAppliedHeatW * .02)
+        || Math.abs(interfaceEvidence.conductancePredictedHeatFlowW - result.thermal.totalAppliedHeatW)
+          > Math.max(1e-5, result.thermal.totalAppliedHeatW * .05)
+        : interfaceEvidence !== undefined)
+      || (convection ? !methodEvidence
+        || methodEvidence.sectionBaseReactionHeatW !== result.thermal.totalReactionHeatW
+        || Math.abs(Math.abs(methodEvidence.sectionBaseReactionHeatW - methodEvidence.nodalRflReactionHeatW) - methodEvidence.disagreementW) > 1e-9
+        || methodEvidence.disagreementW > Math.max(1e-6, Math.abs(result.thermal.totalReactionHeatW) * .02)
+        : methodEvidence !== undefined)
       || !result.warnings.some(warning => warning.code === 'SIMULATION_STEADY_THERMAL_POC')) fail('BRIDGE_V2_THERMAL_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
     return result;
@@ -988,15 +1103,16 @@ const fieldTriangle = z.object({
 }).strict();
 const fieldDataset = z.object({
   schema: z.literal('tunacad-neutral-simulation-field-dataset/2.0'),
-  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static']),
+  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal']),
   step: z.union([
     z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
     z.object({ index: z.literal(0), label: z.literal('final_contact_increment') }).strict(),
+    z.object({ index: z.literal(0), label: z.literal('steady_thermal') }).strict(),
     z.object({ index: z.number().int().positive(), label: z.literal('final_nonlinear_increment'), stepId: text, totalTime: positive }).strict(),
     z.object({ index: z.number().int().positive(), label: text, modeNumber: z.number().int().positive(), frequencyHz: nonNegative }).strict(),
     z.object({ index: z.number().int().positive(), label: text, bucklingModeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive }).strict(),
   ]),
-  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density']), unit: z.enum(['mm', 'MPa', 'normalized', 'dimensionless']),
+  component: z.enum(['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density', 'temperature', 'heat_flux_magnitude']), unit: z.enum(['mm', 'MPa', 'normalized', 'dimensionless', 'degC', 'W/m^2']),
   location: z.literal('boundary_facet'), topology: z.literal('triangle_soup'),
   valueRange: z.object({ minimum: finite, maximum: finite, minimumPositionAnalysisMm: vector, maximumPositionAnalysisMm: vector }).strict(),
   deformation: z.object({ vectorsIncluded: z.literal(true), trueScale: z.literal(1), recommendedScale: positive }).strict(),
@@ -1017,7 +1133,9 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
   if (page.cursor !== String(page.triangleOffset) || page.triangleCount !== page.triangles.length
     || page.triangleCount > page.dataset.maximumPageTriangles || page.triangleOffset + page.triangleCount > page.dataset.totalTriangles
     || page.nextCursor !== (page.triangleOffset + page.triangleCount < page.dataset.totalTriangles ? String(page.triangleOffset + page.triangleCount) : null)
-    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' || page.dataset.component === 'tangential_slip' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' || page.dataset.component === 'contact_shear' || page.dataset.component === 'strain_energy_density' ? 'MPa' : page.dataset.component === 'equivalent_plastic_strain' ? 'dimensionless' : 'normalized')
+    || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' || page.dataset.component === 'tangential_slip' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' || page.dataset.component === 'contact_shear' || page.dataset.component === 'strain_energy_density' ? 'MPa' : page.dataset.component === 'equivalent_plastic_strain' ? 'dimensionless' : page.dataset.component === 'temperature' ? 'degC' : page.dataset.component === 'heat_flux_magnitude' ? 'W/m^2' : 'normalized')
+    || (page.dataset.analysisType === 'steady_thermal') !== (page.dataset.step.label === 'steady_thermal')
+    || (page.dataset.analysisType === 'steady_thermal') !== (page.dataset.component === 'temperature' || page.dataset.component === 'heat_flux_magnitude')
     || (page.dataset.analysisType === 'modal') !== (page.dataset.component === 'mode_shape_magnitude')
     || (page.dataset.analysisType === 'modal') !== ('modeNumber' in page.dataset.step)
     || (page.dataset.analysisType === 'linear_buckling') !== (page.dataset.component === 'buckling_mode_shape_magnitude')
@@ -1026,8 +1144,11 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
     || (page.dataset.analysisType === 'nonlinear_static') !== (page.dataset.step.label === 'final_nonlinear_increment')
     || (['equivalent_plastic_strain', 'strain_energy_density'].includes(page.dataset.component) && page.dataset.analysisType !== 'nonlinear_static')
     || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
-    || (page.dataset.component !== 'normal_gap' && page.dataset.valueRange.minimum < 0)
-    || page.triangles.some(triangle => triangle.values.some(value => page.dataset.component !== 'normal_gap' && value < 0))
+    || (page.dataset.component === 'temperature' ? page.dataset.valueRange.minimum < -273.15 : page.dataset.component !== 'normal_gap' && page.dataset.valueRange.minimum < 0)
+    || page.triangles.some(triangle => triangle.values.some(value => page.dataset.component === 'temperature' ? value < -273.15 : page.dataset.component !== 'normal_gap' && value < 0))
+    || (page.dataset.analysisType === 'steady_thermal' && page.triangles.some(triangle =>
+      triangle.displacementsMm.some(vector => vector.some(value => value !== 0))
+      || triangle.values.some(value => value < page.dataset.valueRange.minimum || value > page.dataset.valueRange.maximum)))
     || digest(page.triangles) !== page.chunkDigest) fail('BRIDGE_V2_FIELD_PAGE_INVALID');
   return page;
 }

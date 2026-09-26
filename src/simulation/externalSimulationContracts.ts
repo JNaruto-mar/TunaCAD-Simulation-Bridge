@@ -46,8 +46,15 @@ export interface NeutralSimulationMaterial {
     curve: Array<{ trueStressMPa: number; plasticStrain: number }>;
   };
   /** Constant isotropic conductivity used by the bounded SIM-8 steady-state
-   * thermal foundation. Temperature-dependent properties are not admitted. */
+   * thermal foundation. Mutually exclusive with thermalConductivityCurve. */
   thermalConductivityWPerMK?: number;
+  /** Bounded, strictly increasing temperature and conductivity samples for
+   * one-domain steady thermal conduction. Linear interpolation only; no
+   * extrapolation or decreasing-conductivity law is admitted yet. */
+  thermalConductivityCurve?: Array<{ temperatureC: number; conductivityWPerMK: number }>;
+  /** Constant isotropic free thermal expansion per kelvin. The bounded SIM-8
+   * sequential fixture requires an explicit reference/initial temperature. */
+  thermalExpansionPerK?: number;
   source: { kind: 'library' | 'custom'; reference: string; revision?: string };
 }
 
@@ -293,7 +300,13 @@ export type NeutralSimulationLoadV2 =
   | { id: string; name: string; type: 'remote_force'; connectorId: string; forceN: NeutralVector3; momentNmm: NeutralVector3; coordinateSystem: 'analysis' }
   /** Uniform inward surface heat flux. Positive values add heat to the
    * domain; negative outward flux is intentionally deferred. */
-  | { id: string; name: string; type: 'surface_heat_flux'; semanticReferenceIds: string[]; heatFluxWPerM2: number };
+  | { id: string; name: string; type: 'surface_heat_flux'; semanticReferenceIds: string[]; heatFluxWPerM2: number }
+  /** Total inward watts, uniformly distributed over the mapped FACE group.
+   * It is not volumetric heat generation. */
+  | { id: string; name: string; type: 'surface_heat_power'; semanticReferenceIds: string[]; heatPowerW: number }
+  /** Uniform ambient convection on an explicit FACE group. Positive h and
+   * absolute-Celsius sink temperature are required; radiation is deferred. */
+  | { id: string; name: string; type: 'surface_convection'; semanticReferenceIds: string[]; filmCoefficientWPerM2K: number; sinkTemperatureC: number };
 
 export type NeutralSimulationConstraintV2 =
   | { id: string; name: string; type: 'fixed'; semanticReferenceIds: string[] }
@@ -325,6 +338,20 @@ export interface NeutralSharedTopologyInteractionV2 {
   primaryReferenceIds: string[];
   adjustment: 'none';
   positionToleranceMm: number;
+}
+
+/** Finite thermal conductance across two explicit, coincident, planar but
+ * independently meshed FACE groups. No node merge, gap adjustment, or
+ * geometric extrapolation is permitted. */
+export interface NeutralThermalInterfaceConductanceV2 {
+  id: string;
+  name: string;
+  type: 'thermal_interface_conductance';
+  secondaryReferenceIds: string[];
+  primaryReferenceIds: string[];
+  adjustment: 'none';
+  positionToleranceMm: number;
+  conductanceWPerM2K: number;
 }
 
 /** A deliberately named analysis object that rigidly couples one verified FACE
@@ -381,7 +408,7 @@ export interface NeutralFrictionalContactInteractionV2 extends Omit<NeutralFrict
   };
 }
 
-export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralRigidConnectorInteractionV2 | NeutralFrictionlessContactInteractionV2 | NeutralFrictionalContactInteractionV2;
+export type NeutralSimulationInteractionV2 = NeutralBondedTieInteractionV2 | NeutralSharedTopologyInteractionV2 | NeutralThermalInterfaceConductanceV2 | NeutralRigidConnectorInteractionV2 | NeutralFrictionlessContactInteractionV2 | NeutralFrictionalContactInteractionV2;
 
 interface NeutralSimulationRequestV2Base {
   schema: typeof NEUTRAL_SIMULATION_REQUEST_V2_SCHEMA;
@@ -475,7 +502,7 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
 } | {
   analysis: {
     type: 'steady_thermal';
-    assumptions: ['steady_state', 'isotropic_conduction', 'temperature_independent_properties'];
+    assumptions: ['steady_state', 'isotropic_conduction', 'temperature_independent_properties' | 'tabulated_temperature_dependent_conductivity'];
   };
   requestedResults: Array<'temperature' | 'heat_flux' | 'reaction_heat_flow'>;
 });
@@ -709,6 +736,26 @@ export interface NeutralSteadyThermalResultV2 {
   totalAppliedHeatW: number;
   totalReactionHeatW: number;
   heatBalanceResidualW: number;
+  /** Independent side integrals and area-weighted temperatures for the
+   * bounded explicit nonconformal interface lane only. */
+  interfaceConductance?: {
+    interactionId: string;
+    secondaryTemperatureC: number;
+    primaryTemperatureC: number;
+    temperatureJumpC: number;
+    secondaryHeatFlowW: number;
+    primaryHeatFlowW: number;
+    interfaceHeatImbalanceW: number;
+    conductancePredictedHeatFlowW: number;
+  };
+  /** Convection-only independent base-section and nodal-RFL recovery.
+   * The section integral defines totalReactionHeatW; the bounded RFL
+   * disagreement is retained rather than silently discarded. */
+  reactionHeatFlowEvidence?: {
+    sectionBaseReactionHeatW: number;
+    nodalRflReactionHeatW: number;
+    disagreementW: number;
+  };
   temperatureSamples: Array<{ positionAnalysisMm: NeutralVector3; temperatureC: number }>;
 }
 
@@ -826,6 +873,11 @@ export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Bas
   step: { index: number; label: 'final_nonlinear_increment'; stepId: string; totalTime: number };
   component: 'displacement_magnitude' | 'von_mises_stress' | 'equivalent_plastic_strain' | 'strain_energy_density';
   unit: 'mm' | 'MPa' | 'dimensionless';
+} | {
+  analysisType: 'steady_thermal';
+  step: { index: 0; label: 'steady_thermal' };
+  component: 'temperature' | 'heat_flux_magnitude';
+  unit: 'degC' | 'W/m^2';
 });
 
 export interface NeutralSimulationFieldTriangleV2 {
@@ -853,7 +905,7 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
   fieldResults: {
     paginated: true;
     maximumPageTriangles: number;
-    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear' | 'equivalent_plastic_strain' | 'strain_energy_density'>;
+    components: ReadonlyArray<'displacement_magnitude' | 'von_mises_stress' | 'mode_shape_magnitude' | 'buckling_mode_shape_magnitude' | 'contact_pressure' | 'normal_gap' | 'tangential_slip' | 'contact_shear' | 'equivalent_plastic_strain' | 'strain_energy_density' | 'temperature' | 'heat_flux_magnitude'>;
     topology: 'triangle_soup';
   };
   study: Omit<SimulationProviderCapabilities['study'], 'loadTypes' | 'constraintTypes'> & {
@@ -899,15 +951,20 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       loadDisplacementHistory: true;
     };
     steadyThermal?: {
-      maximumDomains: 1;
+      maximumDomains: 1 | 2;
       materialModel: 'constant_isotropic_conductivity';
-      loadTypes: readonly ['surface_heat_flux'];
+      loadTypes: ReadonlyArray<'surface_heat_flux' | 'surface_heat_power' | 'surface_convection'>;
       maximumHeatFluxLoads: number;
+      maximumHeatPowerLoads?: number;
+      maximumConvectionLoads?: number;
       constraintTypes: readonly ['prescribed_temperature'];
       maximumPrescribedTemperatureConstraints: number;
       temperatureProfile: 'bounded_samples';
       maximumTemperatureSamples: number;
       heatBalance: true;
+      /** Additive experimental lane; absent means tabulated k(T) is refused. */
+      temperatureDependentConductivity?: { maximumPoints: number; increasingOnly: true };
+      interfaceConductance?: { maximumInterfaces: 1; planarCoincidentOnly: true };
     };
     contact?: {
       maximumDomains: 2;
@@ -1198,7 +1255,7 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static';
+  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal';
   modal?: {
     requestedModeCount: number;
     minimumFrequencyHz?: number | null;
