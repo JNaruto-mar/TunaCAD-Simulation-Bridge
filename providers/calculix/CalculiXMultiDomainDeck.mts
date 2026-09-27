@@ -16,6 +16,7 @@ import {
 } from './CalculiXSolverProvider.mts';
 
 type SteadyThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'steady_thermal' } }>;
+type TransientThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'transient_thermal' } }>;
 
 /** Generate a deterministic CalculiX C3D10 deck with explicit domain/material
  * ownership, optional nonconformal ties, and prevalidated shared-topology
@@ -28,6 +29,9 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   }
   if (request.analysis.type === 'steady_thermal') {
     return createCalculiXSteadyThermalInputDeckV2(request as SteadyThermalRequestV2, model);
+  }
+  if (request.analysis.type === 'transient_thermal') {
+    return createCalculiXTransientThermalInputDeckV2(request as TransientThermalRequestV2, model);
   }
   if (request.analysis.type === 'static_contact') {
     validateContactInitialAdjustmentV2(request, model);
@@ -144,7 +148,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   if (loads.some(load => load.type === 'gravity') && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
     throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a gravity-loaded SIM-4A model requires positive density.');
   }
-  if (request.analysis.type === 'modal' && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
+  if ((request.analysis.type === 'modal' || request.analysis.type === 'harmonic_response') && materials.some(material => !(material.densityKgM3 && material.densityKgM3 > 0))) {
     throw deckError('SIMULATION_MATERIAL_INVALID', 'Every material assigned to a modal model requires positive density.');
   }
   const allElements = model.volumeElements.connectivity.map((_, index) => index + 1);
@@ -170,12 +174,39 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   const nonlinearAnalysisCards = request.analysis.type === 'nonlinear_static'
     ? nonlinearStepCards(request, model, boundaryCards)
     : [];
-  const analysisCards = request.analysis.type === 'modal' ? [
+  const analysisCards = request.analysis.type === 'harmonic_response' ? [
+    '*STEP',
+    '*FREQUENCY,SOLVER=ARPACK,STORAGE=YES',
+    '48',
+    ...boundaryCards,
+    '*END STEP',
+    '*STEP',
+    '*STEADY STATE DYNAMICS,HARMONIC=YES',
+    `${solverNumber(request.analysis.settings.frequencyHz)},${solverNumber(request.analysis.settings.frequencyHz)},2,1`,
+    ...boundaryCards,
+    ...concentratedLoadCards,
+    '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
+    `*NODE PRINT, NSET=${reactionName(0)}, TOTALS=ONLY, GLOBAL=YES`, 'RF',
+    '*END STEP',
+  ] : request.analysis.type === 'modal' ? [
     '*STEP',
     '*FREQUENCY,SOLVER=ARPACK',
     frequencyLine!,
     ...boundaryCards,
     '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
+    '*END STEP',
+  ] : request.analysis.type === 'implicit_transient_dynamics' ? [
+    '*TIME POINTS, NAME=DYNAMICS_OUTPUT',
+    request.analysis.settings.outputTimesS.map(solverNumber).join(','),
+    '*STEP, INC=1000, AMPLITUDE=STEP',
+    '*DYNAMIC, ALPHA=0',
+    [solverNumber(request.analysis.settings.durationS / 256), solverNumber(request.analysis.settings.durationS),
+      solverNumber(request.analysis.settings.durationS / 1_000_000), solverNumber(request.analysis.settings.durationS / 128)].join(','),
+    ...boundaryCards,
+    ...concentratedLoadCards,
+    '*NODE PRINT, NSET=NALL, GLOBAL=YES, TIME POINTS=DYNAMICS_OUTPUT', 'U',
+    `*NODE PRINT, NSET=${reactionName(0)}, TOTALS=ONLY, GLOBAL=YES, TIME POINTS=DYNAMICS_OUTPUT`, 'RF',
+    '*EL PRINT, ELSET=EALL, TOTALS=ONLY, TIME POINTS=DYNAMICS_OUTPUT', 'ELKE,ELSE',
     '*END STEP',
   ] : request.analysis.type === 'linear_buckling' ? [
     '*STEP',
@@ -378,6 +409,78 @@ export function createCalculiXSteadyThermalInputDeckV2(request: SteadyThermalReq
     ] : []),
     '*EL PRINT, ELSET=EALL',
     'HFL',
+    '*END STEP',
+  ];
+  return lines.join('\n') + '\n';
+}
+
+/** Separate SIM-9 transient thermal deck. The spatial C3D10 and FACE
+ * translation uses the same verified neutral mesh helpers as SIM-8, but
+ * time, capacity, initial conditions, and output frames are not inferred
+ * from a steady-state deck. Units are mm, s, W=J/s, kg and degC:
+ * rho[kg/m3] -> kg/mm3; k[W/(m*K)] -> W/(mm*K). */
+export function createCalculiXTransientThermalInputDeckV2(
+  request: TransientThermalRequestV2, model: NeutralFemModelV2,
+): string {
+  if (model.domainRegions.length !== 1 || request.model.domains.length !== 1
+    || request.materials.length !== 1 || request.loads.length !== 1
+    || request.constraints.length !== 1 || request.interactions.length
+    || request.loads[0].type !== 'surface_heat_flux'
+    || request.constraints[0].type !== 'prescribed_temperature') {
+    throw deckError('SIMULATION_TRANSIENT_THERMAL_CAPABILITY_MISMATCH', 'The SIM-9 provider supports only one constant-property slab envelope.');
+  }
+  const material = request.materials[0];
+  const load = request.loads[0];
+  const constraint = request.constraints[0];
+  const conductivity = material.thermalConductivityWPerMK;
+  const density = material.densityKgM3;
+  const specificHeat = material.specificHeatJPerKgK;
+  if (conductivity === undefined || conductivity <= 0 || density === undefined || density <= 0
+    || specificHeat === undefined || specificHeat <= 0) {
+    throw deckError('SIMULATION_TRANSIENT_THERMAL_CAPABILITY_MISMATCH', 'Transient thermal material requires constant conductivity, density, and specific heat.');
+  }
+  const constrained = [...new Set(requireRegions(model, constraint.semanticReferenceIds)
+    .flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+  const heated = [...new Set(requireRegions(model, load.semanticReferenceIds)
+    .flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+  if (!constrained.length || !heated.length || heated.some(index => constrained.includes(index))) {
+    throw deckError('SIMULATION_TRANSIENT_THERMAL_FACE_MAPPING_INVALID', 'Transient thermal FACE groups must be mapped, nonempty, and disjoint.');
+  }
+  mappedThermalFaceAreaMm2(model, heated);
+  const constrainedNodes = [...new Set(constrained.flatMap(index => model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b);
+  const elements = [...model.domainRegions[0].elementIndices].sort((a, b) => a - b);
+  const initialIncrementS = request.analysis.settings.maximumIncrementS
+    ?? Math.min(10, request.analysis.settings.outputTimesS[0] / 10);
+  const lines = [
+    '*HEADING', 'TunaCAD SIM-9 transient thermal study ' + safeComment(request.studyId),
+    '*NODE, NSET=NALL',
+    ...model.nodes.map((point, index) => String(index + 1) + ',' + point.map(solverNumber).join(',')),
+    '*ELEMENT, TYPE=DC3D10, ELSET=DOMAIN_001',
+    ...elements.map(index => String(index + 1) + ',' + neutralToCalculiXC3D10(model.volumeElements.connectivity[index]).map(node => node + 1).join(',')),
+    '*ELSET, ELSET=EALL', ...wrapIds(elements.map(index => index + 1)),
+    '*NSET, NSET=THERMAL_TEMPERATURE_001', ...wrapIds(constrainedNodes.map(node => node + 1)),
+    '*NSET, NSET=THERMAL_REACTION_001', ...wrapIds(constrainedNodes.map(node => node + 1)),
+    '*SURFACE, NAME=THERMAL_FLUX_001, TYPE=ELEMENT', ...calculixSurfaceFaces(model, heated),
+    '*MATERIAL, NAME=THERMAL_MATERIAL_001',
+    '*CONDUCTIVITY', solverNumber(conductivity / 1000),
+    '*DENSITY', solverNumber(density * 1e-9),
+    '*SPECIFIC HEAT', solverNumber(specificHeat),
+    '*SOLID SECTION, ELSET=DOMAIN_001, MATERIAL=THERMAL_MATERIAL_001',
+    '*INITIAL CONDITIONS, TYPE=TEMPERATURE', 'NALL,' + solverNumber(request.analysis.settings.initialTemperatureC),
+    '*TIME POINTS, NAME=TRANSIENT_OUTPUT',
+    ...request.analysis.settings.outputTimesS.reduce<string[]>((rows, time, index) => {
+      if (index % 8 === 0) rows.push(solverNumber(time));
+      else rows[rows.length - 1] += ',' + solverNumber(time);
+      return rows;
+    }, []),
+    '*STEP, INC=' + (request.analysis.settings.maximumIncrements ?? 1000) + ', AMPLITUDE=STEP',
+    '*HEAT TRANSFER',
+    [initialIncrementS, request.analysis.settings.durationS, Math.max(1e-6, initialIncrementS / 1000), initialIncrementS].map(solverNumber).join(','),
+    '*BOUNDARY', 'THERMAL_TEMPERATURE_001,11,11,' + solverNumber(constraint.temperatureC),
+    '*DFLUX', 'THERMAL_FLUX_001,S,' + solverNumber(load.heatFluxWPerM2 * 1e-6),
+    '*NODE PRINT, NSET=NALL, TIME POINTS=TRANSIENT_OUTPUT', 'NT',
+    '*NODE PRINT, NSET=THERMAL_REACTION_001, TIME POINTS=TRANSIENT_OUTPUT', 'RFL',
+    '*EL PRINT, ELSET=EALL, TIME POINTS=TRANSIENT_OUTPUT', 'HFL',
     '*END STEP',
   ];
   return lines.join('\n') + '\n';
@@ -803,7 +906,7 @@ export function asV1Mesh(model: NeutralFemModelV2): NeutralFemMesh {
   };
 }
 
-function requireRegions(model: NeutralFemModelV2, referenceIds: string[]): NeutralFemModelV2['boundaryRegions'] {
+export function requireRegions(model: NeutralFemModelV2, referenceIds: string[]): NeutralFemModelV2['boundaryRegions'] {
   const regions = referenceIds.map(referenceId => {
     const matches = model.boundaryRegions.filter(region => region.semanticReferenceIds.includes(referenceId));
     if (matches.length !== 1) throw deckError(matches.length ? 'SIMULATION_FACE_MAPPING_AMBIGUOUS' : 'SIMULATION_FACE_MAPPING_NOT_FOUND', `FACE reference "${referenceId}" maps to ${matches.length} SIM-4A regions.`);
@@ -814,7 +917,7 @@ function requireRegions(model: NeutralFemModelV2, referenceIds: string[]): Neutr
 }
 
 const surfaceFaceCache = new WeakMap<NeutralFemModelV2, Map<string, { element: number; face: number }>>();
-function calculixSurfaceFaces(model: NeutralFemModelV2, facetIndices: number[]): string[] {
+export function calculixSurfaceFaces(model: NeutralFemModelV2, facetIndices: number[]): string[] {
   let faces = surfaceFaceCache.get(model);
   if (!faces) {
     faces = new Map();
@@ -876,13 +979,13 @@ export function neutralToCalculiXC3D10(cell: number[]): number[] {
   return [...cell.slice(0, 8), cell[9], cell[8]];
 }
 
-function wrapIds(ids: number[]): string[] {
+export function wrapIds(ids: number[]): string[] {
   const lines: string[] = [];
   for (let index = 0; index < ids.length; index += 16) lines.push(ids.slice(index, index + 16).join(','));
   return lines;
 }
 
-function solverNumber(value: number): string {
+export function solverNumber(value: number): string {
   if (!Number.isFinite(value)) throw deckError('SIMULATION_INPUT_INVALID', 'CalculiX input contains a non-finite number.');
   if (Math.abs(value) < 1e-12) return '0';
   const [mantissa, exponent] = value.toPrecision(12).replace(/e/g, 'E').split('E');
@@ -890,7 +993,7 @@ function solverNumber(value: number): string {
   return exponent === undefined ? compact : `${compact}E${Number(exponent)}`;
 }
 
-function safeComment(value: string): string { return value.replace(/[^A-Za-z0-9 _.:-]/g, '').slice(0, 120); }
+export function safeComment(value: string): string { return value.replace(/[^A-Za-z0-9 _.:-]/g, '').slice(0, 120); }
 function numberName(index: number): string { return String(index + 1).padStart(3, '0'); }
 function reactionName(index: number): string { return `REACTION_${numberName(index)}`; }
 function reactionMomentName(index: number): string { return `REACTION_MOMENT_${numberName(index)}`; }

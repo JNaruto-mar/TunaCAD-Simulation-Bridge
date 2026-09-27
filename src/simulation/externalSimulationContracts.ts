@@ -14,7 +14,7 @@ export const SIMULATION_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 export const MESH_PROVIDER_INTERFACE_V2_VERSION = '2.0' as const;
 
 export type NeutralAnalysisType = 'linear_static';
-export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal';
+export type NeutralAnalysisTypeV2 = 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal' | 'transient_thermal' | 'implicit_transient_dynamics' | 'harmonic_response';
 export type NeutralSimulationJobStatus = 'awaiting_approval' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type NeutralResultAuthority = 'engineering' | 'architecture_mock';
 export type NeutralVector3 = [number, number, number];
@@ -52,6 +52,10 @@ export interface NeutralSimulationMaterial {
    * one-domain steady thermal conduction. Linear interpolation only; no
    * extrapolation or decreasing-conductivity law is admitted yet. */
   thermalConductivityCurve?: Array<{ temperatureC: number; conductivityWPerMK: number }>;
+  /** SIM-9 bounded transient-thermal foundation. Density and this constant
+   * specific heat jointly define volumetric heat capacity; neither may be
+   * inferred from the elastic material data or a steady-state solve. */
+  specificHeatJPerKgK?: number;
   /** Constant isotropic free thermal expansion per kelvin. The bounded SIM-8
    * sequential fixture requires an explicit reference/initial temperature. */
   thermalExpansionPerK?: number;
@@ -429,6 +433,8 @@ interface NeutralSimulationRequestV2Base {
     heatFlux?: 'W/m^2';
     heatFlow?: 'W';
     thermalConductivity?: 'W/(m*K)';
+    time?: 's';
+    specificHeat?: 'J/(kg*K)';
   };
   materials: NeutralSimulationMaterial[];
   materialAssignments: NeutralMaterialAssignmentV2[];
@@ -505,6 +511,48 @@ export type NeutralSimulationRequestV2 = NeutralSimulationRequestV2Base & ({
     assumptions: ['steady_state', 'isotropic_conduction', 'temperature_independent_properties' | 'tabulated_temperature_dependent_conductivity'];
   };
   requestedResults: Array<'temperature' | 'heat_flux' | 'reaction_heat_flow'>;
+} | {
+  /** Contract-only first SIM-9 increment. Provider admission remains closed
+   * until transient deck generation and frame recovery are implemented. */
+  analysis: {
+    type: 'transient_thermal';
+    assumptions: ['transient', 'isotropic_conduction', 'temperature_independent_properties', 'uniform_initial_temperature', 'step_boundary_conditions'];
+    settings: {
+      initialTemperatureC: number;
+      durationS: number;
+      outputTimesS: number[];
+      /** Bounded numerical refinement control. Omission retains the
+       * original deterministic provider increment schedule. */
+      maximumIncrementS?: number;
+      /** Bounded solver-step budget; omission retains the prior 1000-step
+       * limit. Also permits a reproducible partial-history failure fixture. */
+      maximumIncrements?: number;
+    };
+  };
+  requestedResults: Array<'temperature_history' | 'heat_flow_history'>;
+} | {
+  /** Bounded one-domain, undamped, small-displacement step-force dynamics. */
+  analysis: {
+    type: 'implicit_transient_dynamics';
+    assumptions: ['linear_elasticity', 'small_displacement', 'undamped', 'zero_initial_conditions', 'step_force'];
+    settings: {
+      durationS: number;
+      outputTimesS: number[];
+    };
+  };
+  requestedResults: Array<'displacement_history' | 'reaction_force_history' | 'kinetic_energy_history' | 'strain_energy_history'>;
+} | {
+  /** Bounded provider-only single-frequency undamped response. */
+  analysis: {
+    type: 'harmonic_response';
+    assumptions: ['linear_elasticity', 'small_displacement', 'undamped', 'steady_state_harmonic', 'cosine_force'];
+    settings: {
+      frequencyHz: number;
+      forcePhaseRad: 0;
+      initialConditions: 'not_applicable';
+    };
+  };
+  requestedResults: Array<'displacement_amplitude' | 'displacement_phase' | 'reaction_force_amplitude'>;
 });
 
 export interface NeutralMeshJobRequestV2 {
@@ -759,6 +807,23 @@ export interface NeutralSteadyThermalResultV2 {
   temperatureSamples: Array<{ positionAnalysisMm: NeutralVector3; temperatureC: number }>;
 }
 
+/** SIM-9 provider-only, bounded time history. Stored energy is computed from
+ * the complete nodal NT field and C3D10 volume quadrature, relative to the
+ * request's uniform initial temperature; it is not inferred from RFL. */
+export interface NeutralTransientThermalResultV2 {
+  formulation: 'transient_isotropic_conduction';
+  frames: Array<{
+    timeS: number;
+    minimumTemperatureC: number;
+    maximumTemperatureC: number;
+    maximumHeatFluxMagnitudeWPerM2: number;
+    totalAppliedHeatW: number;
+    totalReactionHeatW: number;
+    storedThermalEnergyJ: number;
+    temperatureSamples: Array<{ positionAnalysisMm: NeutralVector3; temperatureC: number }>;
+  }>;
+}
+
 export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
   analysisType: 'linear_static';
 } | {
@@ -814,6 +879,42 @@ export type NeutralSimulationResultV2 = NeutralSimulationResultV2Base & ({
 } | {
   analysisType: 'steady_thermal';
   thermal: NeutralSteadyThermalResultV2;
+} | {
+  analysisType: 'transient_thermal';
+  transientThermal: NeutralTransientThermalResultV2;
+} | {
+  analysisType: 'implicit_transient_dynamics';
+  implicitDynamics: {
+    formulation: 'implicit_newmark_alpha_zero';
+    frames: Array<{
+      timeS: number;
+      loadedFaceMeanDisplacementMm: NeutralVector3;
+      maximumDisplacementMm: number;
+      supportReactionForceN: NeutralVector3;
+      kineticEnergyNmm: number;
+      strainEnergyNmm: number;
+      appliedWorkNmm: number;
+      energyBalanceResidualNmm: number;
+    }>;
+  };
+} | {
+  analysisType: 'harmonic_response';
+  harmonic: {
+    formulation: 'undamped_modal_superposition';
+    frequencyHz: number;
+    loadedFaceMeanDisplacement: {
+      realMm: NeutralVector3;
+      imaginaryMm: NeutralVector3;
+      amplitudeMm: number;
+      phaseLagRad: number;
+    };
+    supportReaction: {
+      realN: NeutralVector3;
+      imaginaryN: NeutralVector3;
+      amplitudeN: number;
+      phaseLagRad: number;
+    };
+  };
 });
 
 /** A small, immutable handle describing a solver-normalized visualization
@@ -876,6 +977,11 @@ export type NeutralSimulationFieldDatasetV2 = NeutralSimulationFieldDatasetV2Bas
 } | {
   analysisType: 'steady_thermal';
   step: { index: 0; label: 'steady_thermal' };
+  component: 'temperature' | 'heat_flux_magnitude';
+  unit: 'degC' | 'W/m^2';
+} | {
+  analysisType: 'transient_thermal';
+  step: { index: number; label: 'transient_thermal'; timeS: number };
   component: 'temperature' | 'heat_flux_magnitude';
   unit: 'degC' | 'W/m^2';
 });
@@ -965,6 +1071,27 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       /** Additive experimental lane; absent means tabulated k(T) is refused. */
       temperatureDependentConductivity?: { maximumPoints: number; increasingOnly: true };
       interfaceConductance?: { maximumInterfaces: 1; planarCoincidentOnly: true };
+    };
+    transientThermal?: {
+      maximumDomains: 1;
+      materialModel: 'constant_isotropic_conductivity_and_heat_capacity';
+      maximumOutputFrames: 16;
+      loadTypes: readonly ['surface_heat_flux'];
+      constraintTypes: readonly ['prescribed_temperature'];
+      completeNtHflRflFrames: true;
+      storedThermalEnergy: true;
+    };
+    implicitDynamics?: {
+      maximumDomains: 1;
+      maximumOutputFrames: 16;
+      formulation: 'implicit_newmark_alpha_zero';
+      completeDisplacementReactionEnergyFrames: true;
+    };
+    harmonic?: {
+      maximumDomains: 1;
+      maximumFrequencies: 1;
+      formulation: 'undamped_modal_superposition';
+      completeComplexDisplacementReaction: true;
     };
     contact?: {
       maximumDomains: 2;
@@ -1255,7 +1382,14 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal';
+  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal' | 'transient_thermal';
+  transientThermal?: {
+    initialTemperatureC: number;
+    durationS: number;
+    outputTimesS: number[];
+    maximumIncrementS?: number;
+    maximumIncrements?: number;
+  };
   modal?: {
     requestedModeCount: number;
     minimumFrequencyHz?: number | null;

@@ -45,6 +45,7 @@ const material = z.discriminatedUnion('model', [
     youngsModulusMPa: positive.max(100000000), poissonRatio: finite.min(0).lt(0.5),
     yieldStrengthMPa: positive.optional(), thermalConductivityWPerMK: positive.max(1e7).optional(),
     thermalConductivityCurve: z.array(z.object({ temperatureC: finite.min(-273.15).max(1e6), conductivityWPerMK: positive.max(1e7) }).strict()).min(2).max(16).optional(),
+    specificHeatJPerKgK: positive.max(1e6).optional(),
     thermalExpansionPerK: positive.max(1e-2).optional(), source: materialSource,
   }).strict(),
   z.object({
@@ -126,6 +127,38 @@ const requestSchema = z.object({
       assumptions: z.tuple([z.literal('steady_state'), z.literal('isotropic_conduction'),
         z.enum(['temperature_independent_properties', 'tabulated_temperature_dependent_conductivity'])]),
     }).strict(),
+    z.object({
+      type: z.literal('transient_thermal'),
+      assumptions: z.tuple([z.literal('transient'), z.literal('isotropic_conduction'),
+        z.literal('temperature_independent_properties'), z.literal('uniform_initial_temperature'),
+        z.literal('step_boundary_conditions')]),
+      settings: z.object({
+        initialTemperatureC: finite.min(-273.15).max(1e6),
+        durationS: positive.max(1e7),
+        outputTimesS: z.array(positive.max(1e7)).min(1).max(16),
+        maximumIncrementS: positive.max(100).optional(),
+        maximumIncrements: z.number().int().min(1).max(1000).optional(),
+      }).strict(),
+    }).strict(),
+    z.object({
+      type: z.literal('implicit_transient_dynamics'),
+      assumptions: z.tuple([z.literal('linear_elasticity'), z.literal('small_displacement'),
+        z.literal('undamped'), z.literal('zero_initial_conditions'), z.literal('step_force')]),
+      settings: z.object({
+        durationS: positive.min(1e-9).max(100),
+        outputTimesS: z.array(positive.min(1e-9).max(100)).min(2).max(16),
+      }).strict(),
+    }).strict(),
+    z.object({
+      type: z.literal('harmonic_response'),
+      assumptions: z.tuple([z.literal('linear_elasticity'), z.literal('small_displacement'),
+        z.literal('undamped'), z.literal('steady_state_harmonic'), z.literal('cosine_force')]),
+      settings: z.object({
+        frequencyHz: positive.min(1e-3).max(1e6),
+        forcePhaseRad: z.literal(0),
+        initialConditions: z.literal('not_applicable'),
+      }).strict(),
+    }).strict(),
   ]),
   model: z.object({
     projectRevision: text, modelDigest: hash, coordinateSpace: z.literal('frozen_analysis'),
@@ -149,6 +182,7 @@ const requestSchema = z.object({
     geometry: z.literal('mm'), force: z.literal('N'), stress: z.literal('MPa'), displacement: z.literal('mm'),
     density: z.literal('kg/m^3'), acceleration: z.literal('mm/s^2'), temperature: z.literal('degC').optional(),
     heatFlux: z.literal('W/m^2').optional(), heatFlow: z.literal('W').optional(), thermalConductivity: z.literal('W/(m*K)').optional(),
+    time: z.literal('s').optional(), specificHeat: z.literal('J/(kg*K)').optional(),
   }).strict(),
   materials: z.array(material).min(1).max(128),
   materialAssignments: z.array(z.object({ assignmentId: text, domainId: text, materialId: text, volumeRegionId: text }).strict()).min(1).max(128),
@@ -243,7 +277,9 @@ const requestSchema = z.object({
     'natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass', 'buckling_load_factors', 'buckling_mode_shapes',
     'contact_status', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'contact_force',
     'load_displacement_history', 'increment_convergence', 'equivalent_plastic_strain', 'strain_energy_density', 'internal_energy',
-    'temperature', 'heat_flux', 'reaction_heat_flow'])).min(1).max(12),
+    'temperature', 'heat_flux', 'reaction_heat_flow', 'temperature_history', 'heat_flow_history',
+    'displacement_history', 'reaction_force_history', 'kinetic_energy_history', 'strain_energy_history',
+    'displacement_amplitude', 'displacement_phase', 'reaction_force_amplitude'])).min(1).max(12),
 }).strict();
 
 function unique(values: string[]): boolean {
@@ -463,7 +499,77 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   if (!unique(entryIds)) fail('BRIDGE_V2_REQUEST_INVALID');
   const hasThermalEntries = request.loads.some(load => load.type === 'surface_heat_flux' || load.type === 'surface_heat_power' || load.type === 'surface_convection')
     || request.constraints.some(constraint => constraint.type === 'prescribed_temperature');
-  if (request.analysis.type === 'steady_thermal') {
+  if ((request.analysis.type !== 'transient_thermal' && request.materials.some(material => material.specificHeatJPerKgK !== undefined))
+    || (request.analysis.type !== 'transient_thermal' && request.analysis.type !== 'implicit_transient_dynamics'
+      && request.analysis.type !== 'harmonic_response' && request.units.time !== undefined)
+    || (request.analysis.type !== 'transient_thermal' && request.units.specificHeat !== undefined)) {
+    fail('BRIDGE_V2_TRANSIENT_THERMAL_REQUEST_INVALID');
+  }
+  if (request.analysis.type === 'harmonic_response') {
+    const expectedResults = ['displacement_amplitude', 'displacement_phase', 'reaction_force_amplitude'];
+    const material = request.materials[0];
+    if (request.model.domains.length !== 1 || request.materials.length !== 1
+      || request.interactions.length || material.model !== 'isotropic_linear_elastic'
+      || material.densityKgM3 === undefined || material.thermalConductivityWPerMK !== undefined
+      || material.thermalConductivityCurve !== undefined || material.thermalExpansionPerK !== undefined
+      || material.specificHeatJPerKgK !== undefined
+      || request.loads.length !== 1 || request.loads[0].type !== 'surface_force'
+      || request.constraints.length !== 1 || request.constraints[0].type !== 'fixed'
+      || request.loads[0].semanticReferenceIds.length !== 1
+      || request.constraints[0].semanticReferenceIds.length !== 1
+      || request.loads[0].semanticReferenceIds[0] === request.constraints[0].semanticReferenceIds[0]
+      || request.units.time !== 's' || request.units.temperature !== undefined
+      || request.units.heatFlux !== undefined || request.units.heatFlow !== undefined
+      || request.units.thermalConductivity !== undefined || request.units.specificHeat !== undefined
+      || request.requestedResults.length !== expectedResults.length
+      || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
+      fail('BRIDGE_V2_HARMONIC_REQUEST_INVALID');
+    }
+  } else if (request.analysis.type === 'implicit_transient_dynamics') {
+    const settings = request.analysis.settings;
+    const expectedResults = ['displacement_history', 'kinetic_energy_history', 'reaction_force_history', 'strain_energy_history'];
+    if (request.model.domains.length !== 1 || request.materials.length !== 1 || request.interactions.length
+      || request.materials[0].model !== 'isotropic_linear_elastic' || request.materials[0].densityKgM3 === undefined
+      || request.loads.length !== 1 || request.loads[0].type !== 'surface_force'
+      || request.constraints.length !== 1 || request.constraints[0].type !== 'fixed'
+      || request.loads[0].semanticReferenceIds.length !== 1
+      || request.constraints[0].semanticReferenceIds.length !== 1
+      || request.loads[0].semanticReferenceIds[0] === request.constraints[0].semanticReferenceIds[0]
+      || request.units.time !== 's' || request.units.specificHeat !== undefined
+      || request.units.temperature !== undefined || request.units.heatFlux !== undefined
+      || request.units.heatFlow !== undefined || request.units.thermalConductivity !== undefined
+      || settings.outputTimesS.at(-1) !== settings.durationS
+      || settings.outputTimesS.some((time, index) => index > 0 && time <= settings.outputTimesS[index - 1])
+      || request.requestedResults.length !== expectedResults.length
+      || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
+      fail('BRIDGE_V2_IMPLICIT_DYNAMICS_REQUEST_INVALID');
+    }
+  } else if (request.analysis.type === 'transient_thermal') {
+    const settings = request.analysis.settings;
+    const boundary = request.constraints[0];
+    const expectedResults = ['heat_flow_history', 'temperature_history'];
+    if (request.model.domains.length !== 1 || request.materials.length !== 1 || request.interactions.length
+      || request.loads.length !== 1 || request.loads[0].type !== 'surface_heat_flux'
+      || request.constraints.length !== 1 || boundary?.type !== 'prescribed_temperature'
+      || boundary.temperatureC !== settings.initialTemperatureC
+      || request.materials[0].model !== 'isotropic_linear_elastic'
+      || request.materials[0].thermalConductivityWPerMK === undefined
+      || request.materials[0].thermalConductivityCurve !== undefined
+      || request.materials[0].densityKgM3 === undefined
+      || request.materials[0].specificHeatJPerKgK === undefined
+      || request.units.temperature !== 'degC' || request.units.heatFlux !== 'W/m^2'
+      || request.units.heatFlow !== 'W' || request.units.thermalConductivity !== 'W/(m*K)'
+      || request.units.density !== 'kg/m^3' || request.units.time !== 's'
+      || request.units.specificHeat !== 'J/(kg*K)'
+      || settings.outputTimesS.at(-1) !== settings.durationS
+      || settings.outputTimesS.some((time, index) => index > 0 && time <= settings.outputTimesS[index - 1])
+      || settings.maximumIncrementS !== undefined && (settings.maximumIncrementS < settings.durationS / 1000
+        || settings.maximumIncrementS > settings.outputTimesS[0])
+      || request.requestedResults.length !== expectedResults.length
+      || [...request.requestedResults].sort().some((result, index) => result !== expectedResults[index])) {
+      fail('BRIDGE_V2_TRANSIENT_THERMAL_REQUEST_INVALID');
+    }
+  } else if (request.analysis.type === 'steady_thermal') {
     const expectedResults = ['heat_flux', 'reaction_heat_flow', 'temperature'];
     const twoMaterialInterface = request.model.domains.length === 2
       && request.materials.length === 2 && request.interactions.length === 1
@@ -652,6 +758,24 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
       || profile.study.steadyThermal.temperatureProfile !== 'bounded_samples'
       || profile.study.steadyThermal.maximumTemperatureSamples < 2
       || !profile.study.steadyThermal.heatBalance))
+    || (request.analysis.type === 'transient_thermal' && (!profile.study.transientThermal
+      || request.model.domains.length > profile.study.transientThermal.maximumDomains
+      || request.analysis.settings.outputTimesS.length > profile.study.transientThermal.maximumOutputFrames
+      || profile.study.transientThermal.materialModel !== 'constant_isotropic_conductivity_and_heat_capacity'
+      || !profile.study.transientThermal.loadTypes.includes('surface_heat_flux')
+      || !profile.study.transientThermal.constraintTypes.includes('prescribed_temperature')
+      || !profile.study.transientThermal.completeNtHflRflFrames
+      || !profile.study.transientThermal.storedThermalEnergy))
+    || (request.analysis.type === 'implicit_transient_dynamics' && (!profile.study.implicitDynamics
+      || profile.study.implicitDynamics.maximumDomains !== 1
+      || profile.study.implicitDynamics.maximumOutputFrames < request.analysis.settings.outputTimesS.length
+      || profile.study.implicitDynamics.formulation !== 'implicit_newmark_alpha_zero'
+      || !profile.study.implicitDynamics.completeDisplacementReactionEnergyFrames))
+    || (request.analysis.type === 'harmonic_response' && (!profile.study.harmonic
+      || profile.study.harmonic.maximumDomains !== 1
+      || profile.study.harmonic.maximumFrequencies !== 1
+      || profile.study.harmonic.formulation !== 'undamped_modal_superposition'
+      || !profile.study.harmonic.completeComplexDisplacementReaction))
     || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
     || request.model.domains.length > profile.study.maximumOccurrences
@@ -874,9 +998,21 @@ const steadyThermalResult = z.object({
   }).strict().optional(),
   temperatureSamples: z.array(z.object({ positionAnalysisMm: analysisPoint, temperatureC: finite.min(-273.15).max(1e6) }).strict()).min(2).max(256),
 }).strict();
+const transientThermalResult = z.object({
+  formulation: z.literal('transient_isotropic_conduction'),
+  frames: z.array(z.object({
+    timeS: positive.max(1e7), minimumTemperatureC: finite.min(-273.15).max(1e6),
+    maximumTemperatureC: finite.min(-273.15).max(1e6),
+    maximumHeatFluxMagnitudeWPerM2: nonNegative.max(1e15),
+    totalAppliedHeatW: positive.max(1e15), totalReactionHeatW: finite.min(-1e15).max(1e15),
+    storedThermalEnergyJ: nonNegative.max(1e15),
+    temperatureSamples: z.array(z.object({ positionAnalysisMm: analysisPoint,
+      temperatureC: finite.min(-273.15).max(1e6) }).strict()).min(2).max(256),
+  }).strict()).min(1).max(16),
+}).strict();
 const resultSchema = z.object({
   schema: z.literal('tunacad-neutral-simulation-result/2.0'), studyId: text, jobId: text, requestDigest: hash,
-  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal']), status: z.enum(['succeeded', 'failed', 'cancelled']),
+  projectRevision: text, modelDigest: hash, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal', 'transient_thermal', 'implicit_transient_dynamics', 'harmonic_response']), status: z.enum(['succeeded', 'failed', 'cancelled']),
   authority: z.enum(['engineering', 'architecture_mock']), metrics: resultMetrics,
   perDomain: z.array(z.object({ domainId: text, metrics: resultMetrics, fieldDatasetIds: z.array(text).max(512) }).strict()).min(1).max(128),
   reactions: z.array(z.object({
@@ -897,6 +1033,25 @@ const resultSchema = z.object({
   contact: contactResult.optional(),
   nonlinear: nonlinearResult.optional(),
   thermal: steadyThermalResult.optional(),
+  transientThermal: transientThermalResult.optional(),
+  implicitDynamics: z.object({
+    formulation: z.literal('implicit_newmark_alpha_zero'),
+    frames: z.array(z.object({
+      timeS: positive, loadedFaceMeanDisplacementMm: vector, maximumDisplacementMm: nonNegative,
+      supportReactionForceN: vector, kineticEnergyNmm: nonNegative, strainEnergyNmm: nonNegative,
+      appliedWorkNmm: finite, energyBalanceResidualNmm: nonNegative,
+    }).strict()).min(2).max(16),
+  }).strict().optional(),
+  harmonic: z.object({
+    formulation: z.literal('undamped_modal_superposition'),
+    frequencyHz: positive.min(1e-3).max(1e6),
+    loadedFaceMeanDisplacement: z.object({
+      realMm: vector, imaginaryMm: vector, amplitudeMm: nonNegative, phaseLagRad: finite.min(0).max(2 * Math.PI),
+    }).strict(),
+    supportReaction: z.object({
+      realN: vector, imaginaryN: vector, amplitudeN: nonNegative, phaseLagRad: finite.min(0).max(2 * Math.PI),
+    }).strict(),
+  }).strict().optional(),
   provenance: z.object({
     providerInterfaceVersion: z.literal('2.0'), adapterId: text, adapterVersion: text, providerRunId: text,
     submittedAt: z.iso.datetime(), completedAt: z.iso.datetime(), normalizedAt: z.iso.datetime(),
@@ -922,6 +1077,96 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
   if (!unique(datasetIds) || result.reactions.some(reaction => !domainIds.includes(reaction.domainId))
     || result.criticalRegions.some(region => !domainIds.includes(region.domainId))) fail('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID');
   if (result.analysisType !== request.analysis.type) fail('BRIDGE_V2_RESULT_IDENTITY_INVALID');
+  if (request.analysis.type !== 'harmonic_response' && 'harmonic' in result && result.harmonic !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
+  if (request.analysis.type === 'harmonic_response') {
+    const harmonic = result.harmonic;
+    const load = request.loads[0];
+    if (load.type !== 'surface_force') fail('BRIDGE_V2_HARMONIC_RESULT_INVALID');
+    const force = load.forceN;
+    const forceNorm = Math.hypot(...force);
+    const consistent = (entry: { realMm?: number[]; imaginaryMm?: number[]; realN?: number[]; imaginaryN?: number[];
+      amplitudeMm?: number; amplitudeN?: number; phaseLagRad: number }) => {
+      const real = entry.realMm ?? entry.realN!;
+      const imaginary = entry.imaginaryMm ?? entry.imaginaryN!;
+      const amplitude = entry.amplitudeMm ?? entry.amplitudeN!;
+      const projectedReal = real.reduce((sum, value, axis) => sum + value * force[axis] / forceNorm, 0);
+      const projectedImaginary = imaginary.reduce((sum, value, axis) => sum + value * force[axis] / forceNorm, 0);
+      const phase = (Math.atan2(-projectedImaginary, projectedReal) + 2 * Math.PI) % (2 * Math.PI);
+      return Math.abs(amplitude - Math.hypot(...real, ...imaginary)) <= Math.max(1e-10, amplitude * 1e-6)
+        && Math.abs(entry.phaseLagRad - phase) <= 1e-6;
+    };
+    if (!harmonic || Math.abs(harmonic.frequencyHz - request.analysis.settings.frequencyHz) > 1e-6
+      || !consistent(harmonic.loadedFaceMeanDisplacement) || !consistent(harmonic.supportReaction)
+      || result.status !== 'succeeded' || result.authority !== 'engineering'
+      || result.reactions.length || result.criticalRegions.length || datasetIds.length
+      || Object.values(result.metrics).some(value => value !== null)
+      || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
+      || result.transientThermal !== undefined || result.implicitDynamics !== undefined
+      || result.thermal !== undefined || result.modal !== undefined || result.buckling !== undefined
+      || result.contact !== undefined || result.nonlinear !== undefined
+      || !result.warnings.some(warning => warning.code === 'SIMULATION_HARMONIC_POC')
+      || result.review.engineeringUsePermitted || result.convergence.status !== 'converged') {
+      fail('BRIDGE_V2_HARMONIC_RESULT_INVALID');
+    }
+    return result;
+  }
+  if (request.analysis.type !== 'implicit_transient_dynamics' && 'implicitDynamics' in result
+    && result.implicitDynamics !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
+  if (request.analysis.type === 'implicit_transient_dynamics') {
+    const frames = result.implicitDynamics?.frames;
+    const times = request.analysis.settings.outputTimesS;
+    if (!frames || frames.length !== times.length || result.status !== 'succeeded'
+      || result.authority !== 'engineering'
+      || ('transientThermal' in result && result.transientThermal !== undefined)
+      || ('thermal' in result && result.thermal !== undefined)
+      || ('modal' in result && result.modal !== undefined)
+      || ('buckling' in result && result.buckling !== undefined)
+      || ('contact' in result && result.contact !== undefined)
+      || ('nonlinear' in result && result.nonlinear !== undefined)
+      || frames.some((frame, index) => Math.abs(frame.timeS - times[index]) > Math.max(1e-9, times[index] * 1e-5)
+        || Math.abs(frame.energyBalanceResidualNmm
+          - Math.abs(frame.kineticEnergyNmm + frame.strainEnergyNmm - frame.appliedWorkNmm)) > 1e-12
+        || frame.energyBalanceResidualNmm > Math.max(1e-5, Math.abs(frame.appliedWorkNmm) * .05))
+      || result.reactions.length || result.criticalRegions.length || datasetIds.length
+      || Object.values(result.metrics).some(value => value !== null)
+      || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
+      || !result.warnings.some(warning => warning.code === 'SIMULATION_IMPLICIT_DYNAMICS_POC')
+      || result.review.engineeringUsePermitted || result.convergence.status !== 'converged') {
+      fail('BRIDGE_V2_DYNAMICS_RESULT_INVALID');
+    }
+    return result;
+  }
+  if (request.analysis.type !== 'transient_thermal' && 'transientThermal' in result
+    && result.transientThermal !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
+  if (request.analysis.type === 'transient_thermal') {
+    const outputTimesS = request.analysis.settings.outputTimesS;
+    if (result.analysisType !== 'transient_thermal' || !('transientThermal' in result) || !result.transientThermal
+      || ('thermal' in result && result.thermal !== undefined)
+      || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
+      || ('contact' in result && result.contact !== undefined) || ('nonlinear' in result && result.nonlinear !== undefined)
+      || result.reactions.length || result.criticalRegions.length
+      || (result.authority === 'engineering' && (datasetIds.length !== outputTimesS.length * 2
+        || result.perDomain.some(domain => domain.fieldDatasetIds.some((id, index) =>
+          id !== result.jobId + ':' + domain.domainId + ':frame:' + String(Math.floor(index / 2) + 1).padStart(3, '0')
+            + (index % 2 === 0 ? ':temperature' : ':heat-flux')))))
+      || (result.authority !== 'engineering' && datasetIds.length !== 0 && datasetIds.length !== outputTimesS.length * 2)
+      || Object.values(result.metrics).some(metric => metric !== null)
+      || result.perDomain.some(domain => Object.values(domain.metrics).some(metric => metric !== null))
+      || result.transientThermal.frames.length !== outputTimesS.length
+      || result.transientThermal.frames.some((frame, index) =>
+        Math.abs(frame.timeS - outputTimesS[index]) > 1e-5
+        || frame.minimumTemperatureC > frame.maximumTemperatureC
+        || frame.temperatureSamples.some(sample => sample.temperatureC < frame.minimumTemperatureC - 1e-6
+          || sample.temperatureC > frame.maximumTemperatureC + 1e-6)
+        || Math.abs(frame.totalAppliedHeatW - request.loads.reduce((sum, load) => sum + (load.type === 'surface_heat_flux'
+          ? load.heatFluxWPerM2 * load.semanticReferenceIds.reduce((area, id) =>
+            area + (request.model.references.find(reference => reference.semanticReferenceId === id)?.faceOwnerLocal.areaMm2 ?? 0), 0) * 1e-6 : 0), 0)) > 1e-6)
+      || !result.warnings.some(warning => warning.code === 'SIMULATION_TRANSIENT_THERMAL_POC')
+      || result.review.engineeringUsePermitted || result.convergence.status !== 'converged') {
+      fail('BRIDGE_V2_TRANSIENT_RESULT_INVALID');
+    }
+    return result;
+  }
   if (request.analysis.type === 'steady_thermal') {
     const convection = request.loads[0]?.type === 'surface_convection';
     const conductivityCurve = request.materials[0]?.thermalConductivityCurve;
@@ -1103,11 +1348,12 @@ const fieldTriangle = z.object({
 }).strict();
 const fieldDataset = z.object({
   schema: z.literal('tunacad-neutral-simulation-field-dataset/2.0'),
-  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal']),
+  datasetId: text, jobId: text, domainId: text, analysisType: z.enum(['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal', 'transient_thermal']),
   step: z.union([
     z.object({ index: z.literal(0), label: z.literal('static') }).strict(),
     z.object({ index: z.literal(0), label: z.literal('final_contact_increment') }).strict(),
     z.object({ index: z.literal(0), label: z.literal('steady_thermal') }).strict(),
+    z.object({ index: z.number().int().positive().max(16), label: z.literal('transient_thermal'), timeS: positive.max(1e7) }).strict(),
     z.object({ index: z.number().int().positive(), label: z.literal('final_nonlinear_increment'), stepId: text, totalTime: positive }).strict(),
     z.object({ index: z.number().int().positive(), label: text, modeNumber: z.number().int().positive(), frequencyHz: nonNegative }).strict(),
     z.object({ index: z.number().int().positive(), label: text, bucklingModeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive }).strict(),
@@ -1135,7 +1381,11 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
     || page.nextCursor !== (page.triangleOffset + page.triangleCount < page.dataset.totalTriangles ? String(page.triangleOffset + page.triangleCount) : null)
     || page.dataset.unit !== (page.dataset.component === 'displacement_magnitude' || page.dataset.component === 'normal_gap' || page.dataset.component === 'tangential_slip' ? 'mm' : page.dataset.component === 'von_mises_stress' || page.dataset.component === 'contact_pressure' || page.dataset.component === 'contact_shear' || page.dataset.component === 'strain_energy_density' ? 'MPa' : page.dataset.component === 'equivalent_plastic_strain' ? 'dimensionless' : page.dataset.component === 'temperature' ? 'degC' : page.dataset.component === 'heat_flux_magnitude' ? 'W/m^2' : 'normalized')
     || (page.dataset.analysisType === 'steady_thermal') !== (page.dataset.step.label === 'steady_thermal')
-    || (page.dataset.analysisType === 'steady_thermal') !== (page.dataset.component === 'temperature' || page.dataset.component === 'heat_flux_magnitude')
+    || (page.dataset.analysisType === 'steady_thermal' || page.dataset.analysisType === 'transient_thermal') !== (page.dataset.component === 'temperature' || page.dataset.component === 'heat_flux_magnitude')
+    || (page.dataset.analysisType === 'transient_thermal') !== (page.dataset.step.label === 'transient_thermal')
+    || (page.dataset.analysisType === 'transient_thermal'
+      && !page.dataset.datasetId.endsWith(':frame:' + String(page.dataset.step.index).padStart(3, '0')
+        + (page.dataset.component === 'temperature' ? ':temperature' : ':heat-flux')))
     || (page.dataset.analysisType === 'modal') !== (page.dataset.component === 'mode_shape_magnitude')
     || (page.dataset.analysisType === 'modal') !== ('modeNumber' in page.dataset.step)
     || (page.dataset.analysisType === 'linear_buckling') !== (page.dataset.component === 'buckling_mode_shape_magnitude')
@@ -1146,7 +1396,7 @@ export function validateNeutralSimulationFieldPageV2(value: unknown): NeutralSim
     || page.dataset.valueRange.minimum > page.dataset.valueRange.maximum
     || (page.dataset.component === 'temperature' ? page.dataset.valueRange.minimum < -273.15 : page.dataset.component !== 'normal_gap' && page.dataset.valueRange.minimum < 0)
     || page.triangles.some(triangle => triangle.values.some(value => page.dataset.component === 'temperature' ? value < -273.15 : page.dataset.component !== 'normal_gap' && value < 0))
-    || (page.dataset.analysisType === 'steady_thermal' && page.triangles.some(triangle =>
+    || ((page.dataset.analysisType === 'steady_thermal' || page.dataset.analysisType === 'transient_thermal') && page.triangles.some(triangle =>
       triangle.displacementsMm.some(vector => vector.some(value => value !== 0))
       || triangle.values.some(value => value < page.dataset.valueRange.minimum || value > page.dataset.valueRange.maximum)))
     || digest(page.triangles) !== page.chunkDigest) fail('BRIDGE_V2_FIELD_PAGE_INVALID');

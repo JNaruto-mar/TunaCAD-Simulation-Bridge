@@ -132,7 +132,10 @@ Three.js viewer now shows thermal-only contours, numerical legends,
 physical-unit probes, and multi-domain visibility. See
 [SIM8_THERMAL_FIELD_EVIDENCE.md](SIM8_THERMAL_FIELD_EVIDENCE.md).
 
-The next bounded increment is the SIM-8 exit-gate evidence matrix.
-SIM-8 stays
+The six roadmap exit-gate fixtures and additional implemented lanes are
+consolidated in [SIM8_EXIT_GATE_MATRIX.md](SIM8_EXIT_GATE_MATRIX.md).
+Each bounded development fixture passes its recorded comparison, while
+cross-lane promotion breadth, version-bound release evidence, and full
+public-browser coverage remain pending. SIM-8 stays
 `proof_of_concept`, `engineeringUsePermitted: false`, and outside the
 public-beta catalog until its own validation gates are intentionally completed.

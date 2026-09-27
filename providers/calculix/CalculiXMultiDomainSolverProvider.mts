@@ -11,11 +11,14 @@ import type {
 import { validateNeutralSimulationFieldPageV2, validateNeutralSimulationResultV2 } from '../../simulation-bridge/v2Validation.mts';
 import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { interpolateThermalConductivity } from '../../simulation-bridge/thermalConductivity.mts';
+import { integrateTemperatureRise } from '../../simulation-bridge/thermalMeshTransfer.mts';
 import {
   LOCAL_PROVIDER_RESOURCE_LIMITS, hasEnforcedProviderProcessQuotas, monitorWorkingDirectory,
   readUtf8FileBounded, removeWorkingDirectory, spawnProviderProcess, terminateChildProcess,
 } from '../processLifecycle.mts';
-import { asV1Mesh, createCalculiXInputDeckV2, mappedThermalFaceAreaMm2 } from './CalculiXMultiDomainDeck.mts';
+import { asV1Mesh, createCalculiXInputDeckV2, mappedThermalFaceAreaMm2, requireRegions } from './CalculiXMultiDomainDeck.mts';
+import { parseCalculiXImplicitDynamicsDatV2 } from './CalculiXImplicitDynamics.mts';
+import { parseCalculiXHarmonicDatV2 } from './CalculiXHarmonic.mts';
 import { thermalInterfaceMeanTemperatureC, validateNonconformalThermalInterface } from './CalculiXThermalInterface.mts';
 import { buildConstraintSets, consistentSurfaceLoads, gravityNodalLoads, pressureSurfaceLoads } from './CalculiXSolverProvider.mts';
 
@@ -27,6 +30,7 @@ interface Run {
 }
 interface DomainOutput { maximumDisplacementMm: number; maximumDisplacementNode: number; maximumVonMisesStressMPa: number; maximumStressElement: number }
 type SteadyThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'steady_thermal' } }>;
+type TransientThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'transient_thermal' } }>;
 
 export class CalculiXMultiDomainSolverProvider implements ExternalSolverProviderV2 {
   readonly id = 'tunacad-calculix-multi-domain-poc';
@@ -43,7 +47,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     this.executable = resolve(options.executable); this.runtimeVersion = options.runtimeVersion;
     const maximumDomains = options.maximumDomains ?? 16;
     this.capabilities = {
-      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal'],
+      interfaceVersion: '2.0', analysisTypes: ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal', 'transient_thermal', 'implicit_transient_dynamics', 'harmonic_response'],
       fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density', 'temperature', 'heat_flux_magnitude'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
@@ -66,6 +70,20 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
           temperatureDependentConductivity: { maximumPoints: 16, increasingOnly: true },
           interfaceConductance: { maximumInterfaces: 1, planarCoincidentOnly: true },
         },
+        transientThermal: {
+          maximumDomains: 1, materialModel: 'constant_isotropic_conductivity_and_heat_capacity',
+          maximumOutputFrames: 16, loadTypes: ['surface_heat_flux'],
+          constraintTypes: ['prescribed_temperature'], completeNtHflRflFrames: true,
+          storedThermalEnergy: true,
+        },
+        implicitDynamics: {
+          maximumDomains: 1, maximumOutputFrames: 16, formulation: 'implicit_newmark_alpha_zero',
+          completeDisplacementReactionEnergyFrames: true,
+        },
+        harmonic: {
+          maximumDomains: 1, maximumFrequencies: 1, formulation: 'undamped_modal_superposition',
+          completeComplexDisplacementReaction: true,
+        },
         contact: { maximumDomains: 2, maximumInteractions: 8, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small', 'finite'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
       },
       geometryFormats: [], asynchronous: true, cancellation: true, normalizedResults: true,
@@ -73,7 +91,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       qualification: {
         status: 'internally_validated', engineeringUsePermitted: false,
         statement: 'Internally validated but experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
-        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-9 single-frequency harmonic modal superposition is proof-of-concept and provider-only; no sweeps, damping, or browser/MCP authoring', 'SIM-9 implicit dynamics is proof-of-concept and provider-only: one undamped linear-elastic domain, one step-force FACE, one separate fixed FACE, zero initial conditions, 2–16 U/RF/ELKE/ELSE frames; no browser/MCP authoring', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'SIM-9 transient thermal is proof-of-concept and provider-only: one constant-property domain, step flux, fixed-temperature FACE, bounded NT/HFL/RFL frames, and no transient field pages or browser/MCP preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim7a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
@@ -157,7 +175,16 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
         ? parseCalculiXNonlinearStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta')), [1])
           .flatMap(step => step.increments).reduce((sum, increment) => sum + increment.iterations, 0)
         : null;
-      const normalized = run.request.analysis.type === 'steady_thermal'
+      const normalized = run.request.analysis.type === 'transient_thermal'
+        ? normalizeTransientThermal(run, parseCalculiXTransientThermalDatV2(contents, run.model,
+          run.request.analysis.settings.outputTimesS), this.id, this.version, this.runtimeVersion)
+        : run.request.analysis.type === 'implicit_transient_dynamics'
+        ? normalizeImplicitDynamics(run, parseCalculiXImplicitDynamicsDatV2(contents, run.model,
+          run.request.analysis.settings.outputTimesS), this.id, this.version, this.runtimeVersion)
+        : run.request.analysis.type === 'harmonic_response'
+        ? normalizeHarmonic(run, parseCalculiXHarmonicDatV2(contents, run.model,
+          run.request.analysis.settings.frequencyHz), this.id, this.version, this.runtimeVersion)
+        : run.request.analysis.type === 'steady_thermal'
         ? normalizeSteadyThermal(run, parseCalculiXSteadyThermalDatV2(contents, run.model, [thermalReactionName(0)],
           run.request.loads.some(load => load.type === 'surface_convection') ? 'THERMAL_BASE_001' : null,
           run.request.interactions[0]?.type === 'thermal_interface_conductance'
@@ -360,6 +387,79 @@ export function parseCalculiXSteadyThermalDatV2(
     throw new Error('CalculiX steady-thermal HFL output has no finite non-zero heat flux.');
   }
   return { temperaturesByNode, heatFluxByElementWPerMm2, maximumHeatFluxMagnitudeByElementWPerMm2, maximumHeatFluxMagnitudeWPerMm2, reactionHeatBySetW, sectionBaseHeatFlowW, interfaceFluxBySurfaceW };
+}
+
+/** Isolate complete NT/HFL/RFL triples by explicit CalculiX time stamp.
+ * Reuse the SIM-8 bounded single-frame parser only after proving exact frame
+ * count, order, identity, and uniqueness. A partial or extra frame is never
+ * exposed as a successful transient result. */
+export function parseCalculiXTransientThermalDatV2(
+  text: string, model: NeutralFemModelV2, requestedTimesS: number[],
+): Array<{ timeS: number; output: CalculiXSteadyThermalDatV2 }> {
+  const lines = text.split(/\r?\n/);
+  if (lines.length > 2_000_000 || requestedTimesS.length < 1 || requestedTimesS.length > 16) {
+    throw new Error('CalculiX transient-thermal output exceeds its bounded frame budget.');
+  }
+  type Kind = 'temperature' | 'reaction' | 'flux';
+  const frames = requestedTimesS.map(timeS => ({ timeS, blocks: {} as Partial<Record<Kind, string[]>> }));
+  let active: string[] | null = null;
+  let lastFrame = -1;
+  for (const line of lines) {
+    if (line.length > 4096) throw new Error('CalculiX transient-thermal output contains an oversized record.');
+    const lower = line.toLowerCase();
+    const kind: Kind | null = lower.includes('temperatures') && lower.includes('for set nall') ? 'temperature'
+      : lower.includes('heat generation') && lower.includes('for set thermal_reaction_001') ? 'reaction'
+        : lower.includes('heat flux') && lower.includes('for set eall') ? 'flux' : null;
+    if (!kind && /\bfor set\b/i.test(line) && /\band time\b/i.test(line)
+      && (lower.includes('temperatures') || lower.includes('heat generation') || lower.includes('heat flux'))) {
+      throw new Error('CalculiX transient-thermal output contains an unexpected NT/HFL/RFL set.');
+    }
+    if (kind) {
+      const rawTime = /\band time\s+([+-]?(?:\d+\.?\d*|\.\d+)(?:[eEdD][+-]?\d+)?)/i.exec(line)?.[1];
+      const timeS = rawTime === undefined ? NaN : Number(rawTime.replace(/[dD]/g, 'E'));
+      const index = frames.findIndex(frame => Math.abs(frame.timeS - timeS) <= Math.max(1e-5, frame.timeS * 1e-8));
+      if (index < 0 || index < lastFrame || frames[index].blocks[kind]) {
+        throw new Error('CalculiX transient-thermal output has an extra, unordered, or repeated NT/HFL/RFL frame.');
+      }
+      lastFrame = index;
+      active = [line];
+      frames[index].blocks[kind] = active;
+      continue;
+    }
+    if (/\bfor set\b/i.test(line) && /\band time\b/i.test(line)) active = null;
+    else active?.push(line);
+  }
+  let expectedFluxKeys: string[] | null = null;
+  return frames.map(frame => {
+    if (!frame.blocks.temperature || !frame.blocks.reaction || !frame.blocks.flux) {
+      throw new Error('CalculiX transient-thermal output lacks a complete requested NT/HFL/RFL frame.');
+    }
+    const numericRows = (block: string[], kind: Kind): string[][] => block.slice(1)
+      .filter(line => /^\s*\d+\s/.test(line))
+      .map(line => {
+        const values = line.trim().split(/\s+/);
+        if (values.some(value => !Number.isFinite(Number(value.replace(/[dD]/g, 'E'))))) {
+          throw new Error('CalculiX transient-thermal ' + kind + ' frame contains a non-finite row.');
+        }
+        return values;
+      });
+    const reactionNodes = numericRows(frame.blocks.reaction, 'reaction').map(values => values[0]);
+    const fluxKeys = numericRows(frame.blocks.flux, 'flux').map(values => values[0] + ':' + values[1]).sort();
+    if (!reactionNodes.length || new Set(reactionNodes).size !== reactionNodes.length
+      || !fluxKeys.length || new Set(fluxKeys).size !== fluxKeys.length
+      || expectedFluxKeys !== null && (fluxKeys.length !== expectedFluxKeys.length
+        || fluxKeys.some((key, index) => key !== expectedFluxKeys![index]))) {
+      throw new Error('CalculiX transient-thermal frame has duplicate or incomplete RFL/HFL rows.');
+    }
+    expectedFluxKeys ??= fluxKeys;
+    return {
+      timeS: frame.timeS,
+      output: parseCalculiXSteadyThermalDatV2(
+        [...frame.blocks.temperature, ...frame.blocks.reaction, ...frame.blocks.flux].join('\n'),
+        model, ['THERMAL_REACTION_001'],
+      ),
+    };
+  });
 }
 
 export interface CalculiXContactNodeOutput { normalGapMm: number; tangentialSlipMm: number; pressureMPa: number; shearMPa: number }
@@ -572,6 +672,206 @@ export function parseCalculiXBucklingFrdV2(text: string): { shapes: Map<number, 
   return { shapes, factors };
 }
 
+function normalizeHarmonic(
+  run: Run,
+  parsed: ReturnType<typeof parseCalculiXHarmonicDatV2>,
+  adapterId: string,
+  adapterVersion: string,
+  runtimeVersion: string,
+) {
+  const request = run.request;
+  if (request.analysis.type !== 'harmonic_response' || request.loads[0]?.type !== 'surface_force') {
+    throw new Error('SIM-9 harmonic normalization received an unsupported request.');
+  }
+  const load = request.loads[0];
+  const regions = requireRegions(run.model, load.semanticReferenceIds);
+  const loadedNodes = [...new Set(regions.flatMap(region => region.facetIndices)
+    .flatMap(index => run.model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b);
+  if (!loadedNodes.length) throw new Error('SIM-9 harmonic loaded FACE has no mesh nodes.');
+  const mean = (displacements: Map<number, NeutralVector3>) => [0, 1, 2].map(axis =>
+    loadedNodes.reduce((sum, node) => sum + displacements.get(node)![axis], 0) / loadedNodes.length) as NeutralVector3;
+  const realMm = mean(parsed.realDisplacementsByNode);
+  const imaginaryMm = mean(parsed.imaginaryDisplacementsByNode);
+  const forceNorm = Math.hypot(...load.forceN);
+  const phaseLag = (real: NeutralVector3, imaginary: NeutralVector3) => {
+    const project = (value: NeutralVector3) => value.reduce((sum, component, axis) =>
+      sum + component * load.forceN[axis] / forceNorm, 0);
+    return (Math.atan2(-project(imaginary), project(real)) + 2 * Math.PI) % (2 * Math.PI);
+  };
+  const emptyMetrics = { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null };
+  const completedAt = new Date().toISOString();
+  const result: NeutralSimulationResultV2 = {
+    schema: 'tunacad-neutral-simulation-result/2.0',
+    studyId: request.studyId, jobId: run.providerRunId, requestDigest: request.requestDigest,
+    projectRevision: request.model.projectRevision, modelDigest: request.model.modelDigest,
+    analysisType: 'harmonic_response', status: 'succeeded', authority: 'engineering',
+    metrics: emptyMetrics,
+    perDomain: [{ domainId: request.model.domains[0].domainId, metrics: { ...emptyMetrics }, fieldDatasetIds: [] }],
+    reactions: [], criticalRegions: [], failedConstraints: [],
+    warnings: [{ code: 'SIMULATION_HARMONIC_POC',
+      message: 'Experimental one-domain undamped single-frequency modal-superposition response; no engineering-use qualification.',
+      severity: 'warning' }],
+    convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Check modal truncation, mesh convergence, and separation from undamped resonance.'],
+    harmonic: {
+      formulation: 'undamped_modal_superposition', frequencyHz: parsed.frequencyHz,
+      loadedFaceMeanDisplacement: { realMm, imaginaryMm,
+        amplitudeMm: Math.hypot(...realMm, ...imaginaryMm), phaseLagRad: phaseLag(realMm, imaginaryMm) },
+      supportReaction: { realN: parsed.realReactionN, imaginaryN: parsed.imaginaryReactionN,
+        amplitudeN: Math.hypot(...parsed.realReactionN, ...parsed.imaginaryReactionN),
+        phaseLagRad: phaseLag(parsed.realReactionN, parsed.imaginaryReactionN) },
+    },
+    provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId,
+      submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false,
+      disclaimer: 'CalculiX ' + runtimeVersion + ' experimental SIM-9 harmonic result. Not qualified for engineering use.' },
+    mutation: { occurred: false, projectRevisionBefore: request.model.projectRevision, projectRevisionAfter: request.model.projectRevision },
+  };
+  return { result, datasets: new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>() };
+}
+
+function normalizeImplicitDynamics(
+  run: Run,
+  parsedFrames: ReturnType<typeof parseCalculiXImplicitDynamicsDatV2>,
+  adapterId: string,
+  adapterVersion: string,
+  runtimeVersion: string,
+) {
+  const request = run.request;
+  if (request.analysis.type !== 'implicit_transient_dynamics' || request.loads[0]?.type !== 'surface_force') {
+    throw new Error('SIM-9 dynamics normalization received an unsupported request.');
+  }
+  const load = request.loads[0];
+  const regions = requireRegions(run.model, load.semanticReferenceIds);
+  const facetIndices = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
+  const nodalLoads = consistentSurfaceLoads(asV1Mesh(run.model), facetIndices, load.forceN);
+  const loadedNodes = [...new Set(facetIndices.flatMap(index => run.model.boundaryFacets.connectivity[index]))].sort((a, b) => a - b);
+  const frames = parsedFrames.map(frame => {
+    const mean = [0, 1, 2].map(axis => loadedNodes.reduce((sum, node) =>
+      sum + frame.displacementsByNode.get(node)![axis], 0) / loadedNodes.length) as NeutralVector3;
+    const appliedWorkNmm = [...nodalLoads].reduce((sum, [node, force]) => {
+      const displacement = frame.displacementsByNode.get(node)!;
+      return sum + force.reduce((work, component, axis) => work + component * displacement[axis], 0);
+    }, 0);
+    const maximumDisplacementMm = Math.max(...[...frame.displacementsByNode.values()].map(value => Math.hypot(...value)));
+    const energyBalanceResidualNmm = Math.abs(frame.kineticEnergyNmm + frame.strainEnergyNmm - appliedWorkNmm);
+    if (energyBalanceResidualNmm > Math.max(1e-5, Math.abs(appliedWorkNmm) * .05)) {
+      throw new Error('SIM-9 dynamics frame violates the bounded work-energy balance.');
+    }
+    return { timeS: frame.timeS, loadedFaceMeanDisplacementMm: mean, maximumDisplacementMm,
+      supportReactionForceN: frame.supportReactionForceN, kineticEnergyNmm: frame.kineticEnergyNmm,
+      strainEnergyNmm: frame.strainEnergyNmm, appliedWorkNmm, energyBalanceResidualNmm };
+  });
+  const emptyMetrics = { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null };
+  const completedAt = new Date().toISOString();
+  const result: NeutralSimulationResultV2 = {
+    schema: 'tunacad-neutral-simulation-result/2.0',
+    studyId: request.studyId, jobId: run.providerRunId, requestDigest: request.requestDigest,
+    projectRevision: request.model.projectRevision, modelDigest: request.model.modelDigest,
+    analysisType: 'implicit_transient_dynamics', status: 'succeeded', authority: 'engineering',
+    metrics: emptyMetrics,
+    perDomain: [{ domainId: request.model.domains[0].domainId, metrics: { ...emptyMetrics }, fieldDatasetIds: [] }],
+    reactions: [], criticalRegions: [], failedConstraints: [],
+    warnings: [{ code: 'SIMULATION_IMPLICIT_DYNAMICS_POC',
+      message: 'Experimental one-domain undamped implicit step-force dynamics; no engineering-use qualification.',
+      severity: 'warning' }],
+    convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Verify transient mesh/time-step convergence, support inertia, and work-energy balance.'],
+    implicitDynamics: { formulation: 'implicit_newmark_alpha_zero', frames },
+    provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId,
+      submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false,
+      disclaimer: 'CalculiX ' + runtimeVersion + ' experimental SIM-9 implicit-dynamics result. Not qualified for engineering use.' },
+    mutation: { occurred: false, projectRevisionBefore: request.model.projectRevision, projectRevisionAfter: request.model.projectRevision },
+  };
+  return { result, datasets: new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>() };
+}
+
+function normalizeTransientThermal(
+  run: Run,
+  parsedFrames: ReturnType<typeof parseCalculiXTransientThermalDatV2>,
+  adapterId: string,
+  adapterVersion: string,
+  runtimeVersion: string,
+) {
+  const request = run.request as TransientThermalRequestV2;
+  const material = request.materials[0];
+  const load = request.loads[0];
+  if (load.type !== 'surface_heat_flux' || !(material.densityKgM3! > 0)
+    || !(material.specificHeatJPerKgK! > 0)) {
+    throw new Error('SIM-9 transient normalization received an unsupported material or load.');
+  }
+  const areaMm2 = load.semanticReferenceIds.reduce((sum, id) => {
+    const reference = request.model.references.find(entry => entry.role === 'load' && entry.semanticReferenceId === id);
+    if (!reference) throw new Error('SIM-9 transient normalization lacks the loaded FACE.');
+    return sum + reference.faceOwnerLocal.areaMm2;
+  }, 0);
+  const totalAppliedHeatW = load.heatFluxWPerM2 * areaMm2 * 1e-6;
+  const frames = parsedFrames.map(({ timeS, output }) => {
+    const temperatures = run.model.nodes.map((_, node) => output.temperaturesByNode.get(node));
+    if (temperatures.some(value => value === undefined || !Number.isFinite(value))) {
+      throw new Error('SIM-9 transient frame has incomplete NT output.');
+    }
+    const finiteTemperatures = temperatures as number[];
+    const minimumTemperatureC = finiteTemperatures.reduce((minimum, value) => Math.min(minimum, value), Infinity);
+    const maximumTemperatureC = finiteTemperatures.reduce((maximum, value) => Math.max(maximum, value), -Infinity);
+    const content = integrateTemperatureRise(run.model, finiteTemperatures, request.analysis.settings.initialTemperatureC);
+    if (Math.abs(content.volumeMm3 - request.model.domains[0].shape.volumeMm3)
+      > Math.max(1e-6, request.model.domains[0].shape.volumeMm3 * 1e-5)) {
+      throw new Error('SIM-9 transient frame has an inconsistent mesh volume.');
+    }
+    const storedThermalEnergyJ = content.contentKmm3 * material.densityKgM3! * material.specificHeatJPerKgK! * 1e-9;
+    const totalReactionHeatW = output.reactionHeatBySetW.THERMAL_REACTION_001;
+    if (!Number.isFinite(storedThermalEnergyJ) || storedThermalEnergyJ < -1e-6
+      || !Number.isFinite(totalReactionHeatW) || totalReactionHeatW > 1e-4
+      || totalReactionHeatW < -totalAppliedHeatW * 1.05) {
+      throw new Error('SIM-9 transient frame has invalid stored energy or reaction heat.');
+    }
+    return {
+      timeS, minimumTemperatureC, maximumTemperatureC,
+      maximumHeatFluxMagnitudeWPerM2: output.maximumHeatFluxMagnitudeWPerMm2 * 1e6,
+      totalAppliedHeatW, totalReactionHeatW, storedThermalEnergyJ,
+      temperatureSamples: boundedThermalSamples(run.model, output.temperaturesByNode, 256),
+    };
+  });
+  const emptyMetrics = { maximumVonMisesStressMPa: null, maximumDisplacementMm: null, minimumFactorOfSafety: null };
+  const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
+  let triangleBudget = 0;
+  parsedFrames.forEach(({ timeS, output }, index) => {
+    for (const [id, dataset] of buildThermalFieldDatasets(run, output, { index: index + 1, timeS })) {
+      triangleBudget += dataset.triangles.length;
+      if (triangleBudget > 1_000_000) throw new Error('SIM-9 transient field transport exceeds its bounded triangle budget.');
+      datasets.set(id, dataset);
+    }
+  });
+  const completedAt = new Date().toISOString();
+  const result: NeutralSimulationResultV2 = {
+    schema: 'tunacad-neutral-simulation-result/2.0',
+    studyId: request.studyId, jobId: run.providerRunId, requestDigest: request.requestDigest,
+    projectRevision: request.model.projectRevision, modelDigest: request.model.modelDigest,
+    analysisType: 'transient_thermal', status: 'succeeded', authority: 'engineering',
+    metrics: emptyMetrics,
+    perDomain: [{ domainId: request.model.domains[0].domainId, metrics: { ...emptyMetrics },
+      fieldDatasetIds: parsedFrames.flatMap((_frame, index) => [
+        transientThermalDatasetId(run.providerRunId, request.model.domains[0].domainId, index + 1, 'temperature'),
+        transientThermalDatasetId(run.providerRunId, request.model.domains[0].domainId, index + 1, 'heat-flux'),
+      ]) }],
+    reactions: [], criticalRegions: [], failedConstraints: [],
+    warnings: [{ code: 'SIMULATION_TRANSIENT_THERMAL_POC',
+      message: 'Experimental SIM-9 one-domain transient conduction with bounded per-frame field pages; not qualified for engineering use.',
+      severity: 'warning' }],
+    convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
+    suggestedEngineeringIssues: ['Verify thermal capacity units, time-step and mesh convergence, NT/HFL/RFL frame completeness, and energy balance.'],
+    transientThermal: { formulation: 'transient_isotropic_conduction', frames },
+    provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId,
+      submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
+    review: { engineerReviewRequired: true, engineeringUsePermitted: false,
+      disclaimer: 'CalculiX ' + runtimeVersion + ' experimental SIM-9 transient-thermal result. Not qualified for engineering use.' },
+    mutation: { occurred: false, projectRevisionBefore: request.model.projectRevision, projectRevisionAfter: request.model.projectRevision },
+  };
+  return { result, datasets };
+}
+
 function normalizeSteadyThermal(
   run: Run,
   parsed: CalculiXSteadyThermalDatV2,
@@ -738,7 +1038,12 @@ function normalizeSteadyThermal(
 /** Reuse the bounded boundary-triangle page transport. NT stays nodal; HFL is
  * the finite, complete element-mean flux magnitude in W/m^2. Thermal pages
  * contain zero displacement vectors and cannot masquerade as structural data. */
-function buildThermalFieldDatasets(run: Run, parsed: CalculiXSteadyThermalDatV2) {
+function transientThermalDatasetId(runId: string, domainId: string, frameIndex: number, suffix: 'temperature' | 'heat-flux') {
+  return runId + ':' + domainId + ':frame:' + String(frameIndex).padStart(3, '0') + ':' + suffix;
+}
+function buildThermalFieldDatasets(
+  run: Run, parsed: CalculiXSteadyThermalDatV2, frame?: { index: number; timeS: number },
+) {
   const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
   const elementByFace = new Map<string, number>();
   run.model.volumeElements.connectivity.forEach((cell, elementIndex) => {
@@ -778,11 +1083,16 @@ function buildThermalFieldDatasets(run: Run, parsed: CalculiXSteadyThermalDatV2)
       ['temperature', 'temperature', 'degC', temperature],
       ['heat-flux', 'heat_flux_magnitude', 'W/m^2', heatFlux],
     ] as const) {
-      const datasetId = run.providerRunId + ':' + domain.domainId + ':' + suffix;
+      const datasetId = frame
+        ? transientThermalDatasetId(run.providerRunId, domain.domainId, frame.index, suffix)
+        : run.providerRunId + ':' + domain.domainId + ':' + suffix;
       const descriptor: NeutralSimulationFieldDatasetV2 = {
         schema: 'tunacad-neutral-simulation-field-dataset/2.0', datasetId,
         jobId: run.providerRunId, domainId: domain.domainId,
-        analysisType: 'steady_thermal', step: { index: 0, label: 'steady_thermal' },
+        ...(frame
+          ? { analysisType: 'transient_thermal' as const,
+            step: { index: frame.index, label: 'transient_thermal' as const, timeS: frame.timeS } }
+          : { analysisType: 'steady_thermal' as const, step: { index: 0 as const, label: 'steady_thermal' as const } }),
         component, unit, location: 'boundary_facet', topology: 'triangle_soup',
         valueRange: fieldExtrema(triangles),
         deformation: { vectorsIncluded: true, trueScale: 1, recommendedScale: 1 },

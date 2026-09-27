@@ -101,7 +101,7 @@ export function projectThermalFieldBetweenMeshes(
   };
 }
 
-function integrateTemperatureRise(model: NeutralFemModelV2, temperatures: number[], referenceC: number) {
+export function integrateTemperatureRise(model: NeutralFemModelV2, temperatures: number[], referenceC: number) {
   let volumeMm3 = 0; let contentKmm3 = 0;
   for (const cell of model.volumeElements.connectivity) {
     if (cell.length !== 10 || cell.some(node => node < 0 || node >= temperatures.length)) {
