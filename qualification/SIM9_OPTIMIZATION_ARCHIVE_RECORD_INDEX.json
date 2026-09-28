@@ -1,0 +1,442 @@
+{
+  "schema": "tunacad-sim9-optimization-archive-record-index/0.1",
+  "recordedDate": "2026-09-28",
+  "scope": "unchanged 10 mm baseline / 9 mm candidate; raw domain maximum von Mises <= 2 MPa; volume objective",
+  "runtime": {
+    "gmsh": "4.15.2",
+    "calculix": "2.16",
+    "nodeMajor": 24
+  },
+  "status": "proof_of_concept",
+  "engineeringUsePermitted": false,
+  "regeneratedRecords": 9,
+  "reusedRecords": 1,
+  "reportDigest": "sha256:6d6e4c77df5e61d95adbadf85a5c43380b8993b5829e77dc802713dc5b4ce1eb",
+  "evidenceDigest": "sha256:3cabb227d5d41fe596abdaa495459e799730219d276ca47498b5af3a8ced0a7b",
+  "comparisonDigest": "sha256:d6933f641903cd3a9b04dc54272143625733497a1792e6ee7723705eb91175ac",
+  "trustedReaderReplay": "PASS",
+  "completeManifest": "PASS",
+  "admission": {
+    "schema": "tunacad-optimization-evidence-admission/0.1",
+    "evidenceDigest": "sha256:3cabb227d5d41fe596abdaa495459e799730219d276ca47498b5af3a8ced0a7b",
+    "comparisonDigest": "sha256:d6933f641903cd3a9b04dc54272143625733497a1792e6ee7723705eb91175ac",
+    "objectiveImprovementMm3": 400,
+    "nominalFeasible": true,
+    "robustFeasible": false,
+    "classification": "nominal_only_insufficient_numerical_evidence",
+    "numericalEvidenceGate": "FAIL",
+    "baseline": {
+      "observedMeshSpreadMPa": 0.21533199070632025,
+      "selectedMarginMPa": 0.6973695358327154,
+      "latestGlobalChangeMPa": 0.11296903751605658,
+      "reasons": [
+        "GLOBAL_STRESS_UNSTABLE",
+        "LOCAL_STRESS_UNSTABLE",
+        "PEAK_APPROACHES_CRITICAL_REGION",
+        "REFINEMENT_CHANGE_EXCEEDS_MARGIN"
+      ]
+    },
+    "candidate": {
+      "observedMeshSpreadMPa": 0.24035401460886496,
+      "selectedMarginMPa": 0.5617988161834542,
+      "latestGlobalChangeMPa": 0.1400619860790171,
+      "reasons": [
+        "GLOBAL_STRESS_UNSTABLE",
+        "LOCAL_STRESS_UNSTABLE",
+        "PEAK_APPROACHES_CRITICAL_REGION",
+        "REFINEMENT_CHANGE_EXCEEDS_MARGIN"
+      ]
+    },
+    "uncertaintyMeaning": "observed mesh sensitivity, not a certified error bound",
+    "providerAdmission": "closed",
+    "engineeringUsePermitted": false
+  },
+  "records": [
+    {
+      "jobId": "calculixv2_766bf723-cfe6-4a1f-866a-f22f03ae927f",
+      "blobDigest": "sha256:2b94d8924fcb3c63b7ccd93c2a3bf1f2ded99c7f62854a609f0deeac166f81e6",
+      "recordDigest": "sha256:152a082f2820436cc3b587538d05d995138d8313f3a9e2d6eb065ba1fa13cc58",
+      "requestDigest": "sha256:3a10ab9731263ba3a2de506ec50736c9be8f8c094b18dae9554de759abcab90a",
+      "resultDigest": "sha256:f1220a6ece6c1d849f01d812160d6e4d10050fdbc532f67fac8991704e1f1633",
+      "fieldDigest": "sha256:7e6c54b2ac9979305949d4c5d7da64dfe4ac21a1eb17272e7b9fce12c1271c5a",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-b1a1241c2d42",
+      "nodes": 931,
+      "elements": 428,
+      "rawMaximumStressMPa": 1.0872984734609643,
+      "peak": {
+        "elementIndex": 393,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          2.2619153769261833,
+          9.426184107177622,
+          9.426184107177622
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 10,
+      "globalSizeMm": 4,
+      "localSizeMm": null,
+      "peakElement": 393,
+      "peakPositionMm": [
+        2.2619153769261833,
+        9.426184107177622,
+        9.426184107177622
+      ],
+      "label": "baseline-g4",
+      "reused": true
+    },
+    {
+      "label": "baseline-g3",
+      "jobId": "calculixv2_8d263eef-5832-485e-b0e5-40c8bb83cf47",
+      "blobDigest": "sha256:fafa38085f76aa9bfb74464fde86fc36f8a7d5324d313c4d68d0d417acc726e1",
+      "recordDigest": "sha256:50a1bdec68d90d84e7fd4f5d99073d6a22f96268e5d78edb9c55af5189f14971",
+      "requestDigest": "sha256:458bf243e2643e74fc3f86c057bb5d10f6982876bc1c6af598690dfe20576153",
+      "resultDigest": "sha256:eb8d74f825ddb7b76e5327a3ba4d7d75e480e9a5a1ac284aac7cfed53189e08b",
+      "fieldDigest": "sha256:a63961f33cd2225d769bb53df1ab33eacdba1c71df52e811a0ec64ac50c3b57e",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-b1a1241c2d42",
+      "nodes": 2006,
+      "elements": 1035,
+      "rawMaximumStressMPa": 1.189661426651228,
+      "peak": {
+        "elementIndex": 1001,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          1.6170241760599355,
+          0.4448669857131035,
+          9.55588555543898
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 10,
+      "globalSizeMm": 3,
+      "localSizeMm": null,
+      "peakElement": 1001,
+      "peakPositionMm": [
+        1.6170241760599355,
+        0.4448669857131035,
+        9.55588555543898
+      ],
+      "reused": false
+    },
+    {
+      "label": "baseline-g2",
+      "jobId": "calculixv2_27bca7bd-da6b-4f45-bba0-e7c34c98eab6",
+      "blobDigest": "sha256:8c212226dedf8d799a6533c520666a8f2aeff5714e3462c7f0287e62ba676002",
+      "recordDigest": "sha256:fdecdaba32ea1346391ccd7cf28d576547b3da04bb95768d4121fd7148a0de9c",
+      "requestDigest": "sha256:14874570f0d6aefff1717646c9bb6e5812472011b2c2de16307b67dc78059a87",
+      "resultDigest": "sha256:d81f2b8a7d9c601ccf96ffb44b914968a7db608ae310f101045173da419837e2",
+      "fieldDigest": "sha256:1905b3081fbd3c38d3a163916d5ed1b23cb5b24f3549f11ff0a74078201daa20",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-b1a1241c2d42",
+      "nodes": 4636,
+      "elements": 2607,
+      "rawMaximumStressMPa": 1.3026304641672846,
+      "peak": {
+        "elementIndex": 2508,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          1.2320508075688772,
+          9.63397459621556,
+          0.36602540378443876
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 10,
+      "globalSizeMm": 2,
+      "localSizeMm": null,
+      "peakElement": 2508,
+      "peakPositionMm": [
+        1.2320508075688772,
+        9.63397459621556,
+        0.36602540378443876
+      ],
+      "reused": false
+    },
+    {
+      "label": "candidate-g4",
+      "jobId": "calculixv2_d67a32c6-a5f0-459a-b44b-d7bf9a9c2024",
+      "blobDigest": "sha256:0aadde40e252eba5b801f916a3acc4b42bd35d298efa1929013bf1c63e57ba53",
+      "recordDigest": "sha256:4c303673bc1fd46efea3fcb7729f61744398004da04db02409376947e830511f",
+      "requestDigest": "sha256:82a47c3720d9d8f418ce89558b1cec1c48e3f0ab258227ce003e426e9f759903",
+      "resultDigest": "sha256:1a01cbcadf63e2a50d57cd2284bc210415caefd30d4eda6d44b4eb8774cc5964",
+      "fieldDigest": "sha256:83f1a08bde18e8b3d8573134020139add71befe756028c6c9384b4154c00116c",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-dc6470f70dce",
+      "nodes": 931,
+      "elements": 428,
+      "rawMaximumStressMPa": 1.1978471692076809,
+      "peak": {
+        "elementIndex": 380,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          2.2653521627251263,
+          0.5849334346115465,
+          8.514821499169445
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 9,
+      "globalSizeMm": 4,
+      "localSizeMm": null,
+      "peakElement": 380,
+      "peakPositionMm": [
+        2.2653521627251263,
+        0.5849334346115465,
+        8.514821499169445
+      ],
+      "reused": false
+    },
+    {
+      "label": "candidate-g3",
+      "jobId": "calculixv2_003048e2-4e6e-461d-a16c-4b5758d0029d",
+      "blobDigest": "sha256:bbfeef0365c9d321be762d3d6e4ea2b63b8b33a00944a56542df6e36b424b68b",
+      "recordDigest": "sha256:35ae189ec9165f3ca687b2cd52c1d5c2e0d656109e35874c5a3811623bb91aca",
+      "requestDigest": "sha256:5f8f715ed1d5d60defca2ae36c25a6769a2d810c00f5a93e39a07c97139fffd4",
+      "resultDigest": "sha256:cedfcd357096b24f340e6b9c51e8be6f8576fda2516718fdd586641ab224bd07",
+      "fieldDigest": "sha256:4eaaf3ddf1b0ce0f74fac65deb70d1c58adc0c0db68cd9e6d85891f705954fd5",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-dc6470f70dce",
+      "nodes": 1874,
+      "elements": 967,
+      "rawMaximumStressMPa": 1.2981391977375287,
+      "peak": {
+        "elementIndex": 911,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          1.6549418026248988,
+          9.556141719926172,
+          8.507927728005612
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 9,
+      "globalSizeMm": 3,
+      "localSizeMm": null,
+      "peakElement": 911,
+      "peakPositionMm": [
+        1.6549418026248988,
+        9.556141719926172,
+        8.507927728005612
+      ],
+      "reused": false
+    },
+    {
+      "label": "candidate-g2",
+      "jobId": "calculixv2_102d1487-a036-455d-835e-e45a740d8ba9",
+      "blobDigest": "sha256:cf24c48eb62074108b38e66da543c0c1beb6cc391743752882f8e660741a0ca6",
+      "recordDigest": "sha256:0ba8e09ac6904d1acc95965733b61cad19f35a568161bea1a345af5387921f19",
+      "requestDigest": "sha256:24009910699e3ce68b26c34543f3daccd0055b42fbab43eb56f8887d69fc0364",
+      "resultDigest": "sha256:f19a5e7a3bb316000cd93cb89c583968b38b55fa06e1b9a7862497b2e6c818cd",
+      "fieldDigest": "sha256:cbdb3f25461e004660d0f95e91e519c3f29c37de52144ec4e39e5096012fb4ca",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-dc6470f70dce",
+      "nodes": 4468,
+      "elements": 2505,
+      "rawMaximumStressMPa": 1.4382011838165458,
+      "peak": {
+        "elementIndex": 2369,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          1.1870672560251614,
+          9.63397459621556,
+          0.3188755100326795
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 9,
+      "globalSizeMm": 2,
+      "localSizeMm": null,
+      "peakElement": 2369,
+      "peakPositionMm": [
+        1.1870672560251614,
+        9.63397459621556,
+        0.3188755100326795
+      ],
+      "reused": false
+    },
+    {
+      "label": "baseline-l1p5",
+      "jobId": "calculixv2_7b56be3a-7e4d-472d-9c55-bae96f663766",
+      "blobDigest": "sha256:8cba503543b6fb8925596510ac2dd59208587254e3e26928cc889612faf8fd6e",
+      "recordDigest": "sha256:caca120e2b5b1c820a5d38897263234bb35715468bb6100662672e1c64658f01",
+      "requestDigest": "sha256:33d0c7e77d5d18c8412d5253b6333ba6b9d6e1b0bd86728dc6dc6d7d2f0bb9da",
+      "resultDigest": "sha256:3012f7464e14366a7a7b3cf99ac4ca2bf3d1e57d7da9ad3b37bf3b58fae0c872",
+      "fieldDigest": "sha256:43bee19ee2b18bdfa35bad6151ce3d371f9bfb2a1c70002bf326cb2e44e1efb1",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-b1a1241c2d42",
+      "nodes": 2838,
+      "elements": 1530,
+      "rawMaximumStressMPa": 1.4658470100072893,
+      "peak": {
+        "elementIndex": 1413,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          0.846605459173775,
+          9.752350991804544,
+          0.2476490081954547
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 10,
+      "globalSizeMm": 4,
+      "localSizeMm": 1.5,
+      "peakElement": 1413,
+      "peakPositionMm": [
+        0.846605459173775,
+        9.752350991804544,
+        0.2476490081954547
+      ],
+      "reused": false
+    },
+    {
+      "label": "baseline-l1",
+      "jobId": "calculixv2_01fc569b-c1ca-4051-856c-378f1b68b321",
+      "blobDigest": "sha256:f12eac5bac1b1a3a89818a16afa9a45c62260e5400b8a8c165b1104f97718465",
+      "recordDigest": "sha256:86e42b4eaeea3bc652da1f9f1a9f0ce8ac7e475c4d1803323fcd0cd1fcbc6b23",
+      "requestDigest": "sha256:2c91e847c31878000f87e96557355781b9fbac1f9b64983f0bef358173309cce",
+      "resultDigest": "sha256:4bdff658b00988ee5dc40195ee68c4f59ee1faa41b1ed3f99c1b928f6c551fed",
+      "fieldDigest": "sha256:ce342ab5e90c55216b9b1cfdb75f5aaf0ea61a8eaf686b69f43cbdd4a1e26c6a",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-b1a1241c2d42",
+      "nodes": 5926,
+      "elements": 3500,
+      "rawMaximumStressMPa": 1.6686843086533159,
+      "peak": {
+        "elementIndex": 3290,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          0.5895641699678792,
+          0.17623529749181932,
+          9.820791595223435
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 10,
+      "globalSizeMm": 4,
+      "localSizeMm": 1,
+      "peakElement": 3290,
+      "peakPositionMm": [
+        0.5895641699678792,
+        0.17623529749181932,
+        9.820791595223435
+      ],
+      "reused": false
+    },
+    {
+      "label": "candidate-l1p5",
+      "jobId": "calculixv2_cc2d4f1e-adf9-4490-a077-19111a608137",
+      "blobDigest": "sha256:bec1d542bb46ddcc59e2a52926bdb743f5153e1484744a05568531a4327792ee",
+      "recordDigest": "sha256:717db3387893698058fc4d6964ccad5cee177bbfe09d454fcb50d997703dab16",
+      "requestDigest": "sha256:229248958656c1b074306d818c2e6dd7aad2f169100ef75d6cb803063ef9066f",
+      "resultDigest": "sha256:1eb7d351c0298ff82ef469004db23836e26718fe14b91365a2143fbf65f0b787",
+      "fieldDigest": "sha256:6edab4683551d5aee7f82458c64d8a6b82b60b75c9a0ae7b6cf4bed913828f92",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-dc6470f70dce",
+      "nodes": 2621,
+      "elements": 1386,
+      "rawMaximumStressMPa": 1.6010257777662886,
+      "peak": {
+        "elementIndex": 1248,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          0.8459171546616531,
+          9.752350991804544,
+          0.24651406422787417
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 9,
+      "globalSizeMm": 4,
+      "localSizeMm": 1.5,
+      "peakElement": 1248,
+      "peakPositionMm": [
+        0.8459171546616531,
+        9.752350991804544,
+        0.24651406422787417
+      ],
+      "reused": false
+    },
+    {
+      "label": "candidate-l1",
+      "jobId": "calculixv2_c3e40aaa-d274-4924-81ae-6bc5dfffc12a",
+      "blobDigest": "sha256:e9258aaf206efbba72728ca9b5ecb9b5bc5cba5ec236244267ebb4c8f0fbf32d",
+      "recordDigest": "sha256:37403e9b1988c378021c746cbfbefdd5ac1cb5546772f82154a9d889ba0ae3e4",
+      "requestDigest": "sha256:edd67d2b7bb957dc43384605d4241de3d6e01320553b58ece629f04a6770768e",
+      "resultDigest": "sha256:6373ad1881bf7c9362b2e14ba6a6cfcfc2ca0bc5852a20d1ad5df121c21d875f",
+      "fieldDigest": "sha256:9f5dac49b3b3a140d02439c90aa059d13cee613b79b654a9af32693c8f08514f",
+      "runtime": {
+        "gmsh": "4.15.2",
+        "calculix": "2.16",
+        "nodeMajor": 24
+      },
+      "projectRevision": "opt-cad-dc6470f70dce",
+      "nodes": 5445,
+      "elements": 3184,
+      "rawMaximumStressMPa": 1.8206577004444804,
+      "peak": {
+        "elementIndex": 2990,
+        "indexing": "zero_based_composed_fem",
+        "positionAnalysisMm": [
+          0.5841412821363672,
+          0.17623529749181935,
+          8.827666970555335
+        ]
+      },
+      "stressDifferenceMPa": 0,
+      "thicknessMm": 9,
+      "globalSizeMm": 4,
+      "localSizeMm": 1,
+      "peakElement": 2990,
+      "peakPositionMm": [
+        0.5841412821363672,
+        0.17623529749181935,
+        8.827666970555335
+      ],
+      "reused": false
+    }
+  ],
+  "limitations": [
+    "Metadata index only; not a replacement for normalized blobs, independent completion ledger or trusted current source records.",
+    "Local diagnostic meshes do not replace the selected global 2 mm comparison.",
+    "Peak position is the raw maximum element centroid, not an exact integration-point location.",
+    "No live TunaCAD CAD/project-store or optimizer admission is claimed."
+  ]
+}

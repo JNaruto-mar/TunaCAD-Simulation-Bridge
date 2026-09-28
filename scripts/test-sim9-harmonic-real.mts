@@ -8,6 +8,7 @@ import { parseCalculiXHarmonicDatV2 } from '../providers/calculix/CalculiXHarmon
 import { CalculiXMultiDomainSolverProvider } from '../providers/calculix/CalculiXMultiDomainSolverProvider.mts';
 import { GmshMultiDomainMeshProvider } from '../providers/gmsh/GmshMultiDomainMeshProvider.mts';
 import { validateNeutralSimulationResultV2 } from '../simulation-bridge/v2Validation.mts';
+import { selectHarmonicModeCount } from '../simulation-bridge/harmonicModePolicy.mts';
 import type { NeutralFemModelV2, NeutralSimulationRequestV2 } from '../src/simulation/externalSimulationContracts.ts';
 import { makeRequest } from './test-sim9-harmonic-contract.mts';
 
@@ -32,13 +33,17 @@ try {
         assert.equal(domainId, 'bar'); assert.equal(format, 'step'); return step;
       } });
     const deck = createCalculiXInputDeckV2(request, model);
+    const selectedModes = selectHarmonicModeCount(frequencyHz, model.nodes.length,
+      model.volumeElements.connectivity.length);
     assert.equal(deck, createCalculiXInputDeckV2(request, model));
-    assert.match(deck, /^\*FREQUENCY,SOLVER=ARPACK,STORAGE=YES$/m);
+    assert.match(deck, new RegExp('^\\*FREQUENCY,SOLVER=ARPACK,STORAGE=YES\\r?\\n' + selectedModes + '$', 'm'));
     assert.match(deck, /^\*STEADY STATE DYNAMICS,HARMONIC=YES$/m);
     assert.match(deck, new RegExp('^' + frequencyHz + ',' + frequencyHz + ',2,1$', 'm'));
     const result = await solve(solver, request, model);
     const repeat = await solve(solver, request, model);
     assert.deepEqual(result.harmonic, repeat.harmonic);
+    assert(result.warnings.some(warning => warning.code === 'SIMULATION_HARMONIC_MODAL_COVERAGE'
+      && warning.message.includes('Retained ' + selectedModes + ' modes')));
     assert.equal(result.review.engineeringUsePermitted, false);
     const speedMPerS = Math.sqrt(200e9 / 7800);
     const waveArgument = 2 * Math.PI * frequencyHz * .1 / speedMPerS;
@@ -48,8 +53,13 @@ try {
     const measuredReactionN = result.harmonic!.supportReaction.realN[0];
     const displacementRelativeError = Math.abs(measuredDisplacementMm / analyticalSignedDisplacementMm - 1);
     const reactionRelativeError = Math.abs(measuredReactionN / analyticalSignedReactionN - 1);
-    assert(displacementRelativeError < .25, 'Harmonic displacement exceeds bounded 1D axial-wave reference.');
-    assert(reactionRelativeError < .1, 'Harmonic support reaction exceeds bounded 1D axial-wave reference.');
+    assert(displacementRelativeError < .08, 'Selected harmonic mode count has not stabilized displacement.');
+    assert(reactionRelativeError < .03, 'Selected harmonic mode count has not stabilized support reaction.');
+    const previous48ModeErrors = frequencyHz === 7000
+      ? { displacement: .03018886978207147, reaction: .023234863136769812 }
+      : { displacement: .11883183218739712, reaction: .02617988966526119 };
+    assert(displacementRelativeError < previous48ModeErrors.displacement);
+    assert(reactionRelativeError < previous48ModeErrors.reaction);
     assert(Math.abs(result.harmonic!.loadedFaceMeanDisplacement.imaginaryMm[0]) < 1e-8);
     assert(Math.abs(result.harmonic!.supportReaction.imaginaryN[0]) < 1e-5);
     assert.equal(result.harmonic!.loadedFaceMeanDisplacement.phaseLagRad, frequencyHz < 10_000 ? 0 : Math.PI);
@@ -60,9 +70,10 @@ try {
     const malformed = structuredClone(result);
     malformed.harmonic!.supportReaction.imaginaryN[0] = NaN;
     assert.throws(() => validateNeutralSimulationResultV2(malformed, request), /BRIDGE_V2_RESULT_INVALID/);
-    comparisons.push({ frequencyHz, nodes: model.nodes.length, elements: model.volumeElements.connectivity.length,
+    comparisons.push({ frequencyHz, selectedModes, nodes: model.nodes.length, elements: model.volumeElements.connectivity.length,
       analyticalSignedDisplacementMm, measuredDisplacementMm, displacementRelativeError,
       analyticalSignedReactionN, measuredReactionN, reactionRelativeError,
+      previous48ModeErrors,
       displacementAmplitudeMm: result.harmonic!.loadedFaceMeanDisplacement.amplitudeMm,
       displacementPhaseLagRad: result.harmonic!.loadedFaceMeanDisplacement.phaseLagRad,
       reactionAmplitudeN: result.harmonic!.supportReaction.amplitudeN,
@@ -82,6 +93,8 @@ try {
     'total force (fx,fy,fz) for set REACTION_001 and time  0.7000000E+04',
     '0.000000E+00 0.000000E+00 0.000000E+00'].join('\n');
   assert.equal(parseCalculiXHarmonicDatV2(complete, fakeModel, 7000).realDisplacementsByNode.size, 2);
+  assert.throws(() => parseCalculiXHarmonicDatV2(complete, fakeModel, 7000, 3),
+    /COVERAGE_INVALID/);
   assert.throws(() => parseCalculiXHarmonicDatV2(complete.replace('2 1.000000E-03', '1 1.000000E-03'), fakeModel, 7000));
   assert.throws(() => parseCalculiXHarmonicDatV2(complete.replace('0.7000000E+04', '0.8000000E+04'), fakeModel, 7000));
   assert.throws(() => parseCalculiXHarmonicDatV2(complete.replace('1.000000E-03', 'NaN'), fakeModel, 7000));

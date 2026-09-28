@@ -12,6 +12,7 @@ import type {
 } from '../src/simulation/externalSimulationContracts.ts';
 import { digest } from './stableDigest.mts';
 import { isBoundedThermalConductivityCurve } from './thermalConductivity.mts';
+import { HARMONIC_MODE_POLICY } from './harmonicModePolicy.mts';
 
 const text = z.string().min(1).max(500).regex(/^[^\u0000-\u001f\u007f]*$/);
 const finite = z.number().finite();
@@ -775,7 +776,27 @@ export function admitV2SimulationRequest(request: NeutralSimulationRequestV2, ca
       || profile.study.harmonic.maximumDomains !== 1
       || profile.study.harmonic.maximumFrequencies !== 1
       || profile.study.harmonic.formulation !== 'undamped_modal_superposition'
-      || !profile.study.harmonic.completeComplexDisplacementReaction))
+      || !profile.study.harmonic.completeComplexDisplacementReaction
+      || !Number.isFinite(profile.study.harmonic.minimumFrequencyHz)
+      || !Number.isFinite(profile.study.harmonic.maximumFrequencyHz)
+      || profile.study.harmonic.minimumFrequencyHz < HARMONIC_MODE_POLICY.minimumFrequencyHz
+      || profile.study.harmonic.maximumFrequencyHz < profile.study.harmonic.minimumFrequencyHz
+      || profile.study.harmonic.maximumFrequencyHz > HARMONIC_MODE_POLICY.maximumFrequencyHz
+      || request.analysis.settings.frequencyHz < profile.study.harmonic.minimumFrequencyHz
+      || request.analysis.settings.frequencyHz > profile.study.harmonic.maximumFrequencyHz
+      || !Number.isInteger(profile.study.harmonic.maximumModes)
+      || profile.study.harmonic.maximumModes < 1
+      || profile.study.harmonic.maximumModes > HARMONIC_MODE_POLICY.highFrequencyModes
+      || profile.study.harmonic.maximumModes < (request.analysis.settings.frequencyHz <= HARMONIC_MODE_POLICY.tierBoundaryHz
+        ? HARMONIC_MODE_POLICY.lowFrequencyModes : HARMONIC_MODE_POLICY.highFrequencyModes)
+      || !Number.isInteger(profile.study.harmonic.maximumNodes)
+      || profile.study.harmonic.maximumNodes < 1
+      || profile.study.harmonic.maximumNodes > HARMONIC_MODE_POLICY.maximumNodes
+      || !Number.isInteger(profile.study.harmonic.maximumElements)
+      || profile.study.harmonic.maximumElements < 1
+      || profile.study.harmonic.maximumElements > HARMONIC_MODE_POLICY.maximumElements
+      || !Number.isFinite(profile.study.harmonic.minimumUpperFrequencyRatio)
+      || profile.study.harmonic.minimumUpperFrequencyRatio < HARMONIC_MODE_POLICY.minimumUpperFrequencyRatio))
     || !profile.study.multiDomain || !profile.study.perDomainMaterials || !profile.study.rigidOccurrenceTransforms
     || request.model.domains.length > profile.study.maximumDomains
     || request.model.domains.length > profile.study.maximumOccurrences

@@ -1,5 +1,8 @@
 # SIM-9 harmonic-response development status
 
+Capability-specific PASS/FAIL/PENDING consolidation is in the
+[harmonic evidence matrix](SIM9_HARMONIC_EXIT_GATE_MATRIX.md).
+
 Status: `proof_of_concept`, bounded one-frequency CalculiX provider;
 `engineeringUsePermitted: false`. This is a separate lane from
 implicit transient dynamics. It does not change the established
@@ -24,8 +27,10 @@ displacement/velocity, plastic/nonlinear materials, multiple
 domains/materials/loads/constraints, thermal properties, unsupported
 load or restraint types, overlapping FACE roles, and incomplete
 result-token sets. Provider admission requires an explicit harmonic
-profile. A C3D10 CalculiX 2.16 provider is available for this
-bounded scope only; browser/MCP authoring is not yet exposed.
+profile. A C3D10 CalculiX 2.16 provider and bounded browser/MCP
+authoring are available only within the narrower 1–22 kHz provider
+envelope described below; the wider request-contract range alone
+does not imply provider admission.
 
 ## Axial SDOF analytical reference
 
@@ -65,7 +70,7 @@ and phase checks, and singular-resonance classification.
 
 ## Bounded real-provider evidence
 
-The provider emits deterministic C3D10 decks with a
+The initial provider emitted deterministic C3D10 decks with a
 `*FREQUENCY,SOLVER=ARPACK,STORAGE=YES` step (48 modes), followed by
 `*STEADY STATE DYNAMICS,HARMONIC=YES` at one distinct frequency.
 CalculiX requires two equal frequency-card endpoints; its
@@ -104,9 +109,9 @@ The focused `test:sim9-harmonic-convergence-real` matrix keeps the
 100 x 10 x 10 mm bar, material, fixed/loaded FACEs, 100 N cosine
 amplitude, and undamped formulation unchanged. It varies only
 the C3D10 mesh size, number of retained ARPACK modes, or one
-requested frequency per solve. The production provider still
-requests 48 modes; mode-count substitutions are test-only deck
-variants, not a new public provider setting or frequency sweep.
+requested frequency per solve. At the time of that diagnostic,
+the provider requested 48 modes; mode-count substitutions were
+test-only deck variants, not a frequency sweep.
 All runs use Gmsh 4.15.2 / CalculiX 2.16.
 
 Mesh levels: 10 mm (468 nodes/209 elements), 7.5 mm (726/309),
@@ -156,15 +161,14 @@ At 10 mm/48 modes the response stays smooth with correct phases:
 the displacement reference error is 3.08/3.02/2.96% at
 6.5/7/7.5 kHz and 9.14/11.88/15.88% at 19/20/21 kHz.
 
-Evidence gate: **PASS** for bounded mesh/frequency trend,
+Historical evidence gate: **PASS** for bounded mesh/frequency trend,
 high-mode diagnostic stabilization, phase, and repeatability;
-**FAIL** for treating the current fixed 48-mode production
+**FAIL** for treating the former fixed 48-mode production
 provider as modal-truncation-converged at 20 kHz. The 5 mm/192
 mode setting is evidence only, not an automatically promoted
-provider default or an engineering qualification. The next
-bounded roadmap item is an explicit, resource-bounded harmonic
-mode-count/coverage policy, followed by focused revalidation
-of the selected provider setting. This lane remains
+provider default or an engineering qualification. That historical
+FAIL led to the resource-bounded policy and focused revalidation
+recorded below. This lane remains
 `proof_of_concept` with `engineeringUsePermitted: false`.
 Previous SIM-2 through SIM-9 numerical evidence is not stale:
 no provider runtime or shared physics implementation changed.
@@ -177,3 +181,78 @@ Reproduce with explicit `TUNACAD_GMSH_EXECUTABLE` and
 96/144/192-mode diagnostics and selected-baseline repeat.
 These are focused real solves, not part of a broad historical
 suite.
+
+## Resource-bounded provider mode policy
+
+The provider no longer uses 48 modes for every frequency. For the
+currently bounded provider envelope, 1–8 kHz selects 96 modes and
+above 8–22 kHz selects 192 modes. Other frequencies fail admission;
+the broader request-contract range above does not imply provider
+support. The meshed model must have at most 2,000 nodes and 1,000
+volume elements, with enough nodal degrees of freedom for the
+selected eigenmodes. The existing Windows process limits remain
+120 s CPU and 1 GiB memory, with the Bridge's other artifact and
+result-size bounds unchanged. These bounds prevent selecting a
+larger mode count simply to force convergence.
+
+The provider checks the actual recovered eigenfrequency table before
+publishing a harmonic result: it must contain exactly the requested
+mode count in deterministic nondecreasing order, bracket the
+excitation, extend to at least twice the excitation frequency, and
+have no recovered mode within 0.5% of that undamped excitation.
+Missing, truncated, unordered, insufficient-coverage, or near-modal
+resonance histories fail closed under the existing result quarantine.
+The ratio criterion is a coverage guard, not proof of convergence at
+every frequency inside the envelope. Frequency-specific validation
+is presently limited to the recorded 7 and 20 kHz axial-bar points.
+
+Focused Gmsh 4.15.2 / CalculiX 2.16 revalidation used the same
+468-node/209-C3D10 100 × 10 × 10 mm bar and repeated each selected
+provider solve. Signed real components are shown; imaginary parts
+were near zero and displacement/reaction phases remained 0/pi at
+7 kHz and pi/0 at 20 kHz.
+
+| Hz | Selected modes | 1D-wave U mm | Provider U mm | U error | 1D-wave R N | Provider R N | R error | Previous 48-mode U/R error |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 7000 | 96 | 0.000680373 | 0.000664362 | 2.35% | -154.820 | -156.245 | 0.92% | 3.02% / 2.32% |
+| 20000 | 192 | -0.000156347 | -0.000164735 | 5.37% | 126.577 | 127.621 | 0.82% | 11.88% / 2.62% |
+
+`npm run test:sim9-harmonic-mode-policy` PASS covers deterministic
+selection, admission, resource caps, modal coverage and fail-closed
+rejection. `npm run test:sim9-harmonic-real` PASS covers deterministic
+deck bytes, two actual frequencies, repeated normalized results,
+amplitude/phase comparisons, and malformed complex-data rejection.
+The Bridge no-emit TypeScript check passes. The previous fixed
+48-mode **FAIL is resolved for these two bounded provider fixtures**;
+the mode-policy and selected-frequency gate is **PASS**, not a
+general-frequency or formal engineering qualification. The old
+48-mode numbers remain historical reference evidence, not current
+provider output. The lane stays `proof_of_concept` with
+`engineeringUsePermitted: false`; no SIM-2–SIM-9 shared physics
+or numerical evidence was changed.
+
+## Bounded browser/MCP authoring and approval
+
+The v2 MCP preparation shape now accepts only one positive-density
+isotropic linear-elastic solid, one fixed FACE, one separate FACE
+with a nonzero peak cosine-force vector, zero force phase, no
+initial conditions, and one provider-admitted 1–22 kHz frequency.
+The user-requested mesh caps cannot exceed 2,000 nodes or 1,000
+volume elements. Preparation and job creation retain revision and
+provider-admission guards. The browser confirms frequency, force
+vector/amplitude, FACE roles, material/density, selected 96/192
+mode count, and coverage/resource limits before STEP transfer;
+the local Bridge terminal still requires separate approval.
+
+The focused no-solver harmonic authoring fixture passes strict MCP
+rejection, request-contract validation, no geometry export before
+approval, Bridge-host approval, stale-revision rejection, cancellation,
+provider modal-coverage failure quarantine, and missing-coverage
+result rejection. Browser approval labels are checked against current
+UI source and the UI passes TypeScript checking; this increment does
+not claim an interactive Chromium run. Provider deck, eigenfrequency
+recovery, and numerical results are unchanged from the preceding
+policy increment. No earlier real-solver evidence became stale.
+Harmonic response remains `proof_of_concept`,
+`engineeringUsePermitted: false`, without damping, sweeps,
+multi-domain physics, or harmonic contour pages.

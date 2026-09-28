@@ -1092,6 +1092,12 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       maximumFrequencies: 1;
       formulation: 'undamped_modal_superposition';
       completeComplexDisplacementReaction: true;
+      minimumFrequencyHz: number;
+      maximumFrequencyHz: number;
+      maximumModes: number;
+      maximumNodes: number;
+      maximumElements: number;
+      minimumUpperFrequencyRatio: number;
     };
     contact?: {
       maximumDomains: 2;
@@ -1382,7 +1388,8 @@ export interface PrepareNeutralSimulationInputV2 {
   schema: 'tunacad-neutral-simulation-preparation/2.0';
   studyId: string;
   name: string;
-  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal' | 'transient_thermal';
+  analysisType: 'linear_static' | 'modal' | 'linear_buckling' | 'static_contact' | 'nonlinear_static' | 'steady_thermal' | 'transient_thermal' | 'harmonic_response';
+  harmonic?: { frequencyHz: number; forcePhaseRad: 0; initialConditions: 'not_applicable' };
   transientThermal?: {
     initialTemperatureC: number;
     durationS: number;

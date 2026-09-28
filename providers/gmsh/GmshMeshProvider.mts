@@ -159,6 +159,14 @@ export class GmshMeshProvider implements ExternalMeshProvider {
   async getStatus(meshRunId: string): Promise<MeshProviderStatus> { return structuredClone(this.requireRun(meshRunId).status); }
   async getMesh(meshRunId: string): Promise<NeutralFemMesh | null> { return structuredClone(this.requireRun(meshRunId).mesh); }
 
+  /** Electrical composed completion requires an explicit cleanup barrier.
+   * Own run directory only; does not change meshing or numerical acceptance. */
+  async confirmCleanup(meshRunId: string): Promise<boolean> {
+    const run = this.requireRun(meshRunId);
+    if (['running', 'queued'].includes(run.status.status)) return false;
+    return removeWorkingDirectory(run.directory);
+  }
+
   async cancel(meshRunId: string): Promise<MeshProviderStatus> {
     const run = this.requireRun(meshRunId);
     if (run.status.status === 'running' || run.status.status === 'queued') {
@@ -327,7 +335,7 @@ function gmshElementWidth(type: number): number {
   return width;
 }
 
-function normalizeMesh(parsed: ParsedMsh, request: NeutralMeshJobRequest, descriptor: SimulationGeometryResolver['descriptor'], adapterId: string, adapterVersion: string, engineVersion: string): NeutralFemMesh {
+export function normalizeMesh(parsed: ParsedMsh, request: NeutralMeshJobRequest, descriptor: SimulationGeometryResolver['descriptor'], adapterId: string, adapterVersion: string, engineVersion: string): NeutralFemMesh {
   const surfaceTags = [...new Set(parsed.triangles.map(item => item.entityTag))].sort((a, b) => a - b);
   if (surfaceTags.length !== descriptor.shape.faceCount) throw meshError('SIMULATION_STEP_TOPOLOGY_CHANGED', `STEP meshing produced ${surfaceTags.length} boundary surfaces; TunaCAD supplied ${descriptor.shape.faceCount} CAD faces.`);
   const facetIndicesBySurface = new Map(surfaceTags.map(tag => [tag, [] as number[]]));

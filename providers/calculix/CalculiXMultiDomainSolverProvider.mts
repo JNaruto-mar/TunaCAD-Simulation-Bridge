@@ -19,6 +19,10 @@ import {
 import { asV1Mesh, createCalculiXInputDeckV2, mappedThermalFaceAreaMm2, requireRegions } from './CalculiXMultiDomainDeck.mts';
 import { parseCalculiXImplicitDynamicsDatV2 } from './CalculiXImplicitDynamics.mts';
 import { parseCalculiXHarmonicDatV2 } from './CalculiXHarmonic.mts';
+import { extractCalculiXStressHistory, validateStressHistorySelection,
+  type StressHistorySelection } from './CalculiXFatigueStressHistory.mts';
+import type { StructuralStressHistory } from '../../simulation-bridge/fatigueStructuralBinding.mts';
+import { HARMONIC_MODE_POLICY, selectHarmonicModeCount } from '../../simulation-bridge/harmonicModePolicy.mts';
 import { thermalInterfaceMeanTemperatureC, validateNonconformalThermalInterface } from './CalculiXThermalInterface.mts';
 import { buildConstraintSets, consistentSurfaceLoads, gravityNodalLoads, pressureSurfaceLoads } from './CalculiXSolverProvider.mts';
 
@@ -27,6 +31,8 @@ interface Run {
   directory: string; process: ChildProcess; status: SimulationProviderStatus; result: NeutralSimulationResultV2 | null;
   timeout: NodeJS.Timeout; stopResourceMonitor: () => void;
   datasets: Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>;
+  stressHistorySelection: StressHistorySelection | null;
+  stressHistories: Map<string, StructuralStressHistory>;
 }
 interface DomainOutput { maximumDisplacementMm: number; maximumDisplacementNode: number; maximumVonMisesStressMPa: number; maximumStressElement: number }
 type SteadyThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'steady_thermal' } }>;
@@ -83,6 +89,12 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
         harmonic: {
           maximumDomains: 1, maximumFrequencies: 1, formulation: 'undamped_modal_superposition',
           completeComplexDisplacementReaction: true,
+          minimumFrequencyHz: HARMONIC_MODE_POLICY.minimumFrequencyHz,
+          maximumFrequencyHz: HARMONIC_MODE_POLICY.maximumFrequencyHz,
+          maximumModes: HARMONIC_MODE_POLICY.highFrequencyModes,
+          maximumNodes: HARMONIC_MODE_POLICY.maximumNodes,
+          maximumElements: HARMONIC_MODE_POLICY.maximumElements,
+          minimumUpperFrequencyRatio: HARMONIC_MODE_POLICY.minimumUpperFrequencyRatio,
         },
         contact: { maximumDomains: 2, maximumInteractions: 8, interactionTypes: ['frictionless_contact', 'frictional_contact'], formulations: ['node_to_surface_penalty'], sliding: ['small', 'finite'], normalBehaviors: ['linear_penalty'], tangentialBehaviors: ['frictionless', 'coulomb_penalty'], initialAdjustments: ['none', 'bounded_to_contact'], nonlinearIncrementReporting: true },
       },
@@ -91,7 +103,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       qualification: {
         status: 'internally_validated', engineeringUsePermitted: false,
         statement: 'Internally validated but experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
-        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-9 single-frequency harmonic modal superposition is proof-of-concept and provider-only; no sweeps, damping, or browser/MCP authoring', 'SIM-9 implicit dynamics is proof-of-concept and provider-only: one undamped linear-elastic domain, one step-force FACE, one separate fixed FACE, zero initial conditions, 2–16 U/RF/ELKE/ELSE frames; no browser/MCP authoring', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'SIM-9 transient thermal is proof-of-concept and provider-only: one constant-property domain, step flux, fixed-temperature FACE, bounded NT/HFL/RFL frames, and no transient field pages or browser/MCP preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-9 single-frequency harmonic modal superposition is proof-of-concept with bounded browser/MCP authoring and dual human approval; no sweeps, damping, multi-domain analysis, or harmonic contour pages', 'SIM-9 implicit dynamics is proof-of-concept and provider-only: one undamped linear-elastic domain, one step-force FACE, one separate fixed FACE, zero initial conditions, 2–16 U/RF/ELKE/ELSE frames; no browser/MCP authoring', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'SIM-9 transient thermal is proof-of-concept and provider-only: one constant-property domain, step flux, fixed-temperature FACE, bounded NT/HFL/RFL frames, and no transient field pages or browser/MCP preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim7a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
@@ -117,6 +129,16 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
   }
 
   async submit(request: NeutralSimulationRequestV2, model: NeutralFemModelV2): Promise<SimulationProviderSubmission> {
+    return this.submitInternal(request, model, null);
+  }
+  /** Provider-only SIM-9 development path; no fatigue analysis admission. */
+  async submitWithStressHistory(request: NeutralSimulationRequestV2, model: NeutralFemModelV2,
+    selection: StressHistorySelection): Promise<SimulationProviderSubmission> {
+    validateStressHistorySelection(request, model, selection);
+    return this.submitInternal(request, model, structuredClone(selection));
+  }
+  private async submitInternal(request: NeutralSimulationRequestV2, model: NeutralFemModelV2,
+    stressHistorySelection: StressHistorySelection | null): Promise<SimulationProviderSubmission> {
     requireSingleDomainConstraints(request);
     const input = createCalculiXInputDeckV2(request, model);
     if (Buffer.byteLength(input, 'utf8') > LOCAL_PROVIDER_RESOURCE_LIMITS.maximumResultFileBytes) throw error('SIMULATION_INPUT_LIMIT', 'The CalculiX v2 deck exceeds the provider limit.');
@@ -125,6 +147,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     await writeFile(join(directory, 'tunacadv2.inp'), input, 'utf8');
     const child = spawnProviderProcess(this.executable, ['-i', 'tunacadv2'], { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: executableEnvironment(this.executable) });
     const run = { request, model, providerRunId, submittedAt, directory, process: child, result: null, datasets: new Map(),
+      stressHistorySelection, stressHistories: new Map<string, StructuralStressHistory>(),
       status: { providerRunId, status: 'running', progress: null, phase: 'external_solver_v2', updatedAt: submittedAt },
       timeout: undefined as unknown as NodeJS.Timeout, stopResourceMonitor: () => undefined } satisfies Run;
     run.timeout = setTimeout(() => void this.fail(run, 'SIMULATION_TIMEOUT', 'CalculiX exceeded its execution timeout.'), this.capabilities.execution.executionTimeoutMs); run.timeout.unref();
@@ -138,6 +161,12 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
   }
   getStatus(id: string) { return Promise.resolve(structuredClone(this.require(id).status)); }
   getResult(id: string) { return Promise.resolve(structuredClone(this.require(id).result)); }
+  getStressHistory(providerRunId: string, datasetId: string): Promise<StructuralStressHistory> {
+    const run = this.require(providerRunId);
+    const artifact = run.status.status === 'succeeded' ? run.stressHistories.get(datasetId) : null;
+    if (!artifact) throw error('SIM9_FATIGUE_HISTORY_NOT_FOUND', 'No completed provider-owned stress history exists for this job and dataset.');
+    return Promise.resolve(structuredClone(artifact));
+  }
   async getFieldDataset(providerRunId: string, datasetId: string, cursor = '0', limit = 128): Promise<NeutralSimulationFieldPageV2> {
     if (!/^\d{1,10}$/.test(cursor) || !Number.isInteger(limit) || limit < 1 || limit > 128) throw error('SIMULATION_FIELD_PAGE_INVALID', 'Invalid field page cursor or limit.');
     const found = this.require(providerRunId).datasets.get(datasetId);
@@ -157,7 +186,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     const run = this.require(id);
     if (run.status.status === 'running' || run.status.status === 'queued') {
       run.status = { providerRunId: id, status: 'cancelled', progress: null, phase: 'cancelled', updatedAt: new Date().toISOString() };
-      clearTimeout(run.timeout); run.stopResourceMonitor(); run.result = null; run.datasets.clear();
+      clearTimeout(run.timeout); run.stopResourceMonitor(); run.result = null; run.datasets.clear(); run.stressHistories.clear();
       const terminated = await terminateChildProcess(run.process); const cleaned = await removeWorkingDirectory(run.directory);
       run.status = { ...run.status, phase: terminated && cleaned ? 'cancelled_cleaned' : 'cancelled_cleanup_pending', updatedAt: new Date().toISOString(),
         ...(!terminated || !cleaned ? { failure: { code: 'SIMULATION_CLEANUP_FAILED', message: 'CalculiX cleanup could not be confirmed.' } } : {}) };
@@ -183,7 +212,10 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
           run.request.analysis.settings.outputTimesS), this.id, this.version, this.runtimeVersion)
         : run.request.analysis.type === 'harmonic_response'
         ? normalizeHarmonic(run, parseCalculiXHarmonicDatV2(contents, run.model,
-          run.request.analysis.settings.frequencyHz), this.id, this.version, this.runtimeVersion)
+          run.request.analysis.settings.frequencyHz,
+          selectHarmonicModeCount(run.request.analysis.settings.frequencyHz,
+            run.model.nodes.length, run.model.volumeElements.connectivity.length)),
+          this.id, this.version, this.runtimeVersion)
         : run.request.analysis.type === 'steady_thermal'
         ? normalizeSteadyThermal(run, parseCalculiXSteadyThermalDatV2(contents, run.model, [thermalReactionName(0)],
           run.request.loads.some(load => load.type === 'surface_convection') ? 'THERMAL_BASE_001' : null,
@@ -205,7 +237,32 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
           const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
           return normalize(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity')), this.id, this.version, this.runtimeVersion);
         })();
-      validateNeutralSimulationResultV2(normalized.result, run.request);
+      if (run.stressHistorySelection) {
+        if (run.request.analysis.type !== 'nonlinear_static' || normalized.result.analysisType !== 'nonlinear_static') {
+          throw new Error('SIM9_FATIGUE_HISTORY_INVALID: expected completed nonlinear structural result.');
+        }
+        const statusSteps = parseCalculiXNonlinearStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta')),
+          run.request.analysis.settings.steps.map(step => step.duration));
+        const selection = run.stressHistorySelection;
+        const samples = extractCalculiXStressHistory(contents,
+          statusSteps.map(step => step.increments.length),
+          statusSteps.map(step => step.increments.at(-1)!.totalTime), selection);
+        const datasetId = `${run.providerRunId}:${selection.domainId}:fatigue-stress-history`;
+        normalized.result.perDomain = normalized.result.perDomain.map(domain => ({
+          ...domain, fieldDatasetIds: domain.domainId === selection.domainId
+            ? [...domain.fieldDatasetIds, datasetId] : domain.fieldDatasetIds,
+        }));
+        validateNeutralSimulationResultV2(normalized.result, run.request);
+        const artifact: StructuralStressHistory = {
+          schema: 'tunacad-structural-stress-history/0.1',
+          structuralJobId: run.providerRunId, structuralResultDigest: digest(normalized.result),
+          requestDigest: normalized.result.requestDigest, projectRevision: normalized.result.projectRevision,
+          modelDigest: normalized.result.modelDigest, fieldDatasetId: datasetId,
+          location: { ...selection, stressComponent: 'signed_uniaxial_normal_stress' },
+          units: { stress: 'MPa', time: 's' }, samples,
+        };
+        run.stressHistories.set(datasetId, artifact);
+      } else validateNeutralSimulationResultV2(normalized.result, run.request);
       if (isStopped(run)) return;
       run.result = normalized.result; run.datasets = normalized.datasets;
       run.status = { providerRunId: run.providerRunId, status: 'succeeded', progress: 1, phase: 'normalized_v2', updatedAt: new Date().toISOString() };
@@ -214,7 +271,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
   }
   private async fail(run: Run, code: string, message: string) {
     if (run.status.status === 'cancelled' || run.status.status === 'failed') return;
-    clearTimeout(run.timeout); run.stopResourceMonitor(); run.result = null; run.datasets.clear();
+    clearTimeout(run.timeout); run.stopResourceMonitor(); run.result = null; run.datasets.clear(); run.stressHistories.clear();
     run.status = { providerRunId: run.providerRunId, status: 'failed', progress: null, phase: 'failed', updatedAt: new Date().toISOString(), failure: { code, message: message.slice(0, 2000) } };
     await terminateChildProcess(run.process); await removeWorkingDirectory(run.directory);
   }
@@ -710,7 +767,9 @@ function normalizeHarmonic(
     reactions: [], criticalRegions: [], failedConstraints: [],
     warnings: [{ code: 'SIMULATION_HARMONIC_POC',
       message: 'Experimental one-domain undamped single-frequency modal-superposition response; no engineering-use qualification.',
-      severity: 'warning' }],
+      severity: 'warning' }, { code: 'SIMULATION_HARMONIC_MODAL_COVERAGE',
+      message: `Retained ${parsed.modalCoverage.retainedModes} modes; recovered eigenfrequency range ${parsed.modalCoverage.lowestFrequencyHz}–${parsed.modalCoverage.highestFrequencyHz} Hz; upper/excitation ratio ${parsed.modalCoverage.upperFrequencyRatio}.`,
+      severity: 'info' }],
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
     suggestedEngineeringIssues: ['Check modal truncation, mesh convergence, and separation from undamped resonance.'],
     harmonic: {

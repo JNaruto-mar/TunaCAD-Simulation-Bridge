@@ -11,6 +11,10 @@ import type {
 import { SIMULATION_BRIDGE_VERSION, type SimulationBridgeReadiness } from '../src/simulation/simulationBridgeProtocol.ts';
 import { validateRequestEnvelope } from './requestValidation.mts';
 import { admitV2SimulationRequest, validateNeutralSimulationFieldPageV2 } from './v2Validation.mts';
+import { validateElectrostaticFoundation, type ElectrostaticFoundation } from './electrostaticFoundation.mts';
+import type { ElectrostaticDispatchProvider } from './electrostaticDispatchContract.mts';
+import { electrostaticStepGeometryDigest } from './electrostaticStepIdentity.mts';
+import { validateElectricalPage } from './electrostaticFields.mts';
 
 const MAX_STEP = 16 * 1024 * 1024;
 const MAX_TOTAL_STEP = 64 * 1024 * 1024;
@@ -22,22 +26,26 @@ const secretEquals = (a: string, b: string) => {
   const left = new TextEncoder().encode(a), right = new TextEncoder().encode(b);
   return left.length === right.length && timingSafeEqual(left, right);
 };
-type BridgeRequest = NeutralSimulationRequest | NeutralSimulationRequestV2;
-type AnyProvider = ExternalSimulationProvider | ExternalSimulationProviderV2;
-type Approval = { id: string; request: BridgeRequest; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used' };
+type BridgeRequest = NeutralSimulationRequest | NeutralSimulationRequestV2 | ElectrostaticFoundation;
+type AnyProvider = ExternalSimulationProvider | ExternalSimulationProviderV2 | ElectrostaticDispatchProvider;
+type Approval = { id: string; request: BridgeRequest; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used';
+  preparationId?: string; revoked?: boolean; submission?: SimulationProviderSubmission; provider?: AnyProvider };
 type BridgeJob = { submission: SimulationProviderSubmission; provider: AnyProvider };
 const isV2Request = (request: BridgeRequest): request is NeutralSimulationRequestV2 => request.schema === 'tunacad-neutral-simulation-request/2.0';
+const isElectrical = (request: BridgeRequest): request is ElectrostaticFoundation => request.schema === 'tunacad-electrostatic-foundation/0.1';
 
 /** Local host API only. Provider configuration accepts two executable paths
  * behind an authenticated session; execution arguments remain fixed in host adapters. */
 export async function startSimulationBridge(options: {
   provider: ExternalSimulationProvider | null;
   providerV2?: ExternalSimulationProviderV2 | null;
+  providerElectrical?: ElectrostaticDispatchProvider | null;
   readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
   approve: (request: BridgeRequest, signal: AbortSignal) => Promise<boolean>;
   configureProviders?: (paths: { gmshExecutable: string; calculixExecutable: string }) => Promise<{
     provider: ExternalSimulationProvider | null;
     providerV2?: ExternalSimulationProviderV2 | null;
+    providerElectrical?: ElectrostaticDispatchProvider | null;
     readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
   }>;
   browseProviderExecutable?: (provider: 'gmsh' | 'calculix') => Promise<string>;
@@ -63,6 +71,7 @@ export async function startSimulationBridge(options: {
   let authority = '';
   let provider = options.provider;
   let providerV2 = options.providerV2 ?? null;
+  let providerElectrical = options.providerElectrical ?? null;
   let readiness: SimulationBridgeReadiness = {
     ...options.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION,
     limits: { maximumStepBytes: MAX_STEP, maximumTotalStepBytes: MAX_TOTAL_STEP, maximumDomains: MAX_DOMAINS, maximumJobs: 4, sessionLifetimeMs: SESSION_MS },
@@ -115,6 +124,9 @@ export async function startSimulationBridge(options: {
         return reply(res, 200, { provider: body.provider, path });
       }
       if (req.method === 'POST' && req.url === '/v1/providers/test') {
+        if ([...approvals.values()].some(a => isElectrical(a.request) && ['pending', 'approved'].includes(a.state))) {
+          return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
+        }
         if (!options.configureProviders || submissions > 0) return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
         const executablePath = z.string().max(1_000).refine(value => ![...value].some(character => {
           const code = character.charCodeAt(0); return code < 32 || code === 127;
@@ -123,14 +135,21 @@ export async function startSimulationBridge(options: {
         const configured = await options.configureProviders(paths);
         provider = configured.provider;
         providerV2 = configured.providerV2 ?? null;
+        providerElectrical = configured.providerElectrical ?? null;
         readiness = { ...configured.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION, limits: readiness.limits };
         return reply(res, 200, readiness);
       }
       if (req.method === 'POST' && req.url === '/v1/authorizations') {
-        const request = validateRequestEnvelope(await readJson(req, 256 * 1024), now());
+        const raw = await readJson(req, 256 * 1024);
+        const electricalEnvelope = raw?.schema === 'tunacad-electrostatic-authorization/0.1'
+          ? z.object({ schema: z.literal('tunacad-electrostatic-authorization/0.1'),
+            preparationId: z.string().regex(/^simprep_electrical-[a-f0-9-]{36}$/),
+            request: z.unknown() }).strict().parse(raw) : null;
+        const request = electricalEnvelope ? validateElectrostaticFoundation(electricalEnvelope.request)
+          : validateRequestEnvelope(raw, now());
         const v2Request = isV2Request(request);
-        const requestProvider = v2Request ? providerV2 : provider;
-        if (!requestProvider || (v2Request ? !readiness.providerV2 : !readiness.ready)) return reply(res, 503, { error: 'BRIDGE_PROVIDERS_UNAVAILABLE' });
+        const requestProvider = isElectrical(request) ? providerElectrical : v2Request ? providerV2 : provider;
+        if (!requestProvider || (isElectrical(request) ? !readiness.electrostatic : v2Request ? !readiness.providerV2 : !readiness.ready)) return reply(res, 503, { error: 'BRIDGE_PROVIDERS_UNAVAILABLE' });
         if (v2Request) {
           const admission = admitV2SimulationRequest(request, providerV2!.capabilities);
           if (!admission.accepted) throw new Error('BRIDGE_PROVIDER_CAPABILITY_MISMATCH');
@@ -145,7 +164,9 @@ export async function startSimulationBridge(options: {
           if (states.some(state => ['running', 'queued'].includes(state.status))) return reply(res, 409, { error: 'BRIDGE_BUSY' });
         }
         if (!session || session.expiresAt <= now()) return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
-        const approval: Approval = { id: token(), request, state: 'pending', expiresAt: Math.min(now() + APPROVAL_MS, Date.parse(request.expiresAt)) };
+        const approval: Approval = { id: token(), request, state: 'pending',
+          preparationId: electricalEnvelope?.preparationId,
+          expiresAt: Math.min(now() + APPROVAL_MS, isElectrical(request) ? now() + APPROVAL_MS : Date.parse(request.expiresAt)) };
         approvalController?.abort();
         approvals.clear(); approvals.set(approval.id, approval);
         approvalController = new AbortController();
@@ -160,13 +181,20 @@ export async function startSimulationBridge(options: {
       if (req.method === 'DELETE' && approvalMatch) {
         const approval = approvals.get(approvalMatch[1]);
         if (!approval) return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
+        if (isElectrical(approval.request)) {
+          approval.revoked = true;
+          if (approval.submission && approval.provider) await approval.provider.cancel(approval.submission.providerRunId);
+        }
         if (approval.state !== 'used') { approval.state = 'denied'; approvalController?.abort(); }
         return reply(res, 200, { state: approval.state });
       }
       if (req.method === 'GET' && approvalMatch) {
         const approval = approvals.get(approvalMatch[1]);
         if (!approval) return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
-        return reply(res, 200, { state: approval.expiresAt <= now() ? 'expired' : approval.state });
+        return reply(res, 200, { state: approval.expiresAt <= now() ? 'expired' : approval.state,
+          ...(isElectrical(approval.request) ? { preparationId: approval.preparationId,
+            requestDigest: approval.request.requestDigest, projectRevision: approval.request.model.projectRevision,
+            canonicalSourceDigest: approval.request.model.domains[0].geometryDigest } : {}) });
       }
       if (req.method === 'POST' && req.url === '/v1/jobs') {
         if (busy || submissions >= 4) return reply(res, 409, { error: 'BRIDGE_BUSY' });
@@ -180,7 +208,21 @@ export async function startSimulationBridge(options: {
           const rawBody = await readJson(req, Math.ceil(MAX_TOTAL_STEP / 3) * 4 + 16 * 1024);
           let selectedProvider: AnyProvider;
           let submission: SimulationProviderSubmission;
-          if (isV2Request(permitted.request)) {
+          if (isElectrical(permitted.request)) {
+            if (!providerElectrical || !permitted.preparationId) throw new Error('BRIDGE_PROVIDERS_UNAVAILABLE');
+            const body = z.object({ authorizationId: z.literal(permitted.id),
+              stepBase64: z.string().max(Math.ceil(MAX_STEP / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+            }).strict().parse(rawBody);
+            const bytes = decodeStep(body.stepBase64);
+            if (await electrostaticStepGeometryDigest(bytes) !== permitted.request.model.domains[0].geometryDigest) {
+              throw new Error('BRIDGE_ELECTROSTATIC_SOURCE_MISMATCH');
+            }
+            if (permitted.revoked || !session || session.expiresAt <= now()
+              || permitted.expiresAt <= now() || stopping) throw new Error('BRIDGE_AUTHORIZATION_EXPIRED');
+            selectedProvider = providerElectrical;
+            submission = await providerElectrical.submit(permitted.request, bytes, {
+              preparationId: permitted.preparationId, authorizationId: permitted.id });
+          } else if (isV2Request(permitted.request)) {
             if (!providerV2) throw new Error('BRIDGE_PROVIDERS_UNAVAILABLE');
             const encodedLimit = Math.ceil(MAX_STEP / 3) * 4;
             const body = z.object({
@@ -227,7 +269,8 @@ export async function startSimulationBridge(options: {
             });
           }
           submissions++;
-          if (!session || session.expiresAt <= now() || stopping) { await selectedProvider.cancel(submission.providerRunId); throw new Error('BRIDGE_SESSION_REQUIRED'); }
+          permitted.submission = submission; permitted.provider = selectedProvider;
+          if (permitted.revoked || !session || session.expiresAt <= now() || stopping) { await selectedProvider.cancel(submission.providerRunId); throw new Error('BRIDGE_SESSION_REQUIRED'); }
           jobs.set(submission.providerRunId, { submission, provider: selectedProvider });
           return reply(res, 202, submission);
         } finally { busy = false; }
@@ -243,7 +286,10 @@ export async function startSimulationBridge(options: {
           cursor: z.string().regex(/^\d{1,10}$/).default('0'),
           limit: z.coerce.number().int().min(1).max(128).default(128),
         }).strict().parse(Object.fromEntries(fieldUrl.searchParams));
-        const page = validateNeutralSimulationFieldPageV2(await job.provider.getFieldDataset(fieldMatch[1], query.datasetId, query.cursor, query.limit));
+        const rawPage = await job.provider.getFieldDataset(fieldMatch[1], query.datasetId, query.cursor, query.limit);
+        const page = rawPage.dataset.analysisType === 'electrostatic'
+          ? await validateElectricalPage(rawPage, rawPage.dataset, query.cursor, query.limit)
+          : validateNeutralSimulationFieldPageV2(rawPage);
         if (page.dataset.jobId !== fieldMatch[1]) throw new Error('BRIDGE_FIELD_DATASET_IDENTITY_INVALID');
         return reply(res, 200, page);
       }

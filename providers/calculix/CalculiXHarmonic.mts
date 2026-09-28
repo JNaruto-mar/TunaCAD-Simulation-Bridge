@@ -1,4 +1,5 @@
 import type { NeutralFemModelV2, NeutralVector3 } from '../../src/simulation/externalSimulationContracts.ts';
+import { HARMONIC_MODE_POLICY, validateHarmonicModalCoverage, type HarmonicModalCoverage } from '../../simulation-bridge/harmonicModePolicy.mts';
 
 export interface CalculiXHarmonicDatV2 {
   frequencyHz: number;
@@ -6,12 +7,13 @@ export interface CalculiXHarmonicDatV2 {
   imaginaryDisplacementsByNode: Map<number, NeutralVector3>;
   realReactionN: NeutralVector3;
   imaginaryReactionN: NeutralVector3;
+  modalCoverage: HarmonicModalCoverage;
 }
 
 /** CalculiX 2.16 NODE PRINT emits one real U/RF pair and one imaginary U/RF
  * pair for a degenerate two-point, one-distinct-frequency harmonic card. */
 export function parseCalculiXHarmonicDatV2(
-  text: string, model: NeutralFemModelV2, requestedFrequencyHz: number,
+  text: string, model: NeutralFemModelV2, requestedFrequencyHz: number, expectedModes?: number,
 ): CalculiXHarmonicDatV2 {
   if (text.length > 32_000_000) throw new Error('SIM-9 harmonic result exceeds its bounded text limit.');
   const lines = text.split(/\r?\n/);
@@ -34,11 +36,9 @@ export function parseCalculiXHarmonicDatV2(
     const row = modeRow.exec(line);
     if (row) modalFrequencies.push(Number(row[3].replace(/[dD]/g, 'E')));
   }
-  if (!modalFrequencies.length || modalFrequencies.some(value => !Number.isFinite(value) || value < 0)
-    || requestedFrequencyHz > Math.max(...modalFrequencies)
-    || modalFrequencies.some(value => Math.abs(value - requestedFrequencyHz) <= requestedFrequencyHz * .005)) {
-    throw new Error('SIM-9 harmonic frequency is outside modal coverage or too close to an undamped resonance.');
-  }
+  const modalCoverage = validateHarmonicModalCoverage(
+    requestedFrequencyHz, modalFrequencies, expectedModes ?? modalFrequencies.length,
+    expectedModes === undefined ? 1 : HARMONIC_MODE_POLICY.minimumUpperFrequencyRatio);
   let state: 'u' | 'rf' | null = null;
   let active = new Map<number, NeutralVector3>();
   const parseNumber = (value: string) => Number(value.replace(/[dD]/g, 'E'));
@@ -97,5 +97,6 @@ export function parseCalculiXHarmonicDatV2(
     throw new Error('SIM-9 harmonic complex history is incomplete.');
   }
   return { frequencyHz: requestedFrequencyHz, realDisplacementsByNode: u[0],
-    imaginaryDisplacementsByNode: u[1], realReactionN: rf[0], imaginaryReactionN: rf[1] };
+    imaginaryDisplacementsByNode: u[1], realReactionN: rf[0], imaginaryReactionN: rf[1],
+    modalCoverage };
 }

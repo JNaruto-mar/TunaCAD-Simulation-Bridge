@@ -7,6 +7,7 @@ import { createCalculiXInputDeckV2, requireRegions } from '../providers/calculix
 import { parseCalculiXHarmonicDatV2 } from '../providers/calculix/CalculiXHarmonic.mts';
 import { GmshMultiDomainMeshProvider } from '../providers/gmsh/GmshMultiDomainMeshProvider.mts';
 import { sealNeutralSimulationRequestV2 } from '../simulation-bridge/v2Validation.mts';
+import { selectHarmonicModeCount } from '../simulation-bridge/harmonicModePolicy.mts';
 import type { NeutralFemModelV2, NeutralSimulationRequestV2 } from '../src/simulation/externalSimulationContracts.ts';
 import { makeRequest } from './test-sim9-harmonic-contract.mts';
 
@@ -43,7 +44,9 @@ try {
   async function solve(meshSizeMm: number, frequencyHz: number, modes: number) {
     const { request, model } = await getModel(meshSizeMm, frequencyHz);
     const base = createCalculiXInputDeckV2(request, model);
-    const marker = '*FREQUENCY,SOLVER=ARPACK,STORAGE=YES\n48\n';
+    const selectedModes = selectHarmonicModeCount(frequencyHz, model.nodes.length,
+      model.volumeElements.connectivity.length);
+    const marker = '*FREQUENCY,SOLVER=ARPACK,STORAGE=YES\n' + selectedModes + '\n';
     assert.equal(base.split(marker).length, 2, 'Only the harmonic mode-count card may vary.');
     const deck = base.replace(marker, '*FREQUENCY,SOLVER=ARPACK,STORAGE=YES\n' + modes + '\n');
     assert.equal(deck, base.replace(marker, '*FREQUENCY,SOLVER=ARPACK,STORAGE=YES\n' + modes + '\n'));

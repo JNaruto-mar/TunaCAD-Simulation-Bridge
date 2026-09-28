@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
+import { lstat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { ComposedSimulationProvider } from '../providers/ComposedSimulationProvider.mts';
@@ -8,6 +9,8 @@ import { CalculiXSolverProvider } from '../providers/calculix/CalculiXSolverProv
 import { GmshMultiDomainMeshProvider } from '../providers/gmsh/GmshMultiDomainMeshProvider.mts';
 import { CalculiXMultiDomainSolverProvider } from '../providers/calculix/CalculiXMultiDomainSolverProvider.mts';
 import { ComposedSimulationProviderV2 } from '../providers/ComposedSimulationProviderV2.mts';
+import { ComposedElectrostaticProvider } from '../providers/ComposedElectrostaticProvider.mts';
+import { CalculiXElectrostaticExecution } from '../providers/calculix/CalculiXElectrostaticExecution.mts';
 const execute = promisify(execFile);
 
 export interface ExternalProviderPaths { gmshExecutable: string; calculixExecutable: string }
@@ -25,13 +28,35 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
   const meshV2 = gmshVersion ? new GmshMultiDomainMeshProvider({ executable: paths.gmshExecutable, runtimeVersion: gmshVersion }) : null;
   const solverV2 = calculixVersion ? new CalculiXMultiDomainSolverProvider({ executable: paths.calculixExecutable, runtimeVersion: calculixVersion }) : null;
   const providerV2 = meshV2 && solverV2 ? new ComposedSimulationProviderV2({ id: 'tunacad-local-simulation-bridge-v2', version: '2.0-poc', meshProvider: meshV2, solverProvider: solverV2 }) : null;
+  // Host-only explicit durable storage configuration. No browser-supplied path,
+  // implicit legacy migration, or unsupported runtime is admitted.
+  let providerElectrical: ComposedElectrostaticProvider | null = null;
+  const storageParent = process.env.TUNACAD_ELECTROSTATIC_STORAGE_PARENT;
+  if (mesh && gmshVersion === '4.15.2' && calculixVersion === '2.16'
+    && storageParent && isAbsolute(storageParent)) {
+    try {
+      const parent = await lstat(storageParent);
+      if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error('ELECTROSTATIC_STORAGE_UNAVAILABLE');
+      const driver = new CalculiXElectrostaticExecution(paths.calculixExecutable);
+      const runtime = await driver.readCurrentRuntimeIdentity();
+      providerElectrical = new ComposedElectrostaticProvider({
+        id: 'tunacad-local-electrostatic-bridge', version: '0.1.0', runtime,
+        status: 'proof_of_concept', engineeringUsePermitted: false,
+        scope: 'single_linear_dielectric_parallel_plate_slab', meshSizeMm: 2,
+        maximumNodes: 8000, maximumElements: 4000, maximumStepBytes: 16 * 1024 * 1024,
+        cpuTimeLimitMs: 30000, memoryLimitBytes: 512 * 1024 * 1024,
+        sourceIdentity: 'tunacad-electrostatic-native-step-identity/0.1',
+      }, mesh, driver, () => driver.readCurrentRuntimeIdentity(), storageParent);
+    } catch { /* Fail closed; unrelated structural providers remain usable. */ }
+  }
   return {
-    provider, providerV2,
+    provider, providerV2, providerElectrical,
     paths,
     readiness: {
       ready: !!provider,
       provider: provider ? { id: provider.id, version: provider.version, capabilities: provider.capabilities } : null,
       providerV2: providerV2 ? { id: providerV2.id, version: providerV2.version, capabilities: providerV2.capabilities } : null,
+      electrostatic: providerElectrical?.capabilities ?? null,
       meshing: { ready: !!mesh, adapterVersion: mesh?.version ?? 'unavailable', runtimeVersion: gmshVersion, geometryFormats: mesh ? ['step'] : [], elementFamilies: mesh ? ['tetrahedral'] : [] },
       solving: { ready: !!solver, adapterVersion: solver?.version ?? 'unavailable', runtimeVersion: calculixVersion, analysisTypes: solverV2 ? [...solverV2.capabilities.analysisTypes] : solver ? ['linear_static'] : [] },
       configuration: { ...paths, discoveryUsed: (!gmshExecutable && !!paths.gmshExecutable) || (!calculixExecutable && !!paths.calculixExecutable) },

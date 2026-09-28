@@ -7,6 +7,7 @@ import type {
   NeutralVector3,
 } from '../../src/simulation/externalSimulationContracts.ts';
 import { validateNeutralFemModelV2, validateNeutralSimulationRequestV2 } from '../../simulation-bridge/v2Validation.mts';
+import { selectHarmonicModeCount } from '../../simulation-bridge/harmonicModePolicy.mts';
 import { quadraticTriangleSurfaceSamples } from '../../src/simulation/neutralFemMesh.ts';
 import { validateNonconformalThermalInterface } from './CalculiXThermalInterface.mts';
 import {
@@ -177,7 +178,8 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   const analysisCards = request.analysis.type === 'harmonic_response' ? [
     '*STEP',
     '*FREQUENCY,SOLVER=ARPACK,STORAGE=YES',
-    '48',
+    String(selectHarmonicModeCount(request.analysis.settings.frequencyHz,
+      model.nodes.length, model.volumeElements.connectivity.length)),
     ...boundaryCards,
     '*END STEP',
     '*STEP',
