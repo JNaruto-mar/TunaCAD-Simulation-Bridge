@@ -152,7 +152,7 @@ export class CalculiXSolverProvider implements ExternalSolverProvider {
       request, mesh, providerRunId, submittedAt, directory, process: child, result: null,
       status: { providerRunId, status: 'running', progress: null, phase: 'external_solver', updatedAt: submittedAt },
       timeout: undefined as unknown as NodeJS.Timeout,
-      stopResourceMonitor: () => undefined,
+      stopResourceMonitor: (): void => undefined,
     } satisfies SolverRun;
     run.timeout = setTimeout(() => { void this.failRun(run, 'SIMULATION_TIMEOUT', 'CalculiX exceeded its declared execution timeout.'); }, this.capabilities.execution.executionTimeoutMs);
     run.timeout.unref();

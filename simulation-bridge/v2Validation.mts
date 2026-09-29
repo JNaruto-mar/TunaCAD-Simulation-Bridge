@@ -283,7 +283,7 @@ const requestSchema = z.object({
     'displacement_amplitude', 'displacement_phase', 'reaction_force_amplitude'])).min(1).max(12),
 }).strict();
 
-function unique(values: string[]): boolean {
+function unique<T>(values: T[]): boolean {
   return new Set(values).size === values.length;
 }
 
@@ -361,6 +361,8 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   const parsed = requestSchema.safeParse(value);
   if (!parsed.success) fail('BRIDGE_V2_REQUEST_INVALID');
   const request = parsed.data as NeutralSimulationRequestV2;
+  // Membership checks need the union of result names, not an intersection of array methods.
+  const requestedResults: readonly string[] = request.requestedResults;
   const domains = request.model.domains;
   if (!unique(domains.map(domain => domain.domainId)) || !unique(domains.map(domain => domain.occurrenceId))) fail('BRIDGE_V2_DOMAIN_IDENTITY_INVALID');
   if (domains.some(domain => !isRigidTransform(domain.transformToAnalysis))) fail('BRIDGE_V2_TRANSFORM_INVALID');
@@ -613,7 +615,7 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
       || (settings.minimumFrequencyHz !== null && settings.maximumFrequencyHz !== null
         && settings.maximumFrequencyHz <= settings.minimumFrequencyHz)
       || request.requestedResults.some(result => !['natural_frequencies', 'mode_shapes', 'participation_factors', 'effective_modal_mass'].includes(result))
-      || !request.requestedResults.includes('natural_frequencies') || !request.requestedResults.includes('mode_shapes')
+      || !requestedResults.includes('natural_frequencies') || !requestedResults.includes('mode_shapes')
       || request.constraints.some(constraint => constraint.type === 'prescribed_displacement'
         ? constraint.displacementMm.some(component => component !== null && Math.abs(component) > 1e-14)
         : constraint.type === 'remote_displacement'
@@ -625,7 +627,7 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
     if (request.model.domains.length !== 1 || request.interactions.length || !request.loads.length || !request.constraints.length
       || request.loads.some(load => load.type !== 'surface_force') || request.constraints.some(constraint => constraint.type !== 'fixed')
       || preloadIds.length !== request.loads.length || preloadIds.some(loadId => !request.loads.some(load => load.id === loadId))
-      || request.requestedResults.length !== 2 || !request.requestedResults.includes('buckling_load_factors') || !request.requestedResults.includes('buckling_mode_shapes')) {
+      || request.requestedResults.length !== 2 || !requestedResults.includes('buckling_load_factors') || !requestedResults.includes('buckling_mode_shapes')) {
       fail('BRIDGE_V2_BUCKLING_REQUEST_INVALID');
     }
   } else if (request.analysis.type === 'static_contact') {
@@ -1087,7 +1089,9 @@ const resultSchema = z.object({
 export function validateNeutralSimulationResultV2(value: unknown, request: NeutralSimulationRequestV2): NeutralSimulationResultV2 {
   const parsed = resultSchema.safeParse(value);
   if (!parsed.success) fail('BRIDGE_V2_RESULT_INVALID');
-  const result = parsed.data as NeutralSimulationResultV2;
+  // Preserve schema-validated optional fields while cross-analysis payloads are rejected.
+  const result = parsed.data;
+  const analysis = request.analysis;
   if (result.studyId !== request.studyId || result.requestDigest !== request.requestDigest || result.projectRevision !== request.model.projectRevision
     || result.modelDigest !== request.model.modelDigest || result.mutation.projectRevisionBefore !== request.model.projectRevision
     || result.mutation.projectRevisionAfter !== request.model.projectRevision) fail('BRIDGE_V2_RESULT_IDENTITY_INVALID');
@@ -1097,9 +1101,9 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
   const datasetIds = result.perDomain.flatMap(domain => domain.fieldDatasetIds);
   if (!unique(datasetIds) || result.reactions.some(reaction => !domainIds.includes(reaction.domainId))
     || result.criticalRegions.some(region => !domainIds.includes(region.domainId))) fail('BRIDGE_V2_RESULT_DOMAIN_MAPPING_INVALID');
-  if (result.analysisType !== request.analysis.type) fail('BRIDGE_V2_RESULT_IDENTITY_INVALID');
-  if (request.analysis.type !== 'harmonic_response' && 'harmonic' in result && result.harmonic !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
-  if (request.analysis.type === 'harmonic_response') {
+  if (result.analysisType !== analysis.type) fail('BRIDGE_V2_RESULT_IDENTITY_INVALID');
+  if (analysis.type !== 'harmonic_response' && 'harmonic' in result && result.harmonic !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
+  if (analysis.type === 'harmonic_response') {
     const harmonic = result.harmonic;
     const load = request.loads[0];
     if (load.type !== 'surface_force') fail('BRIDGE_V2_HARMONIC_RESULT_INVALID');
@@ -1116,7 +1120,7 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       return Math.abs(amplitude - Math.hypot(...real, ...imaginary)) <= Math.max(1e-10, amplitude * 1e-6)
         && Math.abs(entry.phaseLagRad - phase) <= 1e-6;
     };
-    if (!harmonic || Math.abs(harmonic.frequencyHz - request.analysis.settings.frequencyHz) > 1e-6
+    if (!harmonic || Math.abs(harmonic.frequencyHz - analysis.settings.frequencyHz) > 1e-6
       || !consistent(harmonic.loadedFaceMeanDisplacement) || !consistent(harmonic.supportReaction)
       || result.status !== 'succeeded' || result.authority !== 'engineering'
       || result.reactions.length || result.criticalRegions.length || datasetIds.length
@@ -1129,13 +1133,13 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || result.review.engineeringUsePermitted || result.convergence.status !== 'converged') {
       fail('BRIDGE_V2_HARMONIC_RESULT_INVALID');
     }
-    return result;
+    return result as NeutralSimulationResultV2;
   }
-  if (request.analysis.type !== 'implicit_transient_dynamics' && 'implicitDynamics' in result
+  if (analysis.type !== 'implicit_transient_dynamics' && 'implicitDynamics' in result
     && result.implicitDynamics !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
-  if (request.analysis.type === 'implicit_transient_dynamics') {
+  if (analysis.type === 'implicit_transient_dynamics') {
     const frames = result.implicitDynamics?.frames;
-    const times = request.analysis.settings.outputTimesS;
+    const times = analysis.settings.outputTimesS;
     if (!frames || frames.length !== times.length || result.status !== 'succeeded'
       || result.authority !== 'engineering'
       || ('transientThermal' in result && result.transientThermal !== undefined)
@@ -1155,12 +1159,12 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || result.review.engineeringUsePermitted || result.convergence.status !== 'converged') {
       fail('BRIDGE_V2_DYNAMICS_RESULT_INVALID');
     }
-    return result;
+    return result as NeutralSimulationResultV2;
   }
-  if (request.analysis.type !== 'transient_thermal' && 'transientThermal' in result
+  if (analysis.type !== 'transient_thermal' && 'transientThermal' in result
     && result.transientThermal !== undefined) fail('BRIDGE_V2_RESULT_INVALID');
-  if (request.analysis.type === 'transient_thermal') {
-    const outputTimesS = request.analysis.settings.outputTimesS;
+  if (analysis.type === 'transient_thermal') {
+    const outputTimesS = analysis.settings.outputTimesS;
     if (result.analysisType !== 'transient_thermal' || !('transientThermal' in result) || !result.transientThermal
       || ('thermal' in result && result.thermal !== undefined)
       || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
@@ -1186,15 +1190,16 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || result.review.engineeringUsePermitted || result.convergence.status !== 'converged') {
       fail('BRIDGE_V2_TRANSIENT_RESULT_INVALID');
     }
-    return result;
+    return result as NeutralSimulationResultV2;
   }
-  if (request.analysis.type === 'steady_thermal') {
+  if (analysis.type === 'steady_thermal') {
+    const thermal = result.thermal;
     const convection = request.loads[0]?.type === 'surface_convection';
     const conductivityCurve = request.materials[0]?.thermalConductivityCurve;
     const conductanceInteraction = request.interactions[0]?.type === 'thermal_interface_conductance' ? request.interactions[0] : null;
-    const methodEvidence = result.thermal?.reactionHeatFlowEvidence;
-    const interfaceEvidence = result.thermal?.interfaceConductance;
-    if (result.analysisType !== 'steady_thermal' || !('thermal' in result) || !result.thermal
+    const methodEvidence = thermal?.reactionHeatFlowEvidence;
+    const interfaceEvidence = thermal?.interfaceConductance;
+    if (result.analysisType !== 'steady_thermal' || !('thermal' in result) || !thermal
       || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
       || ('contact' in result && result.contact !== undefined) || ('nonlinear' in result && result.nonlinear !== undefined)
       || result.reactions.length || result.criticalRegions.length
@@ -1207,89 +1212,91 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
           || result.perDomain.some(domain => domain.fieldDatasetIds.length !== 2)))
       || Object.values(result.metrics).some(value => value !== null)
       || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
-      || result.thermal.minimumTemperatureC > result.thermal.maximumTemperatureC
-      || (conductivityCurve && (result.thermal.minimumTemperatureC < conductivityCurve[0].temperatureC - 1e-4
-        || result.thermal.maximumTemperatureC > conductivityCurve.at(-1)!.temperatureC + 1e-4
+      || thermal.minimumTemperatureC > thermal.maximumTemperatureC
+      || (conductivityCurve && (thermal.minimumTemperatureC < conductivityCurve[0].temperatureC - 1e-4
+        || thermal.maximumTemperatureC > conductivityCurve.at(-1)!.temperatureC + 1e-4
         || result.convergence.status !== 'converged'
         || result.convergence.iterations === null || result.convergence.iterations < 1))
-      || result.thermal.temperatureSamples.some(sample => sample.temperatureC < result.thermal.minimumTemperatureC - 1e-9
-        || sample.temperatureC > result.thermal.maximumTemperatureC + 1e-9)
-      || Math.abs(Math.abs(result.thermal.totalAppliedHeatW + result.thermal.totalReactionHeatW) - result.thermal.heatBalanceResidualW) > 1e-9
-      || result.thermal.heatBalanceResidualW > Math.max(1e-9, Math.abs(result.thermal.totalAppliedHeatW) * (convection ? .005 : 1e-6))
+      || thermal.temperatureSamples.some(sample => sample.temperatureC < thermal.minimumTemperatureC - 1e-9
+        || sample.temperatureC > thermal.maximumTemperatureC + 1e-9)
+      || Math.abs(Math.abs(thermal.totalAppliedHeatW + thermal.totalReactionHeatW) - thermal.heatBalanceResidualW) > 1e-9
+      || thermal.heatBalanceResidualW > Math.max(1e-9, Math.abs(thermal.totalAppliedHeatW) * (convection ? .005 : 1e-6))
       || (conductanceInteraction ? !interfaceEvidence
         || interfaceEvidence.interactionId !== conductanceInteraction.id
         || Math.abs(interfaceEvidence.primaryTemperatureC - interfaceEvidence.secondaryTemperatureC - interfaceEvidence.temperatureJumpC) > 1e-6
         || Math.abs(interfaceEvidence.secondaryHeatFlowW - interfaceEvidence.primaryHeatFlowW - interfaceEvidence.interfaceHeatImbalanceW) > 1e-6
           && Math.abs(interfaceEvidence.primaryHeatFlowW - interfaceEvidence.secondaryHeatFlowW - interfaceEvidence.interfaceHeatImbalanceW) > 1e-6
-        || interfaceEvidence.interfaceHeatImbalanceW > Math.max(1e-5, result.thermal.totalAppliedHeatW * .02)
-        || Math.abs(interfaceEvidence.secondaryHeatFlowW - result.thermal.totalAppliedHeatW) > Math.max(1e-5, result.thermal.totalAppliedHeatW * .02)
-        || Math.abs(interfaceEvidence.primaryHeatFlowW - result.thermal.totalAppliedHeatW) > Math.max(1e-5, result.thermal.totalAppliedHeatW * .02)
-        || Math.abs(interfaceEvidence.conductancePredictedHeatFlowW - result.thermal.totalAppliedHeatW)
-          > Math.max(1e-5, result.thermal.totalAppliedHeatW * .05)
+        || interfaceEvidence.interfaceHeatImbalanceW > Math.max(1e-5, thermal.totalAppliedHeatW * .02)
+        || Math.abs(interfaceEvidence.secondaryHeatFlowW - thermal.totalAppliedHeatW) > Math.max(1e-5, thermal.totalAppliedHeatW * .02)
+        || Math.abs(interfaceEvidence.primaryHeatFlowW - thermal.totalAppliedHeatW) > Math.max(1e-5, thermal.totalAppliedHeatW * .02)
+        || Math.abs(interfaceEvidence.conductancePredictedHeatFlowW - thermal.totalAppliedHeatW)
+          > Math.max(1e-5, thermal.totalAppliedHeatW * .05)
         : interfaceEvidence !== undefined)
       || (convection ? !methodEvidence
-        || methodEvidence.sectionBaseReactionHeatW !== result.thermal.totalReactionHeatW
+        || methodEvidence.sectionBaseReactionHeatW !== thermal.totalReactionHeatW
         || Math.abs(Math.abs(methodEvidence.sectionBaseReactionHeatW - methodEvidence.nodalRflReactionHeatW) - methodEvidence.disagreementW) > 1e-9
-        || methodEvidence.disagreementW > Math.max(1e-6, Math.abs(result.thermal.totalReactionHeatW) * .02)
+        || methodEvidence.disagreementW > Math.max(1e-6, Math.abs(thermal.totalReactionHeatW) * .02)
         : methodEvidence !== undefined)
       || !result.warnings.some(warning => warning.code === 'SIMULATION_STEADY_THERMAL_POC')) fail('BRIDGE_V2_THERMAL_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
-    return result;
+    return result as NeutralSimulationResultV2;
   }
-  if (request.analysis.type === 'modal') {
-    if (result.analysisType !== 'modal' || !('modal' in result) || !result.modal
-      || result.modal.requestedModeCount !== request.analysis.settings.requestedModeCount
+  if (analysis.type === 'modal') {
+    const modal = result.modal;
+    if (result.analysisType !== 'modal' || !('modal' in result) || !modal
+      || modal.requestedModeCount !== analysis.settings.requestedModeCount
       || result.reactions.length || result.criticalRegions.length
       || Object.values(result.metrics).some(value => value !== null)
       || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
-      || datasetIds.length !== result.modal.modes.length * domainIds.length
-      || !unique(result.modal.modes.map(mode => mode.modeNumber))
-      || result.modal.modes.some((mode, index) => mode.modeNumber > request.analysis.settings.requestedModeCount
-        || (index > 0 && mode.modeNumber <= result.modal.modes[index - 1].modeNumber) || mode.frequencyHz < 0
+      || datasetIds.length !== modal.modes.length * domainIds.length
+      || !unique(modal.modes.map(mode => mode.modeNumber))
+      || modal.modes.some((mode, index) => mode.modeNumber > analysis.settings.requestedModeCount
+        || (index > 0 && mode.modeNumber <= modal.modes[index - 1].modeNumber) || mode.frequencyHz < 0
         || mode.fieldDatasetIds.length !== domainIds.length || mode.fieldDatasetIds.some(id => !datasetIds.includes(id))
         || result.perDomain.some(domain => domain.fieldDatasetIds.filter(id => mode.fieldDatasetIds.includes(id)).length !== 1))
-      || !unique(result.modal.modes.flatMap(mode => mode.fieldDatasetIds))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
-    const diagnostics = result.modal.rigidBodyModeDiagnostics;
+      || !unique(modal.modes.flatMap(mode => mode.fieldDatasetIds))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
+    const diagnostics = modal.rigidBodyModeDiagnostics;
     const expectedRigidModes = request.constraints.length ? 0 : 6;
     if (diagnostics.expectedModeCount !== expectedRigidModes || diagnostics.detectedModeCount !== diagnostics.modeNumbers.length
       || diagnostics.status !== (diagnostics.detectedModeCount === expectedRigidModes ? 'complete' : 'incomplete')
-      || !unique(diagnostics.modeNumbers) || diagnostics.modeNumbers.some(modeNumber => result.modal.modes.some(mode => mode.modeNumber === modeNumber))
+      || !unique(diagnostics.modeNumbers) || diagnostics.modeNumbers.some(modeNumber => modal.modes.some(mode => mode.modeNumber === modeNumber))
       || (!request.constraints.length && (diagnostics.status !== 'complete' || diagnostics.modeNumbers.some((modeNumber, index) => modeNumber !== index + 1)
-        || result.modal.modes.some(mode => mode.modeNumber <= 6)))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
+        || modal.modes.some(mode => mode.modeNumber <= 6)))) fail('BRIDGE_V2_MODAL_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
-    return result;
+    return result as NeutralSimulationResultV2;
   }
-  if (request.analysis.type === 'linear_buckling') {
+  if (analysis.type === 'linear_buckling') {
     if (result.analysisType !== 'linear_buckling' || !('buckling' in result) || !result.buckling || ('modal' in result && result.modal !== undefined)
-      || result.buckling.preloadCaseId !== request.analysis.settings.preloadCase.id
-      || result.buckling.requestedModeCount !== request.analysis.settings.requestedModeCount || result.reactions.length || result.criticalRegions.length
+      || result.buckling.preloadCaseId !== analysis.settings.preloadCase.id
+      || result.buckling.requestedModeCount !== analysis.settings.requestedModeCount || result.reactions.length || result.criticalRegions.length
       || Object.values(result.metrics).some(value => value !== null) || result.perDomain.some(domain => Object.values(domain.metrics).some(value => value !== null))
       || datasetIds.length !== result.buckling.modes.length * domainIds.length || !unique(result.buckling.modes.map(mode => mode.modeNumber))
-      || result.buckling.modes.some((mode, index) => mode.modeNumber !== index + 1 || mode.modeNumber > request.analysis.settings.requestedModeCount
+      || result.buckling.modes.some((mode, index) => mode.modeNumber !== index + 1 || mode.modeNumber > analysis.settings.requestedModeCount
         || mode.fieldDatasetIds.length !== domainIds.length || mode.fieldDatasetIds.some(id => !datasetIds.includes(id)))
       || !result.warnings.some(warning => warning.code === 'SIMULATION_LINEAR_BUCKLING_LIMITATION')) fail('BRIDGE_V2_BUCKLING_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
-    return result;
+    return result as NeutralSimulationResultV2;
   }
-  if (request.analysis.type === 'nonlinear_static') {
+  if (analysis.type === 'nonlinear_static') {
+    const nonlinear = result.nonlinear;
     const plastic = request.materials.some(material => material.model === 'isotropic_elastic_plastic');
-    if (result.analysisType !== 'nonlinear_static' || !('nonlinear' in result) || !result.nonlinear
+    if (result.analysisType !== 'nonlinear_static' || !('nonlinear' in result) || !nonlinear
       || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
       || ('contact' in result && result.contact !== undefined)
-      || result.nonlinear.formulation !== (plastic ? 'finite_deformation_elastic_plastic' : 'finite_deformation_elastic')
-      || result.nonlinear.steps.length !== request.analysis.settings.steps.length
-      || result.nonlinear.steps.some((step, index) => {
-        const requested = request.analysis.settings.steps[index];
-        return step.stepIndex !== index + 1 || step.stepId !== requested.id || step.increments.length > request.analysis.settings.maximumIncrements
+      || nonlinear.formulation !== (plastic ? 'finite_deformation_elastic_plastic' : 'finite_deformation_elastic')
+      || nonlinear.steps.length !== analysis.settings.steps.length
+      || nonlinear.steps.some((step, index) => {
+        const requested = analysis.settings.steps[index];
+        return step.stepIndex !== index + 1 || step.stepId !== requested.id || step.increments.length > analysis.settings.maximumIncrements
           || Math.abs((step.increments.at(-1)?.stepTime ?? -1) - requested.duration) > 1e-8
-          || step.increments.some((entry, entryIndex, entries) => entry.iterations > request.analysis.settings.maximumIterations
-            || entry.attempt > request.analysis.settings.maximumCutbacks + 1
+          || step.increments.some((entry, entryIndex, entries) => entry.iterations > analysis.settings.maximumIterations
+            || entry.attempt > analysis.settings.maximumCutbacks + 1
             || entryIndex > 0 && (entry.increment <= entries[entryIndex - 1].increment || entry.stepTime <= entries[entryIndex - 1].stepTime));
       })
-      || result.nonlinear.history.length !== result.nonlinear.steps.reduce((sum, step) => sum + step.increments.length, 0)
-      || result.nonlinear.history.some((point, index, history) => {
-        const step = request.analysis.settings.steps[point.stepIndex - 1];
-        const increment = result.nonlinear.steps[point.stepIndex - 1]?.increments.find(entry => entry.increment === point.increment);
+      || nonlinear.history.length !== nonlinear.steps.reduce((sum, step) => sum + step.increments.length, 0)
+      || nonlinear.history.some((point, index, history) => {
+        const step = analysis.settings.steps[point.stepIndex - 1];
+        const increment = nonlinear.steps[point.stepIndex - 1]?.increments.find(entry => entry.increment === point.increment);
         const expectedLoads = step?.loadAmplitudes ?? [];
         return !step || point.stepId !== step.id || !increment || point.attempt !== increment.attempt || point.iterations !== increment.iterations
           || Math.abs(point.stepTime - increment.stepTime) > 1e-10 || Math.abs(point.incrementSize - increment.incrementSize) > 1e-10
@@ -1298,11 +1305,11 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
           || index > 0 && point.totalTime <= history[index - 1].totalTime
           || (plastic ? !point.materialState || point.materialState.yieldedElementCount > request.mesh.maximumElements : point.materialState !== null);
       })
-      || (plastic ? !result.nonlinear.materialState || JSON.stringify(result.nonlinear.materialState) !== JSON.stringify(result.nonlinear.history.at(-1)?.materialState) : result.nonlinear.materialState !== null)
+      || (plastic ? !nonlinear.materialState || JSON.stringify(nonlinear.materialState) !== JSON.stringify(nonlinear.history.at(-1)?.materialState) : nonlinear.materialState !== null)
       || !result.warnings.some(warning => warning.code === 'SIMULATION_GEOMETRIC_NONLINEARITY_POC')
       || (plastic && !result.warnings.some(warning => warning.code === 'SIMULATION_MATERIAL_NONLINEARITY_POC'))) fail('BRIDGE_V2_NONLINEAR_RESULT_INVALID');
   }
-  if (request.analysis.type === 'static_contact') {
+  if (analysis.type === 'static_contact') {
     const requestedSliding = request.interactions.find(interaction => interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact')?.sliding;
     if (result.analysisType !== 'static_contact' || !('contact' in result) || !result.contact
       || ('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined)
@@ -1323,7 +1330,7 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
             || !entry.tangentialSlipDatasetId || !entry.contactShearDatasetId));
       })
       || result.contact.increments.at(-1)?.stepTime !== 1
-      || result.contact.increments.some((entry, index, entries) => entry.increment > request.analysis.settings.maximumIncrements
+      || result.contact.increments.some((entry, index, entries) => entry.increment > analysis.settings.maximumIncrements
         || index > 0 && (entry.increment <= entries[index - 1].increment || entry.stepTime <= entries[index - 1].stepTime))
       || !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_POC')
       || (request.interactions.some(interaction => (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') && interaction.initialAdjustment !== 'none')
@@ -1332,7 +1339,7 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
         && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FRICTION_POC'))
       || (requestedSliding === 'finite'
         && !result.warnings.some(warning => warning.code === 'SIMULATION_CONTACT_FINITE_SLIDING_POC'))) fail('BRIDGE_V2_CONTACT_RESULT_INVALID');
-  } else if (request.analysis.type !== 'nonlinear_static' && (('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined) || ('contact' in result && result.contact !== undefined) || ('nonlinear' in result && result.nonlinear !== undefined))) fail('BRIDGE_V2_RESULT_INVALID');
+  } else if (analysis.type !== 'nonlinear_static' && (('modal' in result && result.modal !== undefined) || ('buckling' in result && result.buckling !== undefined) || ('contact' in result && result.contact !== undefined) || ('nonlinear' in result && result.nonlinear !== undefined))) fail('BRIDGE_V2_RESULT_INVALID');
   const constraints = new Map(request.constraints.map(constraint => [constraint.id, constraint]));
   const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
   const referenceDomains = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId]));
@@ -1349,7 +1356,7 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
         || reaction.semanticReferenceIds.length !== connector.semanticReferenceIds.length;
     })) fail('BRIDGE_V2_RESULT_REACTION_INVALID');
   if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
-  return result;
+  return result as NeutralSimulationResultV2;
 }
 
 function interpolateAmplitude(points: Array<{ time: number; scaleFactor: number }>, time: number): number {

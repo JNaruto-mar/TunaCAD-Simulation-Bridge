@@ -4,6 +4,7 @@ import type {
   NeutralSimulationConstraint,
   NeutralSimulationConstraintV2,
   NeutralSimulationRequestV2,
+  NeutralSimulationLoadV2,
   NeutralVector3,
 } from '../../src/simulation/externalSimulationContracts.ts';
 import { validateNeutralFemModelV2, validateNeutralSimulationRequestV2 } from '../../simulation-bridge/v2Validation.mts';
@@ -17,6 +18,11 @@ import {
 } from './CalculiXSolverProvider.mts';
 
 type SteadyThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'steady_thermal' } }>;
+type StructuralLoadV2 = Exclude<NeutralSimulationLoadV2, { type: 'surface_heat_flux' | 'surface_heat_power' | 'surface_convection' }>;
+// Structural callers have passed validateNeutralSimulationRequestV2, which rejects thermal entries.
+type StructuralConstraintV2 = Exclude<NeutralSimulationConstraintV2, { type: 'prescribed_temperature' }>;
+type NonlinearRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'nonlinear_static' } }>;
+
 type TransientThermalRequestV2 = Extract<NeutralSimulationRequestV2, { analysis: { type: 'transient_thermal' } }>;
 
 /** Generate a deterministic CalculiX C3D10 deck with explicit domain/material
@@ -87,7 +93,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     }
   }
   const nodalLoads = new Map<number, NeutralVector3>();
-  const loads = [...request.loads].sort((a, b) => compareText(a.id, b.id));
+  const loads = [...request.loads as StructuralLoadV2[]].sort((a, b) => compareText(a.id, b.id));
   for (const load of loads) {
     if (load.type === 'gravity' || load.type === 'remote_force') continue;
     const regions = requireRegions(model, load.semanticReferenceIds);
@@ -173,7 +179,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...loads.flatMap(load => load.type === 'remote_force' ? remoteLoadLines(connectorsById.get(load.connectorId)!, load) : []),
   ] : [];
   const nonlinearAnalysisCards = request.analysis.type === 'nonlinear_static'
-    ? nonlinearStepCards(request, model, boundaryCards)
+    ? nonlinearStepCards(request as NonlinearRequestV2, model, boundaryCards)
     : [];
   const analysisCards = request.analysis.type === 'harmonic_response' ? [
     '*STEP',
@@ -540,7 +546,7 @@ export function validateStructuralStabilityV2(request: NeutralSimulationRequestV
     const componentNodes = [...new Set(model.domainRegions.filter(domain => domainSet.has(domain.domainId)).flatMap(domain => domain.nodeIndices))];
     const origin = centroid(componentNodes.map(node => model.nodes[node]));
     const rows: number[][] = [];
-    for (const constraint of request.constraints) {
+    for (const constraint of request.constraints as StructuralConstraintV2[]) {
       if (constraint.type === 'remote_displacement') {
         const connector = connectors.get(constraint.connectorId);
         if (!connector || !domainSet.has(referenceDomains.get(connector.semanticReferenceIds[0]) ?? '')) continue;
@@ -651,7 +657,7 @@ export function validateContactStabilityV2(request: NeutralSimulationRequestV2, 
     row.forEach((value, column) => { global[index * 6 + column] = value; });
     rows.push(global);
   };
-  for (const constraint of request.constraints) {
+  for (const constraint of request.constraints as StructuralConstraintV2[]) {
     if (constraint.type === 'remote_displacement') {
       throw deckError('SIMULATION_CONTACT_CONSTRAINT_UNSUPPORTED', 'SIM-6A contact accepts direct FACE constraints only.');
     }
@@ -817,7 +823,7 @@ function nonlinearStepCards(
   boundaryCards: string[],
 ): string[] {
   const mesh = asV1Mesh(model);
-  const loads = new Map(request.loads.map(load => [load.id, load]));
+  const loads = new Map((request.loads as StructuralLoadV2[]).map(load => [load.id, load]));
   const domains = [...model.domainRegions].sort((a, b) => compareText(a.domainId, b.domainId));
   const domainSetNames = new Map(domains.map((domain, index) => [domain.domainId, `DOMAIN_${String(index + 1).padStart(3, '0')}`]));
   const nodeSetNames = new Map(domains.map((domain, index) => [domain.domainId, `DOMAIN_NODES_${String(index + 1).padStart(3, '0')}`]));
