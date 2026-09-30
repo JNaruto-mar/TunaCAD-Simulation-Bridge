@@ -70,6 +70,7 @@
     "test:sim9-fatigue-provider-history": "node --experimental-strip-types scripts/test-sim9-fatigue-provider-history.mts",
     "test:sim9-fatigue-admission": "node --experimental-strip-types scripts/test-sim9-fatigue-admission.mts",
     "test:sim9-electrostatic-foundation": "node --experimental-strip-types scripts/test-sim9-electrostatic-foundation.mts",
+    "test:sim9-electrostatic-two-layer-foundation": "node --experimental-strip-types scripts/test-sim9-electrostatic-two-layer-foundation.mts",
     "test:sim9-electrostatic-provider": "node --experimental-strip-types scripts/test-sim9-electrostatic-provider.mts",
     "test:sim9-electrostatic-provider-real": "node --experimental-strip-types scripts/test-sim9-electrostatic-provider-real.mts",
     "test:sim9-electrostatic-lifecycle": "node --experimental-strip-types scripts/test-sim9-electrostatic-lifecycle.mts",

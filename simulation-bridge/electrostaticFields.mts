@@ -31,8 +31,8 @@ export const electricalDatasetSchema = z.object({
 });
 export type ElectricalDataset = z.infer<typeof electricalDatasetSchema>;
 export const electricalTriangleSchema = z.object({
-  facetIndex: index, subtriangleIndex: index.max(3), elementIndex: index.max(3999),
-  nodeIds: z.tuple([index.min(1).max(8000), index.min(1).max(8000), index.min(1).max(8000)]),
+  facetIndex: index, subtriangleIndex: index.max(3), elementIndex: index.max(7999),
+  nodeIds: z.tuple([index.min(1).max(16000), index.min(1).max(16000), index.min(1).max(16000)]),
   positionsAnalysisMm: z.tuple([vector, vector, vector]),
   values: z.tuple([finite, finite, finite]),
   vectors: z.tuple([vector, vector, vector]).nullable(),
@@ -47,7 +47,13 @@ const pageSchema = z.object({
 export type ElectricalPage = z.infer<typeof pageSchema>;
 export interface ElectricalViewerResult {
   analysisType: 'electrostatic'; fieldDatasets: ElectricalDataset[];
-  perDomain: Array<{ domainId: string; fieldDatasetIds: string[] }>;
+  perDomain: Array<{ domainId: string; fieldDatasetIds: string[];
+    materialId?: string; absolutePermittivityFPerM?: number; permittivityUnit?: 'F/m' }>;
+  twoLayerSummary?: {
+    electrodeChargesC: Array<{ faceId: string; chargeC: number }>;
+    capacitanceF: number; electrostaticEnergyJ: number;
+    interfaceNormalDJumpCPerM2: number; netElectrodeChargeC: number;
+  };
 }
 const invalid = (message: string): never => { throw new Error('ELECTROSTATIC_FIELD_INVALID: ' + message); };
 export function electricalExtrema(triangles: ElectricalTriangle[]): ElectricalDataset['valueRange'] {

@@ -15,6 +15,8 @@ import { validateElectrostaticFoundation, type ElectrostaticFoundation } from '.
 import type { ElectrostaticDispatchProvider } from './electrostaticDispatchContract.mts';
 import { electrostaticStepGeometryDigest } from './electrostaticStepIdentity.mts';
 import { validateElectricalPage } from './electrostaticFields.mts';
+import { twoLayerApprovalSchema, type TwoLayerApproval } from './electrostaticTwoLayerApproval.mts';
+import { digest } from './stableDigest.mts';
 
 const MAX_STEP = 16 * 1024 * 1024;
 const MAX_TOTAL_STEP = 64 * 1024 * 1024;
@@ -28,11 +30,13 @@ const secretEquals = (a: string, b: string) => {
 };
 type BridgeRequest = NeutralSimulationRequest | NeutralSimulationRequestV2 | ElectrostaticFoundation;
 type AnyProvider = ExternalSimulationProvider | ExternalSimulationProviderV2 | ElectrostaticDispatchProvider;
-type Approval = { id: string; request: BridgeRequest; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used';
-  preparationId?: string; revoked?: boolean; submission?: SimulationProviderSubmission; provider?: AnyProvider };
+type Approval = { id: string; request: BridgeRequest | TwoLayerApproval; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used';
+  preparationId?: string; sessionKey?: string; revoked?: boolean; submission?: SimulationProviderSubmission; provider?: AnyProvider };
 type BridgeJob = { submission: SimulationProviderSubmission; provider: AnyProvider };
 const isV2Request = (request: BridgeRequest): request is NeutralSimulationRequestV2 => request.schema === 'tunacad-neutral-simulation-request/2.0';
-const isElectrical = (request: BridgeRequest): request is ElectrostaticFoundation => request.schema === 'tunacad-electrostatic-foundation/0.1';
+const isElectrical = (request: BridgeRequest | TwoLayerApproval): request is ElectrostaticFoundation => request.schema === 'tunacad-electrostatic-foundation/0.1';
+const isTwoLayerApproval = (request: BridgeRequest | TwoLayerApproval): request is TwoLayerApproval =>
+  request.schema === 'tunacad-electrostatic-two-layer-approval/0.1';
 
 /** Local host API only. Provider configuration accepts two executable paths
  * behind an authenticated session; execution arguments remain fixed in host adapters. */
@@ -41,7 +45,7 @@ export async function startSimulationBridge(options: {
   providerV2?: ExternalSimulationProviderV2 | null;
   providerElectrical?: ElectrostaticDispatchProvider | null;
   readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
-  approve: (request: BridgeRequest, signal: AbortSignal) => Promise<boolean>;
+  approve: (request: BridgeRequest | TwoLayerApproval, signal: AbortSignal) => Promise<boolean>;
   configureProviders?: (paths: { gmshExecutable: string; calculixExecutable: string }) => Promise<{
     provider: ExternalSimulationProvider | null;
     providerV2?: ExternalSimulationProviderV2 | null;
@@ -124,7 +128,8 @@ export async function startSimulationBridge(options: {
         return reply(res, 200, { provider: body.provider, path });
       }
       if (req.method === 'POST' && req.url === '/v1/providers/test') {
-        if ([...approvals.values()].some(a => isElectrical(a.request) && ['pending', 'approved'].includes(a.state))) {
+        if ([...approvals.values()].some(a => (isElectrical(a.request)
+          || isTwoLayerApproval(a.request)) && ['pending', 'approved'].includes(a.state))) {
           return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
         }
         if (!options.configureProviders || submissions > 0) return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
@@ -138,6 +143,50 @@ export async function startSimulationBridge(options: {
         providerElectrical = configured.providerElectrical ?? null;
         readiness = { ...configured.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION, limits: readiness.limits };
         return reply(res, 200, readiness);
+      }
+      if (req.method === 'POST' && req.url === '/v1/two-layer/authorizations') {
+        if (!readiness.meshing.ready || !readiness.solving.ready)
+          return reply(res, 503, { error: 'BRIDGE_PROVIDERS_UNAVAILABLE' });
+        const request = twoLayerApprovalSchema.parse(await readJson(req, 8192));
+        if (++authorizationAttempts > 8) return reply(res, 429, { error: 'BRIDGE_AUTHORIZATION_LIMIT' });
+        if (busy || submissions >= 4 || [...approvals.values()].some(a =>
+          a.expiresAt > now() && ['pending', 'approved'].includes(a.state)))
+          return reply(res, 409, { error: 'BRIDGE_BUSY' });
+        const approval: Approval = { id: token(), request, state: 'pending',
+          sessionKey: session.key, expiresAt: Math.min(now() + APPROVAL_MS, session.expiresAt) };
+        approvalController?.abort(); approvals.clear(); approvals.set(approval.id, approval);
+        approvalController = new AbortController();
+        const controller = approvalController;
+        void options.approve(structuredClone(request), controller.signal).then(approved => {
+          if (!controller.signal.aborted && approval.expiresAt > now())
+            approval.state = approved ? 'approved' : 'denied';
+        }).catch(() => { approval.state = 'denied'; });
+        return reply(res, 202, { authorizationId: approval.id, expiresAt: approval.expiresAt });
+      }
+      const twoLayerMatch = /^\/v1\/two-layer\/authorizations\/([a-f0-9]{64})(?:\/(consume))?$/.exec(req.url ?? '');
+      if (twoLayerMatch) {
+        const approval = approvals.get(twoLayerMatch[1]);
+        if (!approval || !isTwoLayerApproval(approval.request))
+          return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
+        if (approval.sessionKey !== session.key || approval.expiresAt <= now())
+          return reply(res, 403, { error: 'BRIDGE_AUTHORIZATION_EXPIRED' });
+        if (req.method === 'GET' && !twoLayerMatch[2])
+          return reply(res, 200, { state: approval.state,
+            studyId: approval.request.studyId, requestDigest: approval.request.requestDigest });
+        if (req.method === 'DELETE' && !twoLayerMatch[2]) {
+          if (approval.state !== 'used') { approval.state = 'denied'; approvalController?.abort(); }
+          return reply(res, 200, { state: approval.state });
+        }
+        if (req.method === 'POST' && twoLayerMatch[2] === 'consume') {
+          if (approval.state !== 'approved')
+            return reply(res, 403, { error: 'BRIDGE_TRANSFER_NOT_APPROVED' });
+          const bound = twoLayerApprovalSchema.parse(await readJson(req, 8192));
+          if (digest(bound) !== digest(approval.request))
+            return reply(res, 403, { error: 'BRIDGE_TWO_LAYER_BINDING_MISMATCH' });
+          approval.state = 'used';
+          return reply(res, 200, { state: 'used', studyId: bound.studyId,
+            requestDigest: bound.requestDigest });
+        }
       }
       if (req.method === 'POST' && req.url === '/v1/authorizations') {
         const raw = await readJson(req, 256 * 1024);
@@ -180,7 +229,8 @@ export async function startSimulationBridge(options: {
       const approvalMatch = /^\/v1\/authorizations\/([a-f0-9]{64})$/.exec(req.url ?? '');
       if (req.method === 'DELETE' && approvalMatch) {
         const approval = approvals.get(approvalMatch[1]);
-        if (!approval) return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
+        if (!approval || isTwoLayerApproval(approval.request))
+          return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
         if (isElectrical(approval.request)) {
           approval.revoked = true;
           if (approval.submission && approval.provider) await approval.provider.cancel(approval.submission.providerRunId);
@@ -190,7 +240,8 @@ export async function startSimulationBridge(options: {
       }
       if (req.method === 'GET' && approvalMatch) {
         const approval = approvals.get(approvalMatch[1]);
-        if (!approval) return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
+        if (!approval || isTwoLayerApproval(approval.request))
+          return reply(res, 404, { error: 'BRIDGE_NOT_FOUND' });
         return reply(res, 200, { state: approval.expiresAt <= now() ? 'expired' : approval.state,
           ...(isElectrical(approval.request) ? { preparationId: approval.preparationId,
             requestDigest: approval.request.requestDigest, projectRevision: approval.request.model.projectRevision,
@@ -201,8 +252,11 @@ export async function startSimulationBridge(options: {
         busy = true;
         try {
           // Authorization is consumed before body ingestion; unapproved geometry is never read.
-          const permitted = [...approvals.values()].find(a => a.state === 'approved' && a.expiresAt > now());
+          const permitted = [...approvals.values()].find(a => !isTwoLayerApproval(a.request)
+            && a.state === 'approved' && a.expiresAt > now());
           if (!permitted) return reply(res, 403, { error: 'BRIDGE_TRANSFER_NOT_APPROVED' });
+          if (isTwoLayerApproval(permitted.request))
+            return reply(res, 403, { error: 'BRIDGE_TRANSFER_NOT_APPROVED' });
           permitted.state = 'used';
           if (!session || session.expiresAt <= now() || permitted.expiresAt <= now()) throw new Error('BRIDGE_AUTHORIZATION_EXPIRED');
           const rawBody = await readJson(req, Math.ceil(MAX_TOTAL_STEP / 3) * 4 + 16 * 1024);

@@ -12,6 +12,19 @@ const bridge = await startSimulationBridge({ ...pipeline,
   configureProviders: testExternalProviderPaths,
   browseProviderExecutable: browseExternalProviderExecutable,
   async approve(request, signal) {
+    if (request.schema === 'tunacad-electrostatic-two-layer-approval/0.1') {
+      console.log('Two-layer electrostatic approval: ' + JSON.stringify({
+        protectedStudyId: request.studyId, revision: request.projectRevision,
+        sourceEpoch: request.sourceEpoch, sourceDigest: request.sourceDigest,
+        requestDigest: request.requestDigest,
+        preparationReceiptDigest: request.preparationReceiptDigest,
+        domains: request.domains, electrodes: request.electrodes,
+        interfaceFaces: request.interfaceFaces, conformalMesh: request.mesh,
+      }));
+      console.log('Authorize this one protected two-layer study only. This terminal approval does not dispatch a provider.');
+      try { return (await terminal.question('Type approve to authorize this two-layer study only: ', { signal })).trim() === 'approve'; }
+      catch { return false; }
+    }
     if (request.schema === 'tunacad-electrostatic-foundation/0.1') {
       console.log('Electrostatic approval: ' + JSON.stringify({ study: request.studyId,
         domain: request.model.domains[0], material: request.material,
