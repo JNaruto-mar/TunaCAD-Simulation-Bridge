@@ -15,8 +15,9 @@ const execute = promisify(execFile);
 
 export interface ExternalProviderPaths { gmshExecutable: string; calculixExecutable: string }
 
-export async function loadExternalPipeline(gmshExecutable?: string, calculixExecutable?: string) {
-  const discovered = discoverExternalProviderPaths();
+export async function loadExternalPipeline(gmshExecutable?: string, calculixExecutable?: string,
+  options: { discovery?: boolean } = {}) {
+  const discovered = options.discovery === false ? { gmshExecutable: '', calculixExecutable: '' } : discoverExternalProviderPaths();
   const paths: ExternalProviderPaths = {
     gmshExecutable: normalizeConfiguredPath(gmshExecutable || discovered.gmshExecutable, 'gmsh'),
     calculixExecutable: normalizeConfiguredPath(calculixExecutable || discovered.calculixExecutable, 'calculix'),
@@ -64,7 +65,7 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
   };
 }
 
-export async function testExternalProviderPaths(paths: ExternalProviderPaths) { return loadExternalPipeline(paths.gmshExecutable, paths.calculixExecutable); }
+export async function testExternalProviderPaths(paths: ExternalProviderPaths) { return loadExternalPipeline(paths.gmshExecutable, paths.calculixExecutable, { discovery: false }); }
 
 export function discoverExternalProviderPaths(): ExternalProviderPaths {
   return { gmshExecutable: findExecutable('gmsh.exe', gmshCandidates()), calculixExecutable: findExecutable('ccx.exe', calculixCandidates()) };

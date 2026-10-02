@@ -26,6 +26,39 @@ npm start
 Provider paths can be selected from TunaCAD after pairing or supplied to the
 Bridge process:
 
+On Windows, **Simulation → Local Simulation Bridge → Browse… → Save paths
+(no execution)** persists explicit selections for the current user. Gmsh can
+be saved independently of CalculiX. The native owner resolves Windows'
+LocalApplicationData known folder to `TunaCAD/Simulation/provider-settings.json`;
+the browser cannot choose the settings-storage root. Records contain paths,
+SHA-256 fingerprints and byte sizes, not simulation results or approvals.
+Changed/missing binaries or malformed settings fail closed and require an
+explicit new selection/save. No automatic executable discovery is used by the
+launcher or Test Providers. Environment paths override saved paths explicitly.
+
+Saving only checks/fingerprints files; it does not launch a provider, mesh, or
+solve. **Test Providers** runs version/readiness probes and persists successful
+selections. Restarting the Bridge reloads saved selections and probes readiness.
+Neither action authorizes geometry transfer or solver dispatch. The mutable
+per-user settings file is separate from immutable `protected-v1` result storage.
+
+The current source mounts the Bridge panel inside Simulation, but Browse/Save
+controls are shown only after Bridge pairing. Older loaded builds may not include
+these newly implemented controls; a private bootstrap panel is not the same UI.
+Use the native command instead when the current UI does not expose settings:
+
+```powershell
+npm run configure:providers -- --gmsh 'C:\path\to\gmsh.exe'
+npm run configure:providers -- --show
+```
+
+Run these from the Bridge repository. They do not start the Bridge or any
+provider executable. The command saves through the native owner, reopens a fresh
+reader, verifies path/fingerprint/size and prints the settings-file SHA-256
+identity. `--calculix` is optional; an existing explicit CalculiX selection is
+preserved when configuring only Gmsh. No browser, root override or JSON editing
+is required. Configuration verification is not runtime/version validation.
+
 ```powershell
 $env:TUNACAD_GMSH_EXECUTABLE = 'C:\path\to\gmsh.exe'
 $env:TUNACAD_CALCULIX_EXECUTABLE = 'C:\path\to\ccx.exe'

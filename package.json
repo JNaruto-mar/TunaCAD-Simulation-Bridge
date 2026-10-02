@@ -8,6 +8,7 @@
   },
   "scripts": {
     "start": "node --experimental-strip-types simulation-bridge/cli.mts",
+    "configure:providers": "node --experimental-transform-types simulation-bridge/providerSettingsCli.mts",
     "test:providers": "node --experimental-strip-types scripts/test-provider-readiness.mts",
     "test:convergence": "node --experimental-strip-types scripts/test-mesh-convergence.mts",
     "test:lifecycle": "node --experimental-strip-types scripts/test-process-lifecycle.mts",

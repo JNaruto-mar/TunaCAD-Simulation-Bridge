@@ -3,15 +3,29 @@ import { loadExternalPipeline, testExternalProviderPaths } from './providers.mts
 import { startSimulationBridge } from './server.mts';
 import { browseExternalProviderExecutable } from './windowsExecutablePicker.mts';
 import { HARMONIC_MODE_POLICY, selectHarmonicModeCount } from './harmonicModePolicy.mts';
+import { openNativeProviderSettings, resolveConfiguredProviderPaths } from './providerSettings.mts';
 
 if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Start the Simulation Bridge in an interactive terminal for explicit transfer approval.');
-const pipeline = await loadExternalPipeline(process.env.TUNACAD_GMSH_EXECUTABLE, process.env.TUNACAD_CALCULIX_EXECUTABLE);
+const providerSettings = await openNativeProviderSettings();
+const configuredPaths = resolveConfiguredProviderPaths(await providerSettings.read(), process.env);
+const pipeline = await loadExternalPipeline(configuredPaths.gmshExecutable, configuredPaths.calculixExecutable, { discovery: false });
 const terminal = createInterface({ input: process.stdin, output: process.stdout });
 const bridge = await startSimulationBridge({ ...pipeline,
   allowedOrigin: process.env.TUNACAD_SIMULATION_ORIGIN,
-  configureProviders: testExternalProviderPaths,
+  saveProviderSettings: paths => providerSettings.save(paths),
+  async configureProviders(paths) {
+    const configured = await testExternalProviderPaths(paths);
+    if (configured.readiness.meshing.ready && configured.readiness.solving.ready) await providerSettings.save(paths);
+    return configured;
+  },
   browseProviderExecutable: browseExternalProviderExecutable,
   async approve(request, signal) {
+    if(request.schema==='tunacad-private-simulation-solve-approval/0.1') {
+      console.log('Private explicit-dynamics solver authorization: '+JSON.stringify(request));
+      console.log('This is the separate Bridge terminal approval for the displayed protected study and exact exported geometry/mesh. Geometry-transfer confirmation alone is insufficient. This increment does not launch a solver.');
+      try {return (await terminal.question('Type approve for this exact private solve binding only: ',{signal})).trim()==='approve';}
+      catch {return false;}
+    }
     if (request.schema === 'tunacad-electrostatic-two-layer-approval/0.1') {
       console.log('Two-layer electrostatic approval: ' + JSON.stringify({
         protectedStudyId: request.studyId, revision: request.projectRevision,
@@ -57,6 +71,7 @@ const bridge = await startSimulationBridge({ ...pipeline,
 });
 console.log(`TunaCAD Simulation Bridge ${bridge.url}\nAllowed origin: ${process.env.TUNACAD_SIMULATION_ORIGIN ?? 'https://tunacad.com'}\nPairing code (one use, expires in 5 minutes): ${bridge.pairingCode}`);
 console.log(`Gmsh ready: ${pipeline.readiness.meshing.ready}; CalculiX ready: ${pipeline.readiness.solving.ready}. No provider installation is performed.`);
+console.log(`Explicit provider settings: ${providerSettings.filePath}. Save paths in TunaCAD; no executable discovery is used.`);
 console.log('Open TunaCAD Simulation → Local Simulation Bridge. Restart to pair again. Ctrl+C revokes the session and cancels jobs.');
 console.log('Electrostatic dispatch requires TUNACAD_ELECTROSTATIC_STORAGE_PARENT naming an existing host-owned durable directory; each approved job gets a newly protected record vault. No old records are upgraded.');
 let closing = false;

@@ -17,6 +17,9 @@ import { electrostaticStepGeometryDigest } from './electrostaticStepIdentity.mts
 import { validateElectricalPage } from './electrostaticFields.mts';
 import { twoLayerApprovalSchema, type TwoLayerApproval } from './electrostaticTwoLayerApproval.mts';
 import { digest } from './stableDigest.mts';
+import { createPrivateSimulationApprovals } from './privateSimulationApproval.mts';
+import type { PrivateExplicitSolveBinding,PrivateExplicitProvider } from './privateExplicitPreparationContract.mts';
+import { providerPathsSchema } from './providerSettings.mts';
 
 const MAX_STEP = 16 * 1024 * 1024;
 const MAX_TOTAL_STEP = 64 * 1024 * 1024;
@@ -45,7 +48,10 @@ export async function startSimulationBridge(options: {
   providerV2?: ExternalSimulationProviderV2 | null;
   providerElectrical?: ElectrostaticDispatchProvider | null;
   readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
-  approve: (request: BridgeRequest | TwoLayerApproval, signal: AbortSignal) => Promise<boolean>;
+  approve: (request: BridgeRequest | TwoLayerApproval | PrivateExplicitSolveBinding, signal: AbortSignal) => Promise<boolean>;
+  // Trusted local launch only. No route or capability-discovery registration.
+  // Default disabled; this internal port stops at authorization, never dispatch.
+  privateExplicitApprovals?: {readProviderIdentity():Promise<PrivateExplicitProvider>};
   configureProviders?: (paths: { gmshExecutable: string; calculixExecutable: string }) => Promise<{
     provider: ExternalSimulationProvider | null;
     providerV2?: ExternalSimulationProviderV2 | null;
@@ -53,6 +59,7 @@ export async function startSimulationBridge(options: {
     readiness: Omit<SimulationBridgeReadiness, 'protocolVersion' | 'limits'>;
   }>;
   browseProviderExecutable?: (provider: 'gmsh' | 'calculix') => Promise<string>;
+  saveProviderSettings?: (paths: { gmshExecutable: string; calculixExecutable: string }) => Promise<{ gmshExecutable: string; calculixExecutable: string }>;
   port?: number;
   // Explicit local launch configuration, never supplied through HTTP.
   allowedOrigin?: string;
@@ -65,6 +72,17 @@ export async function startSimulationBridge(options: {
   const pairingExpiresAt = now() + 5 * 60_000;
   let pairingAttempts = 0;
   let session: { key: string; expiresAt: number } | null = null;
+  let privateApprovalPending=false;
+  const privateApprovals=options.privateExplicitApprovals?createPrivateSimulationApprovals({
+    readSession:()=>session&&session.expiresAt>now()?session.key:null,
+    readProvider:()=>options.privateExplicitApprovals!.readProviderIdentity(),
+    approve:async(request,signal)=>{
+      if(privateApprovalPending||busy||[...approvals.values()].some(a=>a.expiresAt>now()&&a.state==='pending'))
+        throw new Error('BRIDGE_BUSY');
+      privateApprovalPending=true;
+      try {return await options.approve(request,signal);}finally {privateApprovalPending=false;}
+    },now,
+  }):null;
   let approvalController: AbortController | null = null;
   const approvals = new Map<string, Approval>();
   const jobs = new Map<string, BridgeJob>();
@@ -82,6 +100,7 @@ export async function startSimulationBridge(options: {
   };
 
   async function revoke() {
+    privateApprovals?.revoke();
     session = null;
     approvalController?.abort();
     approvals.clear();
@@ -119,6 +138,9 @@ export async function startSimulationBridge(options: {
         return reply(res, 200, { sessionToken: session.key, expiresAt: session.expiresAt, serverProof });
       }
       if (!session || session.expiresAt <= now() || !secretEquals(String(req.headers.authorization ?? ''), `Bearer ${session.key}`)) return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
+      // One human terminal question at a time; default-private-disabled public
+      // behavior is unchanged. DELETE/session still revokes the pending gate.
+      if(privateApprovalPending&&req.method==='POST')return reply(res,409,{error:'BRIDGE_BUSY'});
       if (req.method === 'DELETE' && req.url === '/v1/session') { await revoke(); return reply(res, 200, { disconnected: true }); }
       if (req.method === 'GET' && req.url === '/v1/capabilities') return reply(res, 200, readiness);
       if (req.method === 'POST' && req.url === '/v1/providers/browse') {
@@ -127,17 +149,19 @@ export async function startSimulationBridge(options: {
         const path = await options.browseProviderExecutable(body.provider);
         return reply(res, 200, { provider: body.provider, path });
       }
-      if (req.method === 'POST' && req.url === '/v1/providers/test') {
+      if (req.method === 'POST' && ['/v1/providers/test', '/v1/providers/settings'].includes(req.url ?? '')) {
         if ([...approvals.values()].some(a => (isElectrical(a.request)
           || isTwoLayerApproval(a.request)) && ['pending', 'approved'].includes(a.state))) {
           return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
         }
-        if (!options.configureProviders || submissions > 0) return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
-        const executablePath = z.string().max(1_000).refine(value => ![...value].some(character => {
-          const code = character.charCodeAt(0); return code < 32 || code === 127;
-        }));
-        const paths = z.object({ gmshExecutable: executablePath, calculixExecutable: executablePath }).strict().parse(await readJson(req, 3_000));
-        const configured = await options.configureProviders(paths);
+        const saveOnly = req.url === '/v1/providers/settings';
+        if (submissions > 0 || (saveOnly ? !options.saveProviderSettings : !options.configureProviders))
+          return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
+        const paths = providerPathsSchema.parse(await readJson(req, 3_000));
+        // Saving is authenticated local configuration only, never a readiness
+        // claim, approval, mesh operation or executable/version probe.
+        if (saveOnly) return reply(res, 200, { saved: true, paths: await options.saveProviderSettings!(paths) });
+        const configured = await options.configureProviders!(paths);
         provider = configured.provider;
         providerV2 = configured.providerV2 ?? null;
         providerElectrical = configured.providerElectrical ?? null;
@@ -379,7 +403,17 @@ export async function startSimulationBridge(options: {
     }
   }, 1000);
   maintenance.unref();
-  return { url: `http://${authority}`, pairingCode,
+  return { url: `http://${authority}`, pairingCode,privateApprovals,
+    // Internal owner port only: never exposed through HTTP or discovery.
+    readPrivateSessionIdentity() {return privateApprovals&&session&&session.expiresAt>now()
+      ?digest({pairedSession:session.key}):null;},
+    readPrivateSessionMetadata() {return privateApprovals&&session&&session.expiresAt>now()
+      ?{identity:digest({pairedSession:session.key}),expiresAt:session.expiresAt}:null;},
+    verifyPrivateWindowProof(challenge:string,proof:string) {
+      return Boolean(privateApprovals&&session&&session.expiresAt>now()
+        &&/^[a-f0-9]{64}$/.test(challenge)&&/^[a-f0-9]{64}$/.test(proof)
+        &&timingSafeEqual(Buffer.from(createHmac('sha256',session.key).update('private-operator:'+challenge).digest('hex'),'hex'),Buffer.from(proof,'hex')));
+    },
     async close() { stopping = true; clearInterval(maintenance); await revoke(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); },
   };
 }
