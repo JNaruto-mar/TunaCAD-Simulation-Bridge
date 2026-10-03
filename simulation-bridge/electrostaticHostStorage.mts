@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import { lstat, mkdir, open, readdir } from 'node:fs/promises';
 import { dirname, join, parse, resolve } from 'node:path';
@@ -61,9 +61,108 @@ foreach ($path in $rows) {
 ConvertTo-Json -Depth 5 -Compress -InputObject @($result)
 `;
 
+// Interpreter reuse only: no ACL, path or protection result is cached. Every
+// bounded request runs the SAME policy against fresh native security descriptors.
+// Private inherited pipes correlate replies; timeout/exit/error fails closed.
+const aclWorkerScript = String.raw`
+$ErrorActionPreference = 'Stop'
+while ($null -ne ($line = [Console]::ReadLine())) {
+  try {
+    $request = ConvertFrom-Json $line
+    if ($request.kind -eq 'localApplicationData') {
+      $location = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+      [Console]::WriteLine((ConvertTo-Json -Compress -InputObject @{id=$request.id; location=$location}))
+      continue
+    }
+    if ($request.kind -ne 'acl') { throw 'Unsupported native inspection' }
+    $env:TUNACAD_ELECTROSTATIC_ACL_TARGETS = ConvertTo-Json -Compress -InputObject @($request.paths)
+    $env:TUNACAD_ELECTROSTATIC_ACL_PROVISION = 'verify'
+    $value = & {
+` + aclScript + String.raw`
+    }
+    # Keep the policy's array JSON intact: PS 5.1 adds Count/value properties
+    # when an array is parsed and serialized again inside a hashtable.
+    [Console]::WriteLine('{"id":' + (ConvertTo-Json -Compress $request.id) + ',"rows":' + $value + '}')
+  } catch {
+    [Console]::WriteLine((ConvertTo-Json -Compress -InputObject @{id=$request.id; error=$_.Exception.Message}))
+  }
+}
+`;
+let worker: ChildProcessWithoutNullStreams | null = null;
+let pending: { id: string; paths: string[]; kind: 'acl' | 'localApplicationData'; resolve(value: any): void; reject(error: Error): void;
+  timer: ReturnType<typeof setTimeout> } | null = null;
+let output = '', idle: ReturnType<typeof setTimeout> | undefined;
+let aclQueue: Promise<unknown> = Promise.resolve();
+function stopAclWorker(detail: string) {
+  const active = worker; worker = null; output = '';
+  if (idle) clearTimeout(idle);
+  const request = pending; pending = null;
+  if (request) { clearTimeout(request.timer); request.reject(new Error('ELECTROSTATIC_HOST_STORAGE_INVALID: ' + detail)); }
+  active?.kill();
+}
+function workerHandles(active: ChildProcessWithoutNullStreams, referenced: boolean) {
+  for (const handle of [active, active.stdin, active.stdout, active.stderr]) {
+    (handle as any)[referenced ? 'ref' : 'unref']?.();
+  }
+}
+async function verifyAclFresh(paths: string[], kind: 'acl' | 'localApplicationData' = 'acl'): Promise<any> {
+  return new Promise((resolveRows, reject) => {
+    if (idle) clearTimeout(idle);
+    if (!worker) {
+      const active = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', aclWorkerScript],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env,
+          TUNACAD_ELECTROSTATIC_ACL_PROVISION: 'verify' } });
+      worker = active;
+      active.stdout.setEncoding('utf8');
+      active.stdout.on('data', (chunk: string) => {
+        if (worker !== active) return;
+        output += chunk;
+        if (Buffer.byteLength(output) > 128 * 1024) return stopAclWorker('ACL response budget');
+        const end = output.indexOf('\n'); if (end < 0) return;
+        const line = output.slice(0, end).trim(); output = output.slice(end + 1);
+        try {
+          const response = JSON.parse(line), request = pending;
+          if (!request || response.id !== request.id || output.trim()) invalid('ACL response correlation');
+          if (response.error) invalid('native inspection failed');
+          if (request.kind === 'acl') {
+            if (Object.keys(response).sort().join(',') !== 'id,rows' || !Array.isArray(response.rows)
+              || response.rows.length !== request.paths.length
+              || response.rows.some((row: any, i: number) => row.path !== request.paths[i])) invalid('ACL policy/response mismatch');
+          } else if (Object.keys(response).sort().join(',') !== 'id,location' || typeof response.location !== 'string'
+            || !response.location.length || response.location.length > 4096) invalid('native location response');
+          pending = null; clearTimeout(request.timer); request.resolve(request.kind === 'acl' ? response.rows : response.location);
+          workerHandles(active, false);
+          idle = setTimeout(() => { if (worker === active && !pending) stopAclWorker('ACL idle shutdown'); }, 30000);
+          idle.unref();
+        } catch (error) { stopAclWorker(String(error)); }
+      });
+      active.stderr.on('data', () => { if (worker === active) stopAclWorker('ACL worker stderr'); });
+      active.on('error', () => { if (worker === active) stopAclWorker('ACL worker startup'); });
+      active.on('exit', () => { if (worker === active) stopAclWorker('ACL worker exit'); });
+      active.stdin.on('error', () => { if (worker === active) stopAclWorker('ACL worker pipe'); });
+    }
+    const active = worker!; workerHandles(active, true);
+    const id = randomUUID();
+    pending = { id, paths, kind, resolve: resolveRows, reject,
+      timer: setTimeout(() => stopAclWorker('ACL verification timeout'), 10000) };
+    active.stdin.write(JSON.stringify({ id, paths, kind }) + '\n');
+  });
+}
+/** Fresh OS query, not a cached location or environment-variable override. */
+export async function readNativeWindowsLocalApplicationData(): Promise<string> {
+  if (process.platform !== 'win32') invalid('Windows native location required');
+  const request = aclQueue.then(() => verifyAclFresh([], 'localApplicationData'));
+  aclQueue = request.catch(() => undefined);
+  return request;
+}
 async function acl(paths: string[], provision = false): Promise<any[]> {
   if (process.platform !== 'win32') invalid('Windows ACL host policy required; other hosts unsupported');
   if (!paths.length || paths.length > 160) invalid('ACL enumeration bound');
+  if (!provision) {
+    const request = aclQueue.then(() => verifyAclFresh(paths));
+    aclQueue = request.catch(() => undefined);
+    return request;
+  }
   const result = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', aclScript],
     { windowsHide: true, timeout: 10000, maxBuffer: 128 * 1024, env: { ...process.env,
       TUNACAD_ELECTROSTATIC_ACL_TARGETS: JSON.stringify(paths),

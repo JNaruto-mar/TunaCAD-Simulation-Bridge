@@ -3,12 +3,13 @@ param(
   [Parameter(Mandatory = $true)][string]$WorkingDirectory,
   [Parameter(Mandatory = $true)][long]$CpuTimeLimitMs,
   [Parameter(Mandatory = $true)][long]$MemoryLimitBytes,
-  [Parameter(Mandatory = $true)][string]$ArgumentListBase64
+  [Parameter(Mandatory = $true)][string]$ArgumentListBase64,
+  [switch]$LauncherTelemetry
 )
 
 $ErrorActionPreference = 'Stop'
 
-Add-Type -TypeDefinition @'
+$jobSource = @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -46,6 +47,23 @@ public static class TunaCadJobObject {
     public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
     [DllImport("kernel32.dll")]
     public static extern bool CloseHandle(IntPtr handle);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BASIC_ACCOUNTING {
+        public long UserTime, KernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(IntPtr job, int cls,
+        out BASIC_ACCOUNTING info, uint size, out uint returned);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetNamedPipeServerProcessId(IntPtr pipe, out uint pid);
+    public static BASIC_ACCOUNTING Accounting(IntPtr job) {
+        BASIC_ACCOUNTING info; uint returned;
+        if (!QueryInformationJobObject(job, 1, out info, (uint)Marshal.SizeOf(typeof(BASIC_ACCOUNTING)), out returned))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return info;
+    }
 
     public static IntPtr Create(long cpuTimeLimitMs, long memoryLimitBytes) {
         const uint JOB_OBJECT_LIMIT_PROCESS_TIME = 0x00000002;
@@ -105,6 +123,7 @@ public static class TunaCadJobObject {
     }
 }
 '@
+Add-Type -TypeDefinition ($jobSource + [Environment]::NewLine + [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'windowsSuspendedChild.cs')))
 
 $argumentJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ArgumentListBase64))
 $decodedArguments = $argumentJson | ConvertFrom-Json
@@ -121,21 +140,130 @@ $process.StartInfo.CreateNoWindow = $true
 $process.StartInfo.RedirectStandardOutput = $true
 $process.StartInfo.RedirectStandardError = $true
 $started = $false
+$telemetryPipe = $null
+$telemetryWriter = $null
+$telemetry = $null
+$sequence = 0
+$assigned = $null
+$childStartAt = $null
+$childExitAt = $null
+$childExitCode = $null
+$failure = $null
+$jobClosed = $false
+$accounting = $null
+$childResumedAt = $null
+$nativeChild = $null
+function Write-LauncherEvent([string]$eventName) {
+  if ($null -eq $telemetryWriter) { return }
+  $script:sequence++
+  $row = [ordered]@{ schema='tunacad-launcher-event/2'; sequence=$script:sequence;
+    event=$eventName; launchId=$telemetry.context.launchId; stage=$telemetry.context.stage;
+    wrapperPid=$PID; childSolverPid=$(if ($null -ne $nativeChild) {$nativeChild.Id} else {$null});
+    executable=$Executable; executableSha256=$telemetry.context.executableSha256;
+    inputDigest=$telemetry.context.inputDigest; argumentDigest=$telemetry.context.argumentDigest;
+    at=[DateTime]::UtcNow.ToString('o'); childStartAt=$childStartAt; childExitAt=$childExitAt;
+    childExitCode=$childExitCode; childResumedAt=$childResumedAt; jobAssigned=$assigned; jobHandleClosed=$jobClosed;
+    jobOwnerPid=$PID; jobHandleInheritable=$false; jobKillOnClose=$true; jobBreakawayAllowed=$false;
+    jobActiveProcesses=$(if ($null -ne $accounting) {[int]$accounting.ActiveProcesses} else {$null});
+    jobTotalProcesses=$(if ($null -ne $accounting) {[int]$accounting.TotalProcesses} else {$null}); failure=$failure }
+  $payload = ConvertTo-Json -Depth 4 -Compress -InputObject $row
+  $mac = New-Object Security.Cryptography.HMACSHA256
+  try {
+    $mac.Key = $telemetryKey
+    $signature = ($mac.ComputeHash([Text.Encoding]::UTF8.GetBytes($payload)) | ForEach-Object {$_.ToString('x2')}) -join ''
+    $telemetryWriter.WriteLine((ConvertTo-Json -Compress -InputObject @{payload=$payload;mac=$signature}))
+  } finally { $mac.Dispose() }
+}
 
 try {
+  if ($LauncherTelemetry) {
+    # Private bootstrap is read from Node-owned stdin, not argv/environment.
+    $telemetry = [Console]::In.ReadLine() | ConvertFrom-Json
+    if ($telemetry.schema -ne 'tunacad-launcher-bootstrap/2' -or
+        $telemetry.pipeName -notmatch '^tunacad-launcher-[a-f0-9]{48}$' -or
+        $telemetry.keyHex -notmatch '^[a-f0-9]{64}$' -or
+        $telemetry.context.executable -cne $Executable) { throw 'Invalid private telemetry bootstrap.' }
+    $telemetryKey = New-Object byte[] 32
+    for ($i=0; $i -lt 32; $i++) { $telemetryKey[$i]=[Convert]::ToByte($telemetry.keyHex.Substring(2*$i,2),16) }
+    # Use the same SHA256 bytes without relying on optional cmdlet autoload.
+    $hashStream=[IO.File]::OpenRead($Executable)
+    $executableHash=[Security.Cryptography.SHA256]::Create()
+    try { $actualSha=($executableHash.ComputeHash($hashStream) | ForEach-Object {$_.ToString('x2')}) -join '' }
+    finally { $hashStream.Dispose();$executableHash.Dispose() }
+    $argumentHash = [Security.Cryptography.SHA256]::Create()
+    try { $argsSha=($argumentHash.ComputeHash([Text.Encoding]::UTF8.GetBytes($argumentJson)) | ForEach-Object {$_.ToString('x2')}) -join '' }
+    finally { $argumentHash.Dispose() }
+    if ($actualSha -cne $telemetry.context.executableSha256 -or
+        ('sha256:'+$argsSha) -cne $telemetry.context.argumentDigest) { throw 'Telemetry executable/argument binding changed.' }
+    $telemetryPipe = New-Object IO.Pipes.NamedPipeClientStream('.', $telemetry.pipeName, [IO.Pipes.PipeDirection]::Out)
+    $telemetryPipe.Connect(2000)
+    [uint32]$serverPid=0
+    if (-not [TunaCadJobObject]::GetNamedPipeServerProcessId($telemetryPipe.SafePipeHandle.DangerousGetHandle(),[ref]$serverPid) -or
+        $serverPid -ne $telemetry.nodePid) { throw 'Telemetry server identity mismatch.' }
+    $telemetryWriter = New-Object IO.StreamWriter($telemetryPipe, (New-Object Text.UTF8Encoding($false)))
+    $telemetryWriter.AutoFlush=$true
+    if ([TunaCadSuspendedChild]::HandleInheritable($job)) { throw 'Job handle must not be inheritable.' }
+    Write-LauncherEvent 'launcher_started'
+    $nativeChild=[TunaCadSuspendedChild]::Create($Executable,$providerArguments.ToArray(),$WorkingDirectory,$job)
+    $started=$true
+    $childStartAt=[DateTime]::UtcNow.ToString('o')
+    Write-LauncherEvent 'child_created_suspended'
+    $nativeChild.AssignAndVerify($job)
+    $assigned=$true
+    $accounting=[TunaCadJobObject]::Accounting($job)
+    Write-LauncherEvent 'job_assigned'
+    $nativeChild.Resume()
+    $childResumedAt=[DateTime]::UtcNow.ToString('o')
+    Write-LauncherEvent 'child_resumed'
+    $stdoutTask=$nativeChild.StandardOutput.CopyToAsync([Console]::OpenStandardOutput())
+    $stderrTask=$nativeChild.StandardError.CopyToAsync([Console]::OpenStandardError())
+    $nativeChild.WaitForExit()
+    $childExitAt=[DateTime]::UtcNow.ToString('o');$childExitCode=$nativeChild.ExitCode
+    $accounting=[TunaCadJobObject]::Accounting($job)
+    Write-LauncherEvent 'child_exited'
+    $accounting=[TunaCadSuspendedChild]::WaitForEmpty($job)
+    Write-LauncherEvent 'job_empty'
+    [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask,$stderrTask),2000) | Out-Null
+    if (-not $stdoutTask.IsCompleted -or -not $stderrTask.IsCompleted) { throw 'Bounded output drain failed.' }
+    exit $childExitCode
+  }
   if (-not $process.Start()) { throw 'Provider process did not start.' }
   $started = $true
+  if ($LauncherTelemetry) { $childStartAt = $process.StartTime.ToUniversalTime().ToString('o') }
+  Write-LauncherEvent 'child_created'
   if (-not [TunaCadJobObject]::AssignProcessToJobObject($job, $process.Handle)) {
+    $assigned = $false
     $process.Kill()
     throw "Could not assign provider to Windows Job Object (Win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))."
   }
+  $assigned = $true
+  if ($LauncherTelemetry) { $accounting=[TunaCadJobObject]::Accounting($job) }
+  Write-LauncherEvent 'job_assigned'
   $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())
   $stderrTask = $process.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())
   $process.WaitForExit()
   [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask))
+  if ($LauncherTelemetry) {
+    $childExitAt=$process.ExitTime.ToUniversalTime().ToString('o')
+    $childExitCode=$process.ExitCode
+    $accounting=[TunaCadJobObject]::Accounting($job)
+  }
+  Write-LauncherEvent 'child_exited'
   exit $process.ExitCode
+} catch {
+  $failure=$_.Exception.Message
+  throw
 } finally {
-  if ($started -and -not $process.HasExited) { $process.Kill() }
-  [void][TunaCadJobObject]::CloseHandle($job)
-  $process.Dispose()
+  if ($null -ne $nativeChild) {
+    try { if ($failure -or -not $nativeChild.HasExited) { [TunaCadSuspendedChild]::StopJob($job) } }
+    finally { $nativeChild.Dispose() }
+  } elseif ($started -and -not $process.HasExited) { $process.Kill() }
+  $jobClosed=[TunaCadJobObject]::CloseHandle($job)
+  try { Write-LauncherEvent 'launcher_finalized' }
+  finally {
+    if ($null -ne $telemetryWriter) { $telemetryWriter.Dispose() }
+    if ($null -ne $telemetryPipe) { $telemetryPipe.Dispose() }
+    if ($null -ne $telemetryKey) { [Array]::Clear($telemetryKey,0,$telemetryKey.Length) }
+    $process.Dispose()
+  }
 }

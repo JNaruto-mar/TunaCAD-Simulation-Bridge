@@ -3,6 +3,7 @@ import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { beginBlock, bcsBlock, solidTetra4Block, fixedField, RADIOSSS_FIELD_RULER }
   from '../../simulation-bridge/openRadiossStarterSerialization.mts';
 import type { ExplicitC3D4Mesh } from '../calculix/ExplicitDynamicsMeshAdmission.mts';
+import { admitExplicitLinearMesh } from '../gmsh/ExplicitLinearMesh.mts';
 
 export const RUN_NAME = 'ExplicitBarProbe'; // Fixed safe file root; per-run directories isolate jobs.
 export const HISTORY_NODE_IDS = [1,2,3,4,5,6,7,8,45,46] as const;
@@ -15,14 +16,18 @@ const real = (v:number)=>fixedField(v.toExponential(12),20);
 
 /** Actual mesh inspection only. Never imports/evaluates CalculiX's CFL or an
  * axial qualification oracle. The unchanged direct decoder is intentionally
- * limited to this experimental 88/208 mesh layout and ten monitored FACE IDs. */
+ * limited to the bounded rectangular bar and ten monitored FACE IDs. Historical
+ * 88/208 counts are NOT solver requirements; topology/resource gates are. */
 export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   const request=validateExplicitDynamics(value), mesh=meshValue as ExplicitC3D4Mesh;
   if(!mesh || mesh.runtime!=='Gmsh 4.15.2' || mesh.inputGeometryDigest!==request.model.geometryDigest ||
     !Array.isArray(mesh.nodes) || !Array.isArray(mesh.elements) || !Array.isArray(mesh.surfaceTriangles) ||
-    mesh.nodes.length!==88 || mesh.elements.length!==208 || mesh.surfaceTriangles.length>832 ||
+    mesh.nodes.length<4 || mesh.elements.length<1 || mesh.surfaceTriangles.length>4*mesh.elements.length ||
     mesh.nodes.length>request.mesh.maximumNodes || mesh.elements.length>request.mesh.maximumElements)
     fail('unsupported trusted mesh layout/source/resource bound');
+  // Reuse full connected-solid/boundary/CAD ownership admission, not CalculiX
+  // CFL. This rejects disconnected/nonmanifold topology even with valid counts.
+  admitExplicitLinearMesh(request,mesh);
   const nodes=new Map<number,[number,number,number]>();
   for(const n of mesh.nodes) {
     if(!Number.isSafeInteger(n.id) || n.id<1 || n.id>999999999 || nodes.has(n.id) ||

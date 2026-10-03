@@ -1,14 +1,11 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { lstat, mkdir, readdir } from 'node:fs/promises';
 import { dirname, join, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ElectrostaticHostStorage } from './electrostaticHostStorage.mts';
+import { ElectrostaticHostStorage, readNativeWindowsLocalApplicationData } from './electrostaticHostStorage.mts';
 import { openPrivateExplicitMeshStore } from './privateExplicitMeshStore.mts';
 import { openPrivateExplicitExportStore } from './privateExplicitExportStore.mts';
 
 export const NATIVE_SIMULATION_STORAGE_POLICY = 'windows-local-application-data/1';
-const execute = promisify(execFile);
 function invalid(detail: string): never { throw new Error('NATIVE_SIMULATION_STORAGE_INVALID: ' + detail); }
 
 /** Pure location policy. Its input is obtained by the native OS reader below,
@@ -34,10 +31,7 @@ export async function readNativeSimulationLocation() {
   if (process.platform !== 'win32') invalid('Windows native storage only');
   // Fixed command, no interpolated paths or environment overrides. GetFolderPath
   // follows the current user's registered OS application-data location.
-  const output = await execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    "$ErrorActionPreference='Stop'; [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)"],
-    { windowsHide: true, timeout: 10000, maxBuffer: 4096 });
-  return nativeSimulationLocation(output.stdout.trim());
+  return nativeSimulationLocation((await readNativeWindowsLocalApplicationData()).trim());
 }
 
 async function verifyDirectoryAncestry(path: string) {

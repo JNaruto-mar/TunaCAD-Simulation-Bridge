@@ -9,10 +9,22 @@ export interface OpenRadiossInstallation {
   root:string; starterExecutable:string; engineExecutable:string; runtimeVersion:'2026';
   starterSha256:string; engineSha256:string;
 }
+const nativeInspections = new WeakMap<object,{configDigest:string;valueDigest:string;startedAt:number}>();
+/** One-use native evidence from THIS verification boundary, never JSON or a
+ * historical inspection. Allows host/provider to share a single fresh hash
+ * operation, not to cache runtime trust between boundaries. */
+export function consumeNativeOpenRadiossInspection(config:OpenRadiossInstallation,value:any,notBefore:number){
+  const proof=value&&nativeInspections.get(value);
+  if(!proof||proof.configDigest!==digest(config)||proof.valueDigest!==digest(value)||proof.startedAt<notBefore)
+    throw new Error('OpenRadioss native inspection stale/untrusted/changed');
+  nativeInspections.delete(value);
+  return value as Awaited<ReturnType<typeof inspectOpenRadiossInstallation>>;
+}
 /** Explicit paths, complete content hashing on EVERY read. Never executes a
  * program, searches PATH, caches metadata as trust, or accepts a study manifest.
  * Release path changes require a new audited policy, not automatic discovery. */
 export async function inspectOpenRadiossInstallation(config:OpenRadiossInstallation) {
+  const startedAt=performance.now();
   const fail=(why:string):never=>{throw new Error('OpenRadioss installation: '+why);};
   if(config.runtimeVersion!=='2026'||[config.root,config.starterExecutable,config.engineExecutable].some(p=>!isAbsolute(p))||
     basename(config.starterExecutable)!=='starter_win64.exe'||basename(config.engineExecutable)!=='engine_win64.exe'||
@@ -93,16 +105,25 @@ export async function inspectOpenRadiossInstallation(config:OpenRadiossInstallat
       return {path:name,bytes:count,sha256:hasher.digest('hex')};
     } finally {await handle.close();}
   };
-  const files:RuntimeFile[]=[];for(const file of before.metadata) files.push(await hash(file.path));
+  // Bound independent fresh file reads to four concurrent handles/buffers.
+  // No result/metadata cache: every file still gets the same ancestry, inode,
+  // size, timestamp and full-content checks, plus the final whole-set snapshot.
+  const files:RuntimeFile[]=[];
+  for(let index=0;index<before.metadata.length;index+=4){
+    const batch=await Promise.allSettled(before.metadata.slice(index,index+4).map(file=>hash(file.path)));
+    for(const item of batch){if(item.status==='rejected')throw item.reason;files.push(item.value);}
+  }
   const complianceIdentity=await hash('COPYRIGHT.md');
   const after=await snapshot();if(digest(before)!==digest(after)) fail('runtime file set/size changed while inspecting');
   const manifest=validateOpenRadiossRuntimeManifest(files);
   for(const [name,expected] of [['exec/starter_win64.exe',config.starterSha256],['exec/engine_win64.exe',config.engineSha256]])
     if(files.find(f=>f.path===name)!.sha256!==expected) fail('executable identity mismatch');
   const identity={runtimeVersion:config.runtimeVersion,manifestPolicyVersion:policy.version,files:manifest.files};
-  return {identity,runtimeDigest:digest(identity),manifestDigest:manifest.manifestDigest,totalBytes:manifest.totalBytes,complianceIdentity,
+  const result={identity,runtimeDigest:digest(identity),manifestDigest:manifest.manifestDigest,totalBytes:manifest.totalBytes,complianceIdentity,
     hashingBytes:manifest.totalBytes+complianceIdentity.bytes,environment:{OPENRADIOSS_PATH:root,RAD_CFG_PATH:join(root,'hm_cfg_files'),
       RAD_H3D_PATH:join(root,'extlib','h3d','lib','win64'),KMP_STACKSIZE:'400m',OMP_NUM_THREADS:'1',
       PATH:[join(root,'extlib','hm_reader','win64'),join(root,'extlib','intelOneAPI_runtime','win64'),
         join(root,'extlib','h3d','lib','win64'),process.env.PATH??''].join(';')}};
+  nativeInspections.set(result,{configDigest:digest(config),valueDigest:digest(result),startedAt});
+  return result;
 }

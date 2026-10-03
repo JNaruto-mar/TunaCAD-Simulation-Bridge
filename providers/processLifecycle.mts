@@ -23,6 +23,7 @@ export function spawnProviderProcess(
   args: string[],
   options: SpawnOptions,
   quotas: { cpuTimeLimitMs: number | null; memoryLimitBytes: number | null } = LOCAL_PROVIDER_RESOURCE_LIMITS,
+  telemetry?: { bootstrap:string },
 ): ChildProcess {
   if (!hasEnforcedProviderProcessQuotas() || quotas.cpuTimeLimitMs === null || quotas.memoryLimitBytes === null) {
     return spawn(executable, args, options);
@@ -31,14 +32,17 @@ export function spawnProviderProcess(
   const powershell = join(windowsDirectory, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const runner = fileURLToPath(new URL('./windowsJobObjectRunner.ps1', import.meta.url));
   const encodedArguments = Buffer.from(JSON.stringify(args), 'utf8').toString('base64');
-  return spawn(powershell, [
+  const child=spawn(powershell, [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', runner,
     '-Executable', executable,
     '-WorkingDirectory', String(options.cwd ?? process.cwd()),
     '-CpuTimeLimitMs', String(quotas.cpuTimeLimitMs),
     '-MemoryLimitBytes', String(quotas.memoryLimitBytes),
     '-ArgumentListBase64', encodedArguments,
+    ...(telemetry?['-LauncherTelemetry']:[]),
   ], options);
+  if(telemetry){if(!child.stdin)throw new Error('Private launcher stdin unavailable');child.stdin.end(telemetry.bootstrap);}
+  return child;
 }
 
 export async function terminateChildProcess(child: ChildProcess, graceMs = LOCAL_PROVIDER_RESOURCE_LIMITS.processTerminationGraceMs): Promise<boolean> {

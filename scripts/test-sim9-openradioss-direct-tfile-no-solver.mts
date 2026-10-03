@@ -136,6 +136,21 @@ const residualHistory = parseBoundedOpenRadiossTFile4(
   fixture({ ...cadenceOptions, addedMass: initialResidual }), 1e-5, completion);
 assert.equal(residualHistory.frames[0].global.addedMassMg, initialResidual);
 assert.ok(residualHistory.frames.every(f => f.global.addedMassChangeFromInitializationMg === 0));
+const actualMeshCounts = { nodeCount: 88, elementCount: 209 };
+assert.deepEqual(parseBoundedOpenRadiossTFile4(fixture({ ...cadenceOptions,
+  addedMass: initialResidual }), 1e-5, completion, actualMeshCounts).frames, residualHistory.frames);
+// Between gamma_296 and gamma_297: actual counts, not a guessed T01 layout.
+const middleBound = -Math.fround(296.5 * 2 ** -53 * Math.fround(7.8e-5));
+assert.throws(() => parseBoundedOpenRadiossTFile4(fixture({ ...cadenceOptions,
+  addedMass: middleBound }), 1e-5, completion), /mass scaling/);
+assert.doesNotThrow(() => parseBoundedOpenRadiossTFile4(fixture({ ...cadenceOptions,
+  addedMass: middleBound }), 1e-5, completion, actualMeshCounts));
+for (const counts of [{nodeCount:3,elementCount:209},{nodeCount:88,elementCount:0},
+  {nodeCount:100001,elementCount:209},{nodeCount:88,elementCount:50001},
+  {nodeCount:NaN,elementCount:209},{nodeCount:88,elementCount:208.5}])
+  assert.throws(() => parseBoundedOpenRadiossTFile4(bytes, 3e-6, undefined, counts), /summation counts/);
+assert.throws(() => parseBoundedOpenRadiossTFile4(fixture({ ...cadenceOptions,
+  addedMass: 5e-20 }), 1e-5, completion, actualMeshCounts), /mass scaling/);
 assert.throws(() => parseBoundedOpenRadiossTFile4(
   fixture({ ...cadenceOptions, addedMass: 5e-20 }), 1e-5, completion), /mass scaling/);
 assert.throws(() => parseBoundedOpenRadiossTFile4(

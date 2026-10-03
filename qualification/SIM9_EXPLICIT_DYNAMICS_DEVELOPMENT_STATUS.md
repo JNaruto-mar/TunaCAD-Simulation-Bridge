@@ -1,4 +1,120 @@
-# SIM-9 bounded explicit structural dynamics — first increment
+# SIM-9 bounded explicit structural dynamics — development milestone
+
+## Current milestone (2026-10-03): authentic 209-element private execution PASS
+
+```ini
+AUTHENTIC_209_NUMERICAL_EXECUTION = PASS
+PROVIDER_EXECUTION_RESULT = succeeded
+AXIAL_BAR_ORACLE_V2_RESULT = PASS
+```
+
+The bounded explicit-dynamics POC is development-complete for this one axial
+bar and private Windows/OpenRadioss path. Status remains `proof_of_concept`,
+`engineeringUsePermitted: false`, public/browser/MCP admission closed. This
+summary supersedes the prospective current-209 PENDING statements below; it
+does not rewrite historical failures or broaden the supported physics.
+
+The authentic STEP-derived mesh has **88 nodes / 209 C3D4-compatible TETRA4**
+elements, not the historical 208-element fixture. The model remains a
+100 × 10 × 10 mm bar, E=200,000 MPa, ν=0.3, density=7.8e-9 Mg/mm³,
+mass=0.078 kg, fixed opposite end and 100 N axial step load, zero initial
+displacement/velocity, no damping/contact/plasticity/mass scaling/large
+deformation/multi-domain physics. Run controls were 50 µs, 1 µs `/TFILE/4`,
+plain `/DT/NODA 0.6 0`; the 20,000-increment cap and frozen oracle were unchanged.
+
+### Consolidated bounded evidence
+
+| Lane | Status | Evidence and limit |
+| --- | --- | --- |
+| Explicit contract, units and analytical foundation | PASS | Focused contract/reference evidence retained; one rectangular homogeneous elastic solid only. |
+| Private native source, export and actual-mesh binding | PASS | Authenticated controlled native CAD owner; protected STEP/export and independently admitted 209-element mesh, freshly rebound before execution. Not arbitrary geometry evidence. |
+| Separate approvals and single-use execution authority | PASS | Production consumers exercised with `controlled_test_fixture` approvals; no human-interactive claim or public route. |
+| Runtime, provenance and Windows containment | PASS | Fresh full executable/runtime hashes; native suspended/atomic job assignment and seven-event telemetry; both owned trees complete. Historical controlled containment/cancellation evidence retained, not rerun. |
+| Protected-storage/readiness budget enforcement | PASS | Fresh ACL/source/artifact checks and one-use native runtime evidence; TTL=300 s, total stage reserve=280 s, pre-Starter reserve=215 s unchanged. |
+| Authentic Starter / Engine execution | PASS | Exactly one submission, accepted run, Starter and Engine; both OS exit codes 0 with normal termination. Linear one-point tetra: input 1000 / normalized part-review 0. |
+| Direct TFILE/4 recovery and coverage | PASS | Authentic THICODE 3040, 15,024 bytes, 50 complete frames, 157 cycles; source-backed variable-cycle scheduling, no converter acceptance. |
+| Frozen axial_bar_oracle_v2 | PASS | All 16 mandatory gates pass; the frozen oracle identity and tolerances were not retuned. Precursor amplitude is diagnostic only. |
+| Durable capture, completion and fresh-source replay | PASS | Bounded protected records retained before normal scratch cleanup; finalized succeeded result, exact normalized-result replay, cleanup confirmed, not quarantined. |
+| Cancellation/failure/sticky quarantine | PASS | Existing focused lifecycle and controlled failure evidence; failed historical attempts remain retired. The successful run is not a new cancellation study. |
+| Real-human interactive approval | PENDING / not demonstrated | Controlled automated approvals only; optional separate UI smoke evidence, not a prerequisite for this bounded development milestone. |
+| Arbitrary-geometry validation, mesh convergence and independent engineering qualification | PENDING / not demonstrated | Neither inferred from this run nor performed for consolidation. No promotion. |
+| CalculiX 2.16 explicit structural provider | FAIL / unsupported | Retained source-grounded CFL/NaN diagnostics; unrelated validated CalculiX capabilities unchanged. |
+
+### Portable evidence identities (raw records remain local, uncommitted)
+
+- Study: `private-explicit-7afdbac1-20dc-4a50-a221-1b5369f8b4e4`.
+- Export: `export-e0ad046a-4d54-4aa6-a293-5b95c61d0bb4`.
+- Mesh: `gmsh-explicit-09e7ee71d908b1aa01b8f688`, artifact SHA-256
+  `09e7ee71d908b1aa01b8f68860e86569de6a736f03830e90736077fcc506c17b`.
+- Provider run: `9f1498a9-99ce-4d65-b251-b95b40437a78`.
+- Authentic T01 SHA-256:
+  `3e10d1343456f68679fe5897e7c9131c1d95fe609124160abbd93435bae11f0f`.
+- Normalized result digest:
+  `sha256:3684a7d2e720bfbe36bb18df6d3168fb80aa105817ffbf6c3be6f15e1db06d8c`.
+- Frozen oracle digest:
+  `sha256:15b463c1b5e3db282a191b6aa62e5c508470b46348e283e188cf161a84ec7b97`.
+- Final receipt digest:
+  `sha256:314bb80de92779ec37aced37fdd07d0189c57e4f518518cc667fa406de2f5f35`.
+
+### Numerical summary (retained evaluation, not a new solve)
+
+First/last history times: 0 / 49.1927385156 µs; first positive frame
+1.2777336451 µs. Binary history timestep range
+3.1943332601e-7–3.1943341128e-7 s. Coverage is complete under the frozen
+eligible-cycle scheduler; an exact 50 µs frame is not required.
+
+All 16 mandatory gates pass: finite state, zero initial conditions, wave
+arrival, transit displacement, return displacement, plateau reaction, fixed
+motion, energy balance, applied work, mass conservation, no added mass,
+history coverage, provider provenance, reaction channel integrity, quiet
+pre-P support and precursor mandatory integrity. Selected measurements:
+
+| Quantity | Retained measured value |
+| --- | --- |
+| Arrival sample / error | 19.1660037672 µs / 0.5824138910 µs |
+| Transit displacement / absolute error | 0.0005032197126 mm / 0.0000032197126 mm |
+| Return displacement / absolute error | 0.0009582596734 mm / 0.0000417403266 mm |
+| Support plateau median / in-band fraction | −201.3561363 N / 100% |
+| Quiet pre-P interval maximum | 3.1743208 N (limit 10 N) |
+| Fixed-node DX / VX / AX maxima | 0 / 0 / 0 |
+| Maximum normalized energy / work residual | 0.0096418047 / 5.4001686e-8 |
+| Mass / relative reference error | 0.0779999973 kg / 3.4590276e-8 |
+| Added mass | No positive addition or temporal change; raw constant −5.4210109e-17 kg subtraction roundoff retained |
+
+Result recovery is limited to axial-X histories at the ten monitored fixed/
+loaded FACE nodes, not full-mesh vectors or contours. Raw support impulse in
+N·s is retained; force is the deterministic forward/centered/backward dI/dt.
+At the final frame, kinetic/internal/work energies are
+0.0129032852 / 0.0603430159 / 0.0732962489 N·mm.
+
+### Readiness corrections and historical evidence
+
+Protected verification overhead was reduced without caching trust: reuse a
+private native read-only interpreter, but reread the same ACL policy on every
+request; full runtime hashing uses four bounded concurrent reads; host/provider
+share only branded, one-use native evidence from the current boundary. Source,
+artifact and executable freshness, approval separation, containment, durable
+publication and stage ceilings remain required. No budget or TTL increased.
+The successful run's cumulative source/runtime/storage times were
+1.376 / 22.515 / 4.762 s, below their 25 / 25 / 15 s ceilings.
+
+Historical deck serialization failures, truncated ASCII TFILE/3 recovery,
+initially unsupported THICODE 3040, 208-element oracle/timestep findings,
+CommonJS module-location failure, containment/provenance failures and source/
+storage/headroom stopped attempts remain evidence at their original scopes.
+They are not rewritten as numerical successes or reused authorities. Earlier
+208 numerical evidence is not stale, but it never establishes this 209 mesh.
+Shared storage implementation checks were refreshed during the overhead fix;
+this does not claim rerun electrostatic or broader qualification matrices.
+
+Consolidation rereads existing receipts and performs repository safety/targeted
+syntax checks only. No mesher, solver, numerical revalidation, cancellation
+study, Chromium or broad regression is required merely to consolidate. Any
+future authoring/visualization extension or formal qualification remains a
+separately scoped roadmap gate; this milestone opens neither admission nor
+engineering use.
+
+## Historical first increment (provider closed)
 
 Status: proof_of_concept; engineeringUsePermitted: false. This is an
 additive provider-closed specialist contract and analytical foundation.
@@ -3716,3 +3832,383 @@ exact matching is mandatory, and changed/unprovable lineage requires new geometr
 authorization. No new Gmsh, Starter, Engine, CalculiX, converter, browser or
 historical suite ran. Prior numerical evidence remains current; proof_of_concept,
 engineeringUsePermitted:false and public/solver admission closed. No promotion.
+
+## Host source attachment / retained-study continuation review (2026-10-02)
+
+Private TunaCAD host increment only; provider implementation, contracts and prior
+execution evidence are unchanged. Internal attachTrustedSourceForContinuation
+selects an export ID and reports SOURCE_ATTACHMENT_MATCHED / REQUIRED / MISMATCH /
+STALE. Missing/unattested current source/study readers cannot use stored history
+as authority. Current host study/request, load, duration/output, units and runtime
+are read independently; existing CAD/kernel readers recompute source/FACE/material/
+geometry identities. Protected readers reopen exact STEP/receipt/mesh and Gmsh
+provenance. No new export pin, record copy/reseal, geometry approval, mesh or job.
+
+An exact match seals a NEW 120-second solve binding only. Old preparation remains
+expired. Existing separate solve approval/consumption performs fresh study/source/
+artifact/runtime checks, remains expiry-capped and single-use/replay-resistant;
+dispatch stays disabled. Controlled no-execution tests PASS37 cover source/study/
+load/control/unit/STEP/mesh/provenance/runtime mismatch, mutation during attachment,
+changed controls before approval, missing source/readers, expiry and replay. A fake
+native owner cannot brand a reader; controlled evidence cannot establish authentic
+rebound. Changed-surface type/syntax/whitespace validation is tracked in TunaCAD.
+
+Retained real native-kernel export/mesh lineage is still PENDING_SOURCE_ATTACHMENT.
+Study private-explicit-f1a3d25e-f4ac-4f11-9d6e-c734e8cd942c belonged to isolated
+model root / bar-part / bar-body, fixed/loaded FACEs, controlled-linear-steel,
+100 N X, 50 us, 1/50 us output. Its native artifact evidence is real; approvals are
+controlled_test_fixture, not human. The fixture restored its previous CAD state
+and ended. Read-only audit found no private launcher and no saved original CAD
+document. Generated document/session identity cannot be recreated as live truth.
+No authentic source attachment, solve-binding, approval or Bridge-ready digest is
+claimed. Existing records were neither modified nor replay-validation rerun.
+
+A new live owner must independently supply exact document/model/revision/session/
+epoch/body/domain/FACE/material/geometry AND current host study/request/control
+authority. The native binder accepts only a genuinely initialized native owner,
+not a payload flag. The current launcher has no persistent live study registry
+for the exited retained fixture. Reopening a similar bar is insufficient; isolated
+fixture records cannot become production history. If authentic original state is
+unavailable, a new live approved lineage is a separate prerequisite, not an implicit
+continuation. No manual pairing/approval requested, no execution/regeneration.
+Prior feasibility, analytical, timestep, cancellation and mesh evidence remains
+current. proof_of_concept; engineeringUsePermitted:false; dispatch and public
+browser/MCP admission closed. No commit, push, deployment or promotion.
+
+## New native controlled lineage / future execution preflight (2026-10-02)
+
+TunaCAD-only development harness, no public provider implementation/admission
+change. New controlled native kernel/store source prepared study
+private-explicit-7afdbac1-20dc-4a50-a221-1b5369f8b4e4 / preparation
+simprep_private-73f80729-d40a-43d9-b3c5-4a30134c206c. All document/model/session,
+component/body/domain/FACE identities are new. Historical study
+private-explicit-f1a3d25e-f4ac-4f11-9d6e-c734e8cd942c remains
+PENDING_SOURCE_ATTACHMENT; no retained artifact was reused/relabelled.
+
+Source/material/FACE/revision before/after canonical native STEP inspection PASS.
+Canonical digest sha256:3bfeb1bf171a5ec8a7a99b1011eb22b34a0c160af829952d75f005f79611d28a.
+Controlled geometry approval consumed once, no solve approval; new protected STEP
+export-e0ad046a-4d54-4aa6-a293-5b95c61d0bb4 /15429 bytes /
+sha256:5015b6ae6f8a9d756ebdfef3da2ebffbb4aa82f05fdbf719d0ac446977239989.
+Independent protected reader verifies identical bytes/hash/canonical identity and
+receipt/pin. Exact mesh is absent: MESH_BINDING_PENDING. Test approval remains
+controlled_test_fixture, never human. Original preparation lifetime120 s unchanged;
+approved durable export may only proceed with newly validated mesh and fresh
+short-lived solve authority, not renewal of the expired preparation.
+
+Native persistent Gmsh settings/path/fingerprint reopened and verified read-only;
+no executable discovery, substitution, configuration mutation or probe. Fresh
+OpenRadioss2026 manifest matches trusted
+sha256:64019bec8c2f46a8431c8976db6c3664f162376f59ef1c2edca7f229a8e1208b;
+runtime sha256:65d76caa5f3c9d83f2092d51505d92f14abe5ca4a10a540876d11e595afd7b36.
+Frozen axial_bar_oracle_v2 digest
+sha256:15b463c1b5e3db282a191b6aa62e5c508470b46348e283e188cf161a84ec7b97,
+thresholds and actual-variable-cycle coverage semantics unchanged.
+
+Protected preflight digest
+sha256:c9fdc13ffb2aef25d72efde63535336360e97808a58e862baf80251bfa5f7834,
+END_TO_END_EXPLICIT_PREFLIGHT_READY; GMSH_EXECUTION_AUTHORIZED=false,
+SOLVER_EXECUTION_AUTHORIZED=false; dispatch disabled. Intended future maximums
+1Gmsh/1Starter/1Engine, no retry, .6 nodal scale/zero minimum,50 us/1 usTFILE4,
+20000 cap. Actual counts0/0/0. Fourteen-stage plan records each fresh identity/hash,
+approval consumption, persistence, cancellation and quarantine boundary. Existing
+Windows process-tree/Job Object limits and cleanup-before-publication code inspected
+only, historical cancellation evidence reused. Actual-mesh and Starter-native
+stability/resource gates still required. Provider's experimental88/208 C3D4 and
+ten-node identity restriction is NOT relaxed: prior native209-element capture is
+a known future blocker if reproduced, requiring stop before Starter, never old
+mesh substitution. Output remains ten FACE nodes' X histories plus globals, not
+general3D/full-mesh visualization or broader physics.
+
+With explicit user approval the new controlled source owner remains idle, exposing
+only authenticated read-only status/source for the exact current owned study;
+browser Origins/mutation/dispatch/other studies refused. Connection secret and
+test records are protected per-user isolated fixture assets, not repository/public
+or production storage. Current source is reread from the live native kernel; stored
+records cannot replace that owner if it exits. No production bootstrap changed.
+Focused preflight/isolation checks PASS26 and changed-file type/compile checks PASS
+in TunaCAD; fresh native preparation/protected-reader assertions PASS. No Gmsh,
+Starter, Engine, CalculiX, converter, Chromium or historical suite ran. Earlier
+numerical/provider evidence remains current. Next: separately authorized one new
+Gmsh with strict actual-mesh admission, then fresh solve binding/separate approval
+only if compatible. proof_of_concept; engineeringUsePermitted:false; public closed.
+
+## One approved existing-owner Gmsh capture / no solve authority (2026-10-02)
+
+TunaCAD private runner reused unchanged production Bridge mesh capture/admission
+and protected storage. User approval limited to ONE Gmsh for new current study
+private-explicit-7afdbac1-20dc-4a50-a221-1b5369f8b4e4 / approved export
+export-e0ad046a-4d54-4aa6-a293-5b95c61d0bb4. PID4956 remains the same controlled
+native kernel owner. Exact authenticated source/session/revision/epoch/FACEs/
+material/current owned study/load/control/unit/request comparison PASS, repeatedly
+rechecked during capture. Expired120 s preparation not renewed/recreated; no new
+geometry approval or substituted source. Saved native Gmsh configuration and
+protected export receipt/pin/STEP were freshly reopened/hashed, no discovery or
+reconfiguration. Immutable one-run claim prevents rerun by a fresh test closure.
+
+Existing bounded configuration10 mm/linear C3D4/OCC STEP/one thread unchanged;
+configuration digest
+sha256:b98ed0010e65a9aa0723e0bffcae80064d5ffd9242132536c3bb298d73366093.
+Invocation bar.geo -3 -format msh2 -o bar.msh -nt1 -v3. Gmsh run
+207b15f8-2193-4a8a-b81a-01b964b25929 exit0, no signal/failure, diagnostics empty
+at requested verbosity. Input/execution/raw-output/cleanup receipts retained
+contemporaneously. Normal scratch cleaned; no original export/preflight reseal.
+
+Strict actual geometric/topological admission PASS88 nodes/209 C3D4 elements;
+no historical count required for mesh admission. One connected volume, valid
+finite/unique IDs/connectivity, positive Jacobians, complete boundary ownership,
+volume9999.999999999989 mm3, mass0.078 kg, minimum volume41.666666666666664 mm3,
+minimum altitude2.23606797749979 mm. Fixed nodes[1,2,3,4,45], loaded
+[5,6,7,8,46]; each100 mm2/four facets bound to exact semantic FACEs/domain/body.
+Protected mesh gmsh-explicit-09e7ee71d908b1aa01b8f688 / artifact digest
+sha256:09e7ee71d908b1aa01b8f68860e86569de6a736f03830e90736077fcc506c17b.
+Raw10873-byte MSH digest
+sha256:2bdf1807af9f93f8797b999e39b771bca675ae2f77c2f916435be17529841be0.
+Schema tunacad-private-explicit-protected-mesh/0.2 / record digest
+sha256:a0160b4b8ce7b9a57f5412234eb4ce5ef18520949e99950cac06d0c10e246944.
+Fresh protected reader independently rereads raw mesh/export/provenance/execution/
+configuration/settings/executable/cleanup, recomputes admission/maps/digests PASS.
+
+Final GMSH_MESH_CAPTURE_VALIDATED receipt digest
+sha256:3ff41c667e6c60c5a88117853d419d1b734aa3c9067b0587e87894893afdc20a.
+BRIDGE_APPROVAL_AUTHORIZED=false; SOLVER_EXECUTION_AUTHORIZED=false;
+TRUSTED_SOURCE_OWNER_ALIVE=true/PID4956. No durable solve binding, Bridge approval,
+Bridge-ready request or provider submission. Actual Gmsh1/Starter0/Engine0/
+CalculiX0. Owner idle access remains read-only; native source authority unchanged.
+This captures a valid actual mesh, NOT solver admission: existing OpenRadioss
+experimental208-element restriction remains unchanged and must be reviewed in a
+separate bounded increment before any future dispatch. Never substitute old mesh.
+Focused source/provenance checks PASS29 and changed runner type/syntax/whitespace
+PASS in TunaCAD. No historical numerical/refinement/Chromium/solver suite. Previous
+evidence current; proof_of_concept, engineeringUsePermitted:false, public closed.
+No commit/push/deployment/promotion.
+
+## Existing-owner authorization-only continuation (2026-10-02)
+
+TunaCAD private test orchestration reused the existing production durable solve
+service and Bridge approval consumers, without changing provider implementation.
+The same live controlled native owner and retained study/export/actual mesh passed
+fresh authenticated source/current-study binding, protected export/raw-mesh/FACE
+mapping/execution/settings provenance and full installed runtime hashing. Original
+preparation stayed expired; no new geometry approval/export/mesh or source identity.
+
+New solve binding digest
+sha256:df875796cc1409e9a01ecd9f651362d397f141f2f18b235e891e0454b4394aff,
+created2026-10-02T13:53:27.490Z / expires2026-10-02T13:55:27.490Z,120 s.
+Separate controlled_test_fixture Bridge approval bound to that exact binding and
+expiry, consumed once via production code. Geometry substitution, binding mismatch,
+expiry, binding replay and approval replay rejected. Consumed proof verified.
+Dispatch-disabled Bridge-ready request digest
+sha256:aa8d2c0e50251b866195ded5da7446141d2fe46fa273143d799166ddd11d1aec.
+Final BRIDGE_READY_REQUEST_VALIDATED receipt digest
+sha256:8af4989f3346fc2df368a4ffba078e80950cf410d4171e635406dfb896b137a2.
+Fresh reads source51/export8/mesh7/runtime15; all11 focused checks PASS, private
+runner type/syntax/whitespace PASS. No provider submit/mesher/solver/converter ran.
+
+This is controlled test authorization evidence, not human approval or lasting
+execution authority. Runner revokes its consumed in-memory capability on exit;
+native source owner remains alive/read-only and canonical retained records remain
+unchanged. Original owner controller is preflight-only, not a dispatched controller.
+Separate experimental208-element solver gate remains unchanged; captured209-element
+mesh is not solver-admitted. Next: no-execution provider-input reconciliation before
+any separately approved submission. Earlier numerical/provider evidence current;
+proof_of_concept, engineeringUsePermitted:false, public closed. No broad/historical
+suite, commit, push, deployment or promotion.
+
+## Historical208 count restriction resolved (2026-10-02; no execution)
+
+**EXACT_208_HISTORICAL_ONLY**. Original OpenRadiossDeck exact88 nodes/208 tetra
+and832 facet cap were a historical fixture restriction, not a solver requirement.
+Bounded contract already permits4..100000 nodes and1..50000 elements (also subject
+to per-request tighter bounds);20000-increment cap unchanged. Deck now reuses the
+existing connected rectangular C3D4 geometric/topological admission, positive
+volumes/mass, complete CAD boundary/FACE ownership and source/runtime checks.
+Ten monitored FACE IDs, one domain, material, step load, property/time cards,
+zero initial state and no-mass-scaling policy unchanged.
+
+Count assumption classification: deck equality/cap = accidental historical
+hard-coding; T01 gamma_296 = historical summation bound accidentally fixed in
+production recovery; frozen oracle/timestep plan and probe/run scripts = historical
+fixture identity; serialization/reader/provider regression counts = test-only
+historical expectations. Starter NUMELS equality = real interpreted deck identity,
+already dynamic. Resource maxima/material/FACE/geometry = bounded contract.
+No other208-sized provider/result arrays or deck loops found. T01 record format
+does not carry a volume element count:22 globals/ten nodes/channels/version/framing
+remain unchanged. Production result recovery supplies admitted actual counts for
+gamma_n only; historical defaults/oracle/plan remain frozen88/208. Positive added
+mass and any later mass/residual change still fail. No numerical gate retuned.
+
+Fresh protected native read admitted authentic88/209 mesh and verified all raw
+mesh/export/source/execution/settings/configuration/cleanup provenance. Current
+native source unchanged. All209 tetra emitted once; fixed[1,2,3,4,45],
+loaded[5,6,7,8,46], resultant+100 N, mass0.07799999999999992 kg.
+Starter SHA-256
+sha256:851a36b8db9a8892b23f04bdbfc1c3b1187001b88348d19ba20f48a176642144;
+Engine SHA-256
+sha256:8a20fe6add5f25384a9ddc4808d22240cf772d69cf7ee04e4c069e44f1c83536;
+combined UTF-8 Starter+Engine digest
+sha256:e5dabd700fd1304b52b5a44f291d269ccf78c08d9af1cf2afb044f3b22679f74.
+Historical208 deck bytes still match original hashes. Tetra433 [35,72,66,88] is a
+unique positive volume41.666666666666664 mm3 at centroid[92.5,7.5,2.5], inside the
+one connected domain, not a surface row. No tetra deleted or changed.
+
+Historical meshing constructed an OCC Box; current meshing imports native STEP
+and explicitly sets random seed/thread count. Both label Gmsh4.15.2. Retained
+meshes have different node numbering/positions/connectivity, not an old208 mesh
+plus a single append. No valid type4 filtering found in old parser. Exact attribution
+among source entity ordering/STEP/seed/thread controls remains undemonstrated
+without a new mesher study, not authorized here. Different topology alone is not
+an error when all geometric admission invariants pass.
+
+Pure focused layout/rejection/deck checks PASS62; synthetic direct3040/4021
+parser/actual-count roundoff checks PASS; TunaCAD prospective preflight checks
+PASS26. Historical T01 + controlled209-count metadata produces identical frames,
+NOT real209 solver-result evidence. No new changed-file type diagnostics;25
+pre-existing binary Buffer/type diagnostics independently reproduced from committed
+source, not cleaned up. Syntax/whitespace PASS. All process/submit counts0; no new
+authority, old preparation expired and prior consumed binding/approval untouched.
+Private/public isolation and POC/engineeringUsePermitted:false preserved. Historical
+numerical evidence remains current for its original208 mesh;209 numerical validation
+still needs a separately approved actual provider run, fresh solve binding and
+separate approval, and clean Starter-native stability/interpretation admission.
+No commit/push/deploy/promotion or provider/browser/MCP/public exposure.
+
+### Execution-readiness contract (2026-10-02; no solver; PARTIAL)
+
+The private execution boundary now reserves280s headroom within unchanged300s
+authority: source25/runtime25/storage15/Starter65/handoff30/Engine65/recovery20/
+durable25/finalization10 seconds. Shared policy pins restart<=16MiB, other raw
+artifacts<=8MiB, <=8 files/64MiB per stage and JSON<=2MiB. Producer and protected
+sink verify the policy digest before launch; incompatible sinks fail early.
+
+The canonical launcher has opt-in five-event private pipe telemetry, separate
+from solver output. Context/digests/sequence/timestamps/accounting bind wrapper
+and actual child identities; accepted events are protected. Other provider
+launches do not opt in. Child creation, job assignment and termination semantics
+are unchanged. Wrapper close alone no longer establishes explicit owned-tree
+completion. Native explicit submission/driver execution is blocked with
+CONTAINMENT_CHANGE_REQUIRED, not a numerical-provider failure.
+
+Read-only Windows job accounting cannot prove descendants created before job
+assignment or survivor absence after abrupt wrapper death. An approved bounded
+containment/supervisor design is required; suspended creation/new job ownership/
+kill handles/termination redesign were NOT implemented. The private pipe uses
+an stdin capability/HMAC, not an OS client-PID query or demonstrated restricted
+pipe ACL. Native helper round-trip provenance remains not demonstrated; CIM is
+not made optional while replacement provenance/tree proof is incomplete.
+
+Host terminal-chain readers require complete success receipts/manifests/raw
+artifact pins/candidate/result/cleanup/finalization. Retained candidates alone
+are not completion. Cleanup/retention failure is sticky and cannot be masked
+by cancellation. Provider execution, frozen oracle and development aggregate
+remain separate; oracle FAIL does not rewrite provider success. Counts derive
+from protected intent and verified child-created evidence, with UNKNOWN rather
+than inferred zero for missing expected creation evidence. A checked-in private
+native ESM operator orchestrates existing components, but stops before issuing
+authority or submission while the containment gate is blocked.
+
+74 focused no-solver telemetry/Node-pipe/deadline/artifact/controlled-chain/
+classification/counter/isolation checks PASS. Failure dispositions are controlled
+policy fixtures, not full native lifecycle evidence. Nine changed-file strict
+type checks PASS (14 imported out-of-scope diagnostics excluded); MJS syntax,
+PowerShell AST, inline C# compilation and both whitespace checks PASS. No helper,
+solver, mesher, converter, approval, provider submit or numerical suite ran.
+Historical numerical evidence remains valid for its original scope. Prior
+launcher/durable process-mock evidence predates the stricter readiness contract
+and cannot establish its native end-to-end PASS. POC, engineering use disabled,
+public/browser/MCP closed. No safe solver attempt yet: first resolve approved
+containment design and prove native helper/full failure-replay orchestration.
+
+### Superseding private Windows containment readiness (2026-10-02; no numerical execution)
+
+Historical PARTIAL readiness above remains preserved. The private opt-in canonical
+helper now creates the exact executable suspended with atomic Windows10+ JOB_LIST
+assignment, verifies membership/non-inheritance before ResumeThread and retains
+one exclusive unnamed supervisor-owned KILL_ON_JOB_CLOSE handle. Only standard-I/O
+handles are inherited; no breakaway flags/fallback. Other providers' non-opt-in
+creation behavior is unchanged. Nested-job failure rejects creation before resume.
+
+Seven-event protocolv2 binds suspended creation, assignment, resume, exit and
+native empty-job accounting; actual execution counts at child_resumed, not creation.
+Normal completion requires bounded ActiveProcesses=0. Abrupt supervisor loss relies
+on exclusive kill-on-last-close policy plus separate bounded known-child-PID exit
+observation; no unknown-descendant enumeration claim. Incomplete provenance remains
+failure even when containment cleanup is proven. No v1 receipt upgrade/resealing.
+
+Five harmless Windows fixture cases PASS: normal, descendant, invalid-job assignment,
+wrapper loss and existing-driver cancellation; all known fixture PIDs gone. Native
+private telemetry round trip PASS. Authentication is stdin capability/HMAC/correlation,
+not Node OS client-PID authentication or a narrowed named-pipe ACL. Wrong identity,
+stage, malformed/duplicate/out-of-order/oversized data fail closed. CIM is optional
+diagnostic after replacement provenance and containment proof.
+
+Host-controlled native ESM operator no-solver readiness PASS, with fresh real
+source/artifact/runtime reads copied to controlled source ports and unchanged
+approval/authority consumers/dry handoff.84 focused readiness/controlled terminal-chain
+checks PASS. TTL300s/headroom280s and restart16MiB/raw8MiB/stage8 files64MiB/JSON2MiB
+unchanged. No live simulation approval or numerical provider submit. This is NOT
+authentic new completed native solver/replay evidence; current209 validation remains
+PENDING. Historical numerical/parser/oracle evidence is unchanged. Next: a separately
+approved fresh-authority current-lineage run, never automatic execution. POC,
+engineeringUsePermitted:false; public/browser/MCP admission closed.
+
+### Stage-aware execution headroom (2026-10-02; no solver)
+
+The historical private native attempt was rejected for fixed280s headroom after
+completed verification/persistence: provider.submit1, accepted0, Starter0, Engine0.
+No numerical failure or completed provider result is inferred. Historical protected
+receipts/authority remain immutable/retired, not relabelled or reused.
+
+Frozen budgets source25/runtime25/storage15/Starter65/handoff30/Engine65/recovery20/
+durable25/finalization10 seconds still sum280; authority TTL stays300s. The canonical
+provider now uses a branded internal authority/lineage/expiry-bound stage ledger,
+not caller completion flags or serialized claims. Trusted component verification
+of actual output/protected linked receipt is mandatory before discharge. Fresh
+source/runtime/storage checks restore pending work; stale inputs invalidate all;
+in-flight stale verification cannot discharge. Cumulative time ceilings are not
+reset and budgets are not shrunk. Expiry rejects even with zero remaining work.
+
+Required reserve before Starter215s; after Starter150s; before Engine120s; after
+Engine55s; after recovery35s; durable10s; finalization0s. Existing source/artifact/
+runtime/deck verification, containment/process provenance, cancellation, durable
+capture, cleanup, result integrity, oracle and approvals remain required.
+
+Host-owned focused tests: ten ledger cases, six direct provider admission-method
+cases PASS; no provider.submit/process. Native ESM operator controlled evidence
+ports and intercepted native spawn PASS:268.116s remaining admits215s required,
+instead of the old280s rejection. No helper/Starter/Engine, real approval, solver,
+mesher or numerical test. The private host fixture remains outside this public
+Bridge. Existing numerical evidence unchanged; authentic current209 validation
+PENDING. Next: a separately approved fresh single-use native attempt. POC,
+engineeringUsePermitted:false and public/browser/MCP admission closed.
+
+### Opt-in durable pre-cleanup evidence boundary (2026-10-02; no solver)
+
+The private host execution adapter is implemented separately in TunaCAD, not
+copied into this public Bridge. Canonical OpenRadioss provider now accepts an
+optional constructor-owned durable sink: full pinned Starter/Engine artifacts,
+logs and authentic T01 bytes are retained/reopened before interpretation, and
+the normalized candidate is durably committed before result_validated and
+scratch cleanup. Capture metadata binds run/request/execution authority,
+provider/runtime/manifest, hashes/sizes, THICODE and timestamp; chained finalized
+receipt remains the publication/cleanup gate. Candidate is NOT a completed
+retrievable result. No new solver implementation, parser, normalizer, deck,
+public provider registration or numerical threshold.
+
+For this opt-in boundary, a pin/durable-artifact/candidate retention failure
+quarantines and blocks publication, preserves bounded scratch for diagnosis,
+and reports cleaned=false. It never discards the only authentic T01 merely to
+claim cleanup. Successful capture still uses unchanged production cleanup.
+Providers without the new optional sink retain their previous behavior.
+
+Only `test-sim9-openradioss-private-provider.mts --durable-retention-only` ran:
+three controlled process-mock cases PASS (successful capture before cleanup;
+T01 sink failure preserving scratch; candidate sink failure preserving scratch).
+No executable was launched. Authenticated historical T01 is read-only fixture
+input, not a new numerical run or209 validation. Initial two-second fixture
+observation failed during mock-runtime hashing; one targeted retry using the
+existing ten-second bounded observation policy PASS. Host tests independently
+cover protected native fsync/reopen and dry authority/isolation/rebinding.
+Existing numerical evidence is not relabelled or invalidated by this opt-in
+storage boundary. Actual current-mesh admitted execution remains separate and
+requires explicit approval. POC/engineeringUsePermitted:false/public closed.

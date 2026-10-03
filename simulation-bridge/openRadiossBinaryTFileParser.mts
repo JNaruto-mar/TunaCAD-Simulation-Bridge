@@ -54,7 +54,14 @@ function decode4021Header(r: Reader) {
   return { version: 4021 as const, titleWidth: 100 as const };
 }
 export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: number,
-  completion?: ExplicitCadenceCompletion) {
+  completion?: ExplicitCadenceCompletion,
+  meshSummation: { nodeCount: number; elementCount: number } = { nodeCount: 88, elementCount: 208 }) {
+  // Historical no-solver/oracle callers retain their frozen mesh. Production
+  // recovery supplies counts independently admitted from the actual mesh. These
+  // counts affect ONLY the double-summation roundoff bound, never binary layout.
+  if (!Number.isSafeInteger(meshSummation.nodeCount) || meshSummation.nodeCount < 4 || meshSummation.nodeCount > 100000
+    || !Number.isSafeInteger(meshSummation.elementCount) || meshSummation.elementCount < 1 || meshSummation.elementCount > 50000)
+    reject('invalid admitted mesh summation counts');
   if (!Buffer.isBuffer(bytes) || bytes.length < 32 || bytes.length > MAX_BYTES) reject('invalid T01 envelope');
   if (!Number.isFinite(requiredThroughS) || requiredThroughS <= 0) reject('invalid required duration');
   const r = new Reader(bytes);
@@ -124,12 +131,12 @@ export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: n
     if (global[5] <= 0) reject('invalid mass or mass scaling');
     if (global[16] !== 0) {
       // hist2.F writes XMASS-MASS0_START; ecrit.F recomputes XMASS by a
-      // double-precision nodal sum. This exact standalone 88-node/208-element
-      // fixture can retain a constant negative initialization subtraction
+      // double-precision nodal sum. An admitted mesh can retain a constant
+      // negative initialization subtraction
       // residual within the standard gamma_n double-summation error bound.
       // Do not allow positive added mass or any later residual/mass change.
       const u = 2 ** -53;
-      const n = 88 + 208;
+      const n = meshSummation.nodeCount + meshSummation.elementCount;
       const sumRoundoffBound = (n * u / (1 - n * u)) * global[5];
       if (!completion || global[16] > 0 || Math.abs(global[16]) > sumRoundoffBound)
         reject('invalid mass or mass scaling');

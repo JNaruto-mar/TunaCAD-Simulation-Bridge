@@ -16,9 +16,11 @@ import { readBoundedStarterConcentratedLoads } from '../simulation-bridge/openRa
 import type { OpenRadiossProcessDriver, OpenRadiossProcessExit } from '../providers/openradioss/OpenRadiossProcess.mts';
 const retained=process.env.TUNACAD_OPENRADIOSS_MEDIUM_SOURCE_DIR;
 const cancellationOnly=process.argv.includes('--cancellation-only');
+const durableOnly=process.argv.includes('--durable-retention-only');
 const selectedCases=process.argv.filter(flag=>flag.startsWith('--cancel-case=')).map(flag=>flag.slice('--cancel-case='.length));
 const cancellationCases=['cancel_queued','cancel_starter','cancel_engine','cancel_final','cancel_tree_failure'];
-assert.ok(process.argv.slice(2).every(flag=>flag==='--cancellation-only'||flag.startsWith('--cancel-case=')),'Unsupported focused test mode');
+assert.ok(process.argv.slice(2).every(flag=>flag==='--cancellation-only'||flag==='--durable-retention-only'||flag.startsWith('--cancel-case=')),'Unsupported focused test mode');
+assert.ok(!durableOnly||(!cancellationOnly&&!selectedCases.length));
 assert.ok(selectedCases.every(name=>cancellationCases.includes(name))&&(!selectedCases.length||cancellationOnly));
 assert.ok(retained,'Authentic retained medium evidence required; no solver fallback');
 const source=JSON.parse(await readFile(join(retained,'pre-dispatch-receipt.json'),'utf8'));
@@ -62,7 +64,7 @@ const draft:ExplicitDynamicsDraft={schema:'tunacad-explicit-dynamics-foundation/
   requestedResults:['loaded_face_axial_displacement_history','fixed_face_axial_reaction_history','kinetic_energy_history','strain_energy_history','applied_work_history'],
   units:{length:'mm',time:'s',force:'N',stress:'MPa',density:'kg/m^3',velocity:'mm/s',acceleration:'mm/s^2',energy:'N*mm'}};
 const request=sealExplicitDynamics(draft),prepared=prepareOpenRadiossDeck(request,mesh);
-if(!cancellationOnly) {
+if(!cancellationOnly&&!durableOnly) {
 assert.equal(prepared.expected.loads.reduce((s,l)=>s+l.forceN,0),100);
 assert.equal(sha256(prepared.starter),source.starterSha256);assert.equal(sha256(prepared.engine),source.engineSha256);
 assert.deepEqual(prepareOpenRadiossDeck(structuredClone(request),structuredClone(mesh)),prepared);
@@ -157,6 +159,8 @@ async function waitFor(predicate:()=>boolean) {
 let assertions=0;
 async function scenario(mode:string,expect:'succeeded'|'failed'|'cancelled'='failed') {
   const records:Array<Record<string,any>>=[],launches:string[]=[],killedTrees:Array<number[]>=[];
+  const durableArtifacts:Array<Record<string,any>>=[],durableCandidates:Array<Record<string,any>>=[];
+  let cleanupCalls=0;
   let sourceChanged=false,activeStage='',scratch='',provider!:OpenRadiossExplicitSolverProvider;
   const receiptStorage=join(directory,'receipts',mode);await mkdir(receiptStorage,{recursive:true});
   let releaseFinal!:(value?:unknown)=>void;
@@ -174,6 +178,19 @@ async function scenario(mode:string,expect:'succeeded'|'failed'|'cancelled'='fai
       if(mode==='launch_runtime_tamper'&&receipt.phase==='engine_launch') await writeFile(config.engineExecutable,'tampered-runtime');
       if(mode==='sink_failure'&&receipt.phase==='prepared') throw new Error('protected sink unavailable');
       if(mode==='cancel_final'&&receipt.phase==='finalized') await finalBarrier;
+    }};
+  if(mode.startsWith('durable_'))host.durableEvidence={
+    artifacts:async(record,bytes)=>{
+      if(mode==='durable_byte_fail'&&record.phase==='engine_output_pin')throw new Error('controlled durable T01 disk failure');
+      for(const [name,pin] of Object.entries(record.artifacts) as Array<[string,{sha256:string;bytes:number}]>){
+        assert.equal(sha256(Buffer.from(bytes[name])),pin.sha256);assert.equal(bytes[name].length,pin.bytes);
+        await writeFile(join(receiptStorage,record.phase+'-'+name),new Uint8Array(bytes[name]),{flag:'wx'});
+      }
+      durableArtifacts.push(structuredClone(record));
+    },candidate:async record=>{
+      if(mode==='durable_candidate_fail')throw new Error('controlled candidate disk failure');
+      assert.ok(durableArtifacts.some(r=>r.phase==='engine_output_pin'));
+      await writeFile(join(receiptStorage,'candidate.json'),JSON.stringify(record),{flag:'wx'});durableCandidates.push(structuredClone(record));
     }};
   const driver:OpenRadiossProcessDriver={start(_exe,args,options){
     const stage=args.includes('-np')?'starter':'engine';launches.push(stage);activeStage=stage;scratch=options.cwd;
@@ -204,7 +221,10 @@ async function scenario(mode:string,expect:'succeeded'|'failed'|'cancelled'='fai
     }};
   }};
   provider=new OpenRadiossExplicitSolverProvider(config,host,driver,
-    mode==='cleanup_fail'?async()=>false:mode==='cleanup_throw'?async()=>{throw new Error('cleanup IO failure');}:removeWorkingDirectory);
+    mode==='cleanup_fail'?async()=>false:mode==='cleanup_throw'?async()=>{throw new Error('cleanup IO failure');}:async path=>{
+      cleanupCalls++;if(mode==='durable_valid'){assert.equal(durableCandidates.length,1);assert.ok(durableArtifacts.some(r=>r.phase==='engine_output_pin'));}
+      return removeWorkingDirectory(path);
+    });
   const submitted=await provider.submit(request,mesh);
   assert.equal(await provider.getResult(submitted.providerRunId),null);
   if(mode==='cancel_queued') await provider.cancel(submitted.providerRunId);
@@ -224,7 +244,8 @@ async function scenario(mode:string,expect:'succeeded'|'failed'|'cancelled'='fai
     assert.equal(killedTrees[0].length,3);
   }
   let status=await provider.getStatus(submitted.providerRunId);
-  for(let n=0;n<1000&&['queued','running'].includes(status.status);n++){await sleep(2);status=await provider.getStatus(submitted.providerRunId);}
+  const observationDeadline=Date.now()+10000; // same bounded mock-runtime wait as waitFor above
+  while(['queued','running'].includes(status.status)&&Date.now()<observationDeadline){await sleep(2);status=await provider.getStatus(submitted.providerRunId);}
   assert.equal(status.status,expect,JSON.stringify({mode,status}));
   assert.ok(records.some(r=>r.phase==='finalized'));
   if(expect==='succeeded') {
@@ -269,15 +290,26 @@ async function scenario(mode:string,expect:'succeeded'|'failed'|'cancelled'='fai
   if(mode==='cleanup_fail'||mode==='cleanup_throw') {assert.equal(records.at(-1)!.cleaned,false);await removeWorkingDirectory(scratch);}
   if(mode==='cancel_tree_failure') {assert.equal(records.at(-1)!.treeTerminated,false);assert.equal(records.at(-1)!.cleaned,false);
     await removeWorkingDirectory(scratch);}
+  if(mode==='durable_byte_fail'||mode==='durable_candidate_fail'){
+    assert.equal(cleanupCalls,0);assert.equal(records.at(-1)!.cleaned,false);assert.equal(records.at(-1)!.quarantined,true);
+    assert.match(records.at(-1)!.failure,/retention failed.*preserved/i);
+    assert.equal(sha256(await readFile(join(scratch,`${RUN_NAME}T01`))),sha256(t01));
+    // Only the controlled mock scratch is removed after the preservation
+    // assertion. Canonical retained authentic evidence is never altered.
+    await removeWorkingDirectory(scratch);
+  }
   assertions++;console.log(JSON.stringify({mode,state:status.status,launches,killedTrees,pass:true}));
 }
-if(!cancellationOnly) {
+if(durableOnly){
+  await scenario('durable_valid','succeeded');
+  await scenario('durable_byte_fail');await scenario('durable_candidate_fail');
+} else if(!cancellationOnly) {
 await scenario('valid','succeeded');
 await scenario('4021','succeeded');
 for(const mode of ['starter_exit','starter_mismatch','restart_tamper','deck_tamper','runtime_tamper','launch_runtime_tamper','stale_engine','budget',
   'engine_exit','truncated','unsupported','added','nan','mass','missing_frame','coverage','cleanup_fail','cleanup_throw','sink_failure']) await scenario(mode);
 }
-for(const mode of selectedCases.length?selectedCases:cancellationCases)
+for(const mode of durableOnly?[]:selectedCases.length?selectedCases:cancellationCases)
   await scenario(mode,mode==='cancel_tree_failure'?'failed':'cancelled');
 assert.equal(sha256(await readFile(join(retained,`${RUN_NAME}T01`))),sha256(t01));
 console.log(JSON.stringify({pass:true,scenarioCount:assertions,realSolverProcesses:0,

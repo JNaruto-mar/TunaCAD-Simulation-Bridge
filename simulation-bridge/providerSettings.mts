@@ -31,7 +31,10 @@ export async function fingerprintConfiguredExecutable(path: string) {
     if (info.ino !== before.ino || info.size !== before.size || info.mtimeMs !== before.mtimeMs)
       throw new Error('PROVIDER_SETTINGS_EXECUTABLE_CHANGED');
     const hash = createHash('sha256');
-    for await (const bytes of file.createReadStream({ autoClose: false })) hash.update(bytes);
+    // Bounded 1 MiB reads avoid thousands of tiny asynchronous allocations for
+    // the configured executable. All bytes and before/after identities remain
+    // freshly checked; no fingerprint or settings cache is introduced.
+    for await (const bytes of file.createReadStream({ autoClose: false, highWaterMark: 1024 * 1024 })) hash.update(bytes);
     const after = await file.stat();
     const current = await lstat(path);
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs

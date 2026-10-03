@@ -16,7 +16,8 @@ export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buf
   if(cycles.some(c=>c.timestepS>prepared.request.analysis.integration.maximumTimeStepS)) fail('actual-cycle timestep resource bound');
   const history=parseBoundedOpenRadiossTFile4(bytes,prepared.request.analysis.durationS,
     {method:'frozen-2026-cycle-trace',cycleTrace:trace,completedCycles:actualCycles,
-      historyIntervalS:prepared.historyIntervalS,engineExitCode:0,normalTermination:true});
+      historyIntervalS:prepared.historyIntervalS,engineExitCode:0,normalTermination:true},
+    {nodeCount:prepared.expected.nodeCount,elementCount:prepared.expected.elementCount});
   const coverage=history.coverage;
   if(!coverage?.complete || coverage.rule!=='frozen-2026-cycle-trace') throw new Error('Incomplete actual-cycle scheduled coverage');
   if(history.frames.some(f=>f.global.timestepS>prepared.request.analysis.integration.maximumTimeStepS ||
