@@ -4,7 +4,6 @@ import { createHash } from 'node:crypto';
 import { differentiateVerifiedReactionImpulse } from './openRadiossBinaryHistoryRecovery.mts';
 import { validateOpenRadiossExplicitCadence, type ExplicitCadenceCompletion } from './openRadiossHistoryCoverage.mts';
 
-const NODE_IDS = [1, 2, 3, 4, 5, 6, 7, 8, 45, 46] as const;
 const CHANNELS = [1, 4, 7, 620] as const; // DX VX AX REACX
 const MAX_BYTES = 8 * 1024 * 1024;
 const reject = (why: string): never => { throw new Error(`OpenRadioss T01: ${why}`); };
@@ -55,11 +54,17 @@ function decode4021Header(r: Reader) {
 }
 export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: number,
   completion?: ExplicitCadenceCompletion,
-  meshSummation: { nodeCount: number; elementCount: number } = { nodeCount: 88, elementCount: 208 }) {
+  meshSummation?: { nodeCount: number; elementCount: number },
+  expectedNodeIds:readonly number[] = []) {
+  // A file cannot choose its own trusted entities. Production obtains this
+  // exact ordered set from the mesh/FACE admission used to emit the deck.
+  if(expectedNodeIds.length<4 || expectedNodeIds.length>128 || new Set(expectedNodeIds).size!==expectedNodeIds.length
+    ||expectedNodeIds.some(id=>!Number.isSafeInteger(id)||id<=0||id>999999999))reject('invalid expected node identities');
+  const nodeIds=Object.freeze([...expectedNodeIds]);
   // Historical no-solver/oracle callers retain their frozen mesh. Production
   // recovery supplies counts independently admitted from the actual mesh. These
   // counts affect ONLY the double-summation roundoff bound, never binary layout.
-  if (!Number.isSafeInteger(meshSummation.nodeCount) || meshSummation.nodeCount < 4 || meshSummation.nodeCount > 100000
+  if (!meshSummation || !Number.isSafeInteger(meshSummation.nodeCount) || meshSummation.nodeCount < 4 || meshSummation.nodeCount > 100000
     || !Number.isSafeInteger(meshSummation.elementCount) || meshSummation.elementCount < 1 || meshSummation.elementCount > 50000)
     reject('invalid admitted mesh summation counts');
   if (!Buffer.isBuffer(bytes) || bytes.length < 32 || bytes.length > MAX_BYTES) reject('invalid T01 envelope');
@@ -113,9 +118,9 @@ export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: n
   if (group.length !== width + 20) reject('wrong group record');
   const groupFields = Array.from({ length: 5 }, (_, i) => group.readInt32BE(i * 4));
   if (groupFields[0] !== 1 || groupFields[1] !== 0 || groupFields[2] !== 0 ||
-      groupFields[3] !== 10 || groupFields[4] !== 4 ||
+      groupFields[3] !== nodeIds.length || groupFields[4] !== 4 ||
       text(group, 20, width) !== 'Bounded axial bar nodes') reject('wrong group identity');
-  for (const id of NODE_IDS) {
+  for (const id of nodeIds) {
     const node = r.record();
     if (node.length !== width + 4 || node.readInt32BE(0) !== id || text(node, 4, width) !== `node_${id}`)
       reject('missing/duplicate/reordered node');
@@ -136,7 +141,7 @@ export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: n
       // residual within the standard gamma_n double-summation error bound.
       // Do not allow positive added mass or any later residual/mass change.
       const u = 2 ** -53;
-      const n = meshSummation.nodeCount + meshSummation.elementCount;
+      const n = meshSummation!.nodeCount + meshSummation!.elementCount;
       const sumRoundoffBound = (n * u / (1 - n * u)) * global[5];
       if (!completion || global[16] > 0 || Math.abs(global[16]) > sumRoundoffBound)
         reject('invalid mass or mass scaling');
@@ -145,8 +150,8 @@ export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: n
     if (raw.length && global[16] !== raw[0].global[16]) reject('changed added mass history');
     if (partChannelCount) floats(r.record(), partChannelCount);
     if (subsetChannels) floats(r.record(), subsetChannels);
-    const nodeValues = floats(r.record(), 40);
-    raw.push({ timeS, global, nodes: NODE_IDS.map((_, i) => nodeValues.slice(i * 4, i * 4 + 4)) });
+    const nodeValues = floats(r.record(), nodeIds.length*4);
+    raw.push({ timeS, global, nodes: nodeIds.map((_, i) => nodeValues.slice(i * 4, i * 4 + 4)) });
   }
   if (raw.length < 2) reject('incomplete time coverage');
   const coverage = completion
@@ -155,7 +160,7 @@ export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: n
     : undefined;
   if (!completion && raw[raw.length - 1].timeS < requiredThroughS) reject('incomplete time coverage');
   const times = raw.map(row => row.timeS);
-  const reactions = NODE_IDS.map((_, n) =>
+  const reactions = nodeIds.map((_, n) =>
     differentiateVerifiedReactionImpulse(times, raw.map(row => row.nodes[n][3])));
   const frames = raw.map((row, i) => ({
     timeS: row.timeS,
@@ -164,12 +169,12 @@ export function parseBoundedOpenRadiossTFile4(bytes: Buffer, requiredThroughS: n
       externalWorkNmm: row.global[8], massMg: row.global[5], addedMassMg: row.global[16],
       addedMassChangeFromInitializationMg: row.global[16] - raw[0].global[16],
       timestepS: row.global[6] },
-    nodes: new Map(NODE_IDS.map((id, n) => [id, {
+    nodes: new Map(nodeIds.map((id, n) => [id, {
       dxMm: row.nodes[n][0], vxMmPerS: row.nodes[n][1], axMmPerS2: row.nodes[n][2],
       reactionImpulseNs: row.nodes[n][3], reactionForceN: reactions[n][i].derivedReactionN,
     }] as const)),
   }));
-  return Object.freeze({ format: `TFILE/4 T01 ${schema.version}`, thicode: schema.version, coverage, nodeIds: NODE_IDS,
-    channelCodes: CHANNELS, sha256: createHash('sha256').update(bytes).digest('hex'),
+  return Object.freeze({ format: `TFILE/4 T01 ${schema.version}`, thicode: schema.version, coverage, nodeIds,
+    channelCodes: CHANNELS, sha256: createHash('sha256').update(Uint8Array.from(bytes)).digest('hex'),
     reactionProvenance: 'raw REACX impulse N.s; TunaCAD dI/dt force N' as const, frames });
 }

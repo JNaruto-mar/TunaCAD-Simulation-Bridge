@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.npm-release/
+*.tgz
 .env
 *.log
 *.zip

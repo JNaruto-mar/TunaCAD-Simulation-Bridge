@@ -412,7 +412,7 @@ function boundaryEvidence(nodes: NeutralVector3[], triangles: ParsedMsh['triangl
   };
 }
 
-function matchesFace(candidate: NeutralSimulationReferenceBinding['face'], expected: NeutralSimulationReferenceBinding['face'], scale: number, size: number): boolean {
+export function matchesFace(candidate: NeutralSimulationReferenceBinding['face'], expected: NeutralSimulationReferenceBinding['face'], scale: number, size: number): boolean {
   const epsilon = tolerance(scale, size);
   if (candidate.centroidPartLocalMm.some((value, axis) => Math.abs(value - expected.centroidPartLocalMm[axis]) > epsilon)) return false;
   if (Math.abs(candidate.areaMm2 - expected.areaMm2) > Math.max(1e-5, expected.areaMm2 * 0.005)) return false;

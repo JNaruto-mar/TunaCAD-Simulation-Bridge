@@ -45,7 +45,7 @@ const original=cp.spawn;
   spawns++;last=child;return child;
 };syncBuiltinESMExports();
 try{
-  const {ElectrostaticHostStorage,readNativeWindowsLocalApplicationData}=await import('../simulation-bridge/electrostaticHostStorage.mts');
+  const {ElectrostaticHostStorage,readNativeWindowsLocalApplicationData,retainNativeStorageInspector}=await import('../simulation-bridge/electrostaticHostStorage.mts');
   const storage=await ElectrostaticHostStorage.open(root);await storage.assertReady();await storage.assertReady();
   assert.equal(spawns,1);assert.equal(requests,6); // every check is fresh; only interpreter reused
   await Promise.all([storage.assertReady(),storage.assertReady()]);assert.equal(requests,10);assert.equal(spawns,1);
@@ -55,9 +55,15 @@ try{
     assert.equal(requests,count+1,'failed requests must not be retried');
   }
   mode='valid';await storage.assertReady();
+  const releaseA=retainNativeStorageInspector(),releaseB=retainNativeStorageInspector();
+  const retained=last,countSpawns=spawns;let exits=0;retained.on('exit',()=>exits++);
+  await storage.assertReady();assert.equal(spawns,countSpawns);
+  releaseA();releaseA();await new Promise(resolve=>setImmediate(resolve));assert.equal(exits,0);
+  releaseB();await new Promise(resolve=>setImmediate(resolve));assert.equal(exits,1);
+  await storage.assertReady();assert.equal(spawns,countSpawns+1);
   await writeFile(join(root,'configuration.json'),JSON.stringify({...config,storageId:'altered'}));
   const count=requests;await assert.rejects(()=>storage.assertReady(),/configuration\/version changed/);assert.equal(requests,count);
   last.kill();await new Promise(resolve=>setImmediate(resolve));
-  console.log(JSON.stringify({pass:true,checks:10,interpreterReuseOnly:true,freshAclRequests:requests,
+  console.log(JSON.stringify({pass:true,checks:14,interpreterReuseOnly:true,ownerLeaseSingleUse:true,freshAclRequests:requests,
     malformedCorrelationPolicyAndConfigurationRejected:true,solverExecutions:0,realApprovals:0}));
 }finally{cp.spawn=original;syncBuiltinESMExports();}

@@ -38,14 +38,27 @@ export async function inspectOpenRadiossInstallation(config:OpenRadiossInstallat
     return s;
   };
   // Checking every ancestor also rejects a junction above an approved file.
-  const directory=async(path:string)=>{
-    const parent=dirname(path);if(parent!==path) await directory(parent);
-    await check(path,'directory');
+  const directoryPhase=()=>{
+    // Deduplicate shared ancestor syscalls only within a bounded inspection
+    // phase. Every file still has its own fresh realpath/lstat/open/close checks;
+    // the final independent snapshot rechecks all ancestors and the whole set.
+    // Nothing survives this invocation or is accepted as content identity.
+    const ancestors=new Map<string,Promise<void>>();
+    const directory=(path:string):Promise<void>=>{
+      const previous=ancestors.get(path);if(previous)return previous;
+      const checking=(async()=>{
+        const parent=dirname(path);if(parent!==path)await directory(parent);
+        await check(path,'directory');
+      })();
+      ancestors.set(path,checking);return checking;
+    };
+    return directory;
   };
-  await directory(root);
+  await directoryPhase()(root);
   for(const [path,name] of [[config.starterExecutable,'starter_win64.exe'],[config.engineExecutable,'engine_win64.exe']])
     if(resolve(path)!==join(root,'exec',name)) fail('variant/substituted executable path');
   const snapshot=async()=>{
+    const directory=directoryPhase();
     const paths=new Set<string>();let directories=0,entries=0;
     const dir=async(path:string)=>{if(++directories>policy.maximumDirectories) fail('directory-count bound');await directory(path);};
     const accept=async(path:string)=>{
@@ -87,6 +100,7 @@ export async function inspectOpenRadiossInstallation(config:OpenRadiossInstallat
     return {metadata,stamps,notice:{size:notice.size,ino:notice.ino,dev:notice.dev,mtimeMs:notice.mtimeMs,ctimeMs:notice.ctimeMs}};
   };
   const before=await snapshot();
+  const directory=directoryPhase();
   const hash=async(name:string)=>{
     const path=join(root,name);await directory(dirname(path));const initial=await check(path,'file');
     const handle=await open(path,'r'),hasher=createHash('sha256');let count=0;
@@ -106,8 +120,9 @@ export async function inspectOpenRadiossInstallation(config:OpenRadiossInstallat
     } finally {await handle.close();}
   };
   // Bound independent fresh file reads to four concurrent handles/buffers.
-  // No result/metadata cache: every file still gets the same ancestry, inode,
-  // size, timestamp and full-content checks, plus the final whole-set snapshot.
+  // No result/content cache: shared ancestry is checked per phase; every file
+  // retains inode, realpath, size, timestamp and full-content checks, plus the
+  // final independent whole-set/ancestry snapshot.
   const files:RuntimeFile[]=[];
   for(let index=0;index<before.metadata.length;index+=4){
     const batch=await Promise.allSettled(before.metadata.slice(index,index+4).map(file=>hash(file.path)));

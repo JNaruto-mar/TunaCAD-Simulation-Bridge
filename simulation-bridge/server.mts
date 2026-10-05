@@ -73,8 +73,11 @@ export async function startSimulationBridge(options: {
   let pairingAttempts = 0;
   let session: { key: string; expiresAt: number } | null = null;
   let privateApprovalPending=false;
+  // One native opaque identity for both source binding and approval ownership.
+  // The pairing key remains private to HMAC/authentication, not a source ID.
+  const privateSessionIdentity=()=>session&&session.expiresAt>now()?digest({pairedSession:session.key}):null;
   const privateApprovals=options.privateExplicitApprovals?createPrivateSimulationApprovals({
-    readSession:()=>session&&session.expiresAt>now()?session.key:null,
+    readSession:privateSessionIdentity,
     readProvider:()=>options.privateExplicitApprovals!.readProviderIdentity(),
     approve:async(request,signal)=>{
       if(privateApprovalPending||busy||[...approvals.values()].some(a=>a.expiresAt>now()&&a.state==='pending'))
@@ -405,8 +408,7 @@ export async function startSimulationBridge(options: {
   maintenance.unref();
   return { url: `http://${authority}`, pairingCode,privateApprovals,
     // Internal owner port only: never exposed through HTTP or discovery.
-    readPrivateSessionIdentity() {return privateApprovals&&session&&session.expiresAt>now()
-      ?digest({pairedSession:session.key}):null;},
+    readPrivateSessionIdentity() {return privateApprovals?privateSessionIdentity():null;},
     readPrivateSessionMetadata() {return privateApprovals&&session&&session.expiresAt>now()
       ?{identity:digest({pairedSession:session.key}),expiresAt:session.expiresAt}:null;},
     verifyPrivateWindowProof(challenge:string,proof:string) {

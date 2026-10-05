@@ -93,6 +93,21 @@ let pending: { id: string; paths: string[]; kind: 'acl' | 'localApplicationData'
   timer: ReturnType<typeof setTimeout> } | null = null;
 let output = '', idle: ReturnType<typeof setTimeout> | undefined;
 let aclQueue: Promise<unknown> = Promise.resolve();
+let inspectorOwners = 0;
+/** Native ownership of the interpreter only, never of a verified ACL result.
+ * Long CAD reads must not tear down and cold-start this inspector inside the
+ * next security request's unchanged 10-second deadline. No browser input.
+ * Releasing the last owner closes an idle worker; pending checks still finish
+ * or fail under their original request deadline. */
+export function retainNativeStorageInspector() {
+  inspectorOwners++;
+  if (idle) { clearTimeout(idle); idle = undefined; }
+  let released = false;
+  return () => {
+    if (released) return; released = true; inspectorOwners--;
+    if (!inspectorOwners && !pending) stopAclWorker('ACL owner shutdown');
+  };
+}
 function stopAclWorker(detail: string) {
   const active = worker; worker = null; output = '';
   if (idle) clearTimeout(idle);
@@ -132,8 +147,10 @@ async function verifyAclFresh(paths: string[], kind: 'acl' | 'localApplicationDa
             || !response.location.length || response.location.length > 4096) invalid('native location response');
           pending = null; clearTimeout(request.timer); request.resolve(request.kind === 'acl' ? response.rows : response.location);
           workerHandles(active, false);
-          idle = setTimeout(() => { if (worker === active && !pending) stopAclWorker('ACL idle shutdown'); }, 30000);
-          idle.unref();
+          if (!inspectorOwners) {
+            idle = setTimeout(() => { if (worker === active && !pending && !inspectorOwners) stopAclWorker('ACL idle shutdown'); }, 30000);
+            idle.unref();
+          }
         } catch (error) { stopAclWorker(String(error)); }
       });
       active.stderr.on('data', () => { if (worker === active) stopAclWorker('ACL worker stderr'); });

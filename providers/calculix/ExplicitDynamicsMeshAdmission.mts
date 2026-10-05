@@ -2,13 +2,16 @@ import type { ExplicitDynamicsRequest } from '../../simulation-bridge/explicitDy
 import { explicitWaveSpeedsMmPerS, validateExplicitDynamics }
   from '../../simulation-bridge/explicitDynamicsFoundation.mts';
 import { digest } from '../../simulation-bridge/stableDigest.mts';
+import type {ExplicitStepTopology} from '../gmsh/ExplicitStepTopology.mts';
 
 export interface ExplicitC3D4Mesh {
   runtime: 'Gmsh 4.15.2';
   inputGeometryDigest: string;
   nodes: Array<{ id: number; xyzMm: [number, number, number] }>;
   elements: Array<{ id: number; type: 'C3D4'; nodes: [number, number, number, number] }>;
-  surfaceTriangles: Array<{ id: number; nodes: [number, number, number] }>;
+  surfaceTriangles: Array<{ id: number; nodes: [number, number, number];entityTag?:number }>;
+  curveSegments?:Array<{id:number;nodes:[number,number];entityTag:number}>;
+  cadEvidence?:{topology:ExplicitStepTopology;stepByteDigest:string;metadataDigest:string};
 }
 
 function invalid(reason: string): never {
@@ -51,7 +54,8 @@ export function assertCalculiX216ExplicitFixedStep(
 
 /** Provider-private gate over parsed Gmsh output. It never trusts the
  * contract's declared characteristic length as the actual mesh minimum. */
-export function assessExplicitC3D4Geometry(requestValue: unknown, mesh: ExplicitC3D4Mesh) {
+export function assessExplicitC3D4Geometry(requestValue: unknown, mesh: ExplicitC3D4Mesh,
+  selections?:{fixed:{facetIndices:number[]};loaded:{facetIndices:number[]}}) {
   const request = validateExplicitDynamics(requestValue);
   if (mesh.runtime !== 'Gmsh 4.15.2'
     || mesh.inputGeometryDigest !== request.model.geometryDigest)
@@ -108,25 +112,27 @@ export function assessExplicitC3D4Geometry(requestValue: unknown, mesh: Explicit
   }
   if ([...nodalMassKg.values()].some(mass => !Number.isFinite(mass) || mass <= 0))
     invalid('unused node or invalid lumped nodal mass');
-  const expectedVolumeMm3 = request.model.lengthMm * request.model.widthMm
-    * request.model.heightMm;
-  if (Math.abs(totalVolumeMm3 - expectedVolumeMm3) > expectedVolumeMm3 * 1e-5)
+  const expectedVolumeMm3 = request.model.cad?.volumeMm3??request.model.lengthMm * request.model.widthMm * request.model.heightMm;
+  // Existing neutral FEM policy permits <=5% linear CAD discretization error.
+  // Preserve the exact-volume legacy rectangular reference gate unchanged.
+  const volumeTolerance=request.model.kind==='single_solid_cad'?.05:1e-5;
+  if (Math.abs(totalVolumeMm3 - expectedVolumeMm3) > expectedVolumeMm3 * volumeTolerance)
     invalid('mesh volume does not match the bounded bar');
   const meshMassKg = [...nodalMassKg.values()].reduce((sum, mass) => sum + mass, 0);
   const expectedMassKg = expectedVolumeMm3 * request.material.densityKgM3 * 1e-9;
   if (!Number.isFinite(meshMassKg)
-    || Math.abs(meshMassKg - expectedMassKg) > expectedMassKg * 1e-5)
+    || Math.abs(meshMassKg - expectedMassKg) > expectedMassKg * volumeTolerance)
     invalid('lumped mesh mass does not match the bounded bar');
   let minimumNodalMassKg = Infinity, maximumNodalMassKg = 0;
   for (const mass of nodalMassKg.values()) {
     minimumNodalMassKg = Math.min(minimumNodalMassKg, mass);
     maximumNodalMassKg = Math.max(maximumNodalMassKg, mass);
   }
-  const faceArea = (xMm: number) => {
+  const faceArea = (xMm: number,indices?:number[]) => {
     const keys = new Set<string>();
     const owned = new Set<number>();
     let area = 0, count = 0;
-    for (const face of mesh.surfaceTriangles) {
+    for (const [index,face] of mesh.surfaceTriangles.entries()) {
       if (!Number.isSafeInteger(face.id) || face.id <= 0
         || face.nodes.length !== 3 || new Set(face.nodes).size !== 3
         || face.nodes.some(node => !nodes.has(node))) invalid('malformed surface facet');
@@ -135,7 +141,7 @@ export function assessExplicitC3D4Geometry(requestValue: unknown, mesh: Explicit
       if (facetUses.get(key) !== 1) invalid('surface facet is not an owned boundary facet');
       keys.add(key);
       const points = face.nodes.map(node => nodes.get(node)!);
-      if (!points.every(point => Math.abs(point[0] - xMm) <= 1e-7)) continue;
+      if (indices?!indices.includes(index):!points.every(point => Math.abs(point[0] - xMm) <= 1e-7)) continue;
       area += length(cross(subtract(points[1], points[0]),
         subtract(points[2], points[0]))) / 2;
       face.nodes.forEach(node => owned.add(node));
@@ -144,12 +150,13 @@ export function assessExplicitC3D4Geometry(requestValue: unknown, mesh: Explicit
     return { areaMm2: area, facetCount: count,
       nodeIds: [...owned].sort((a, b) => a - b) };
   };
-  const fixed = faceArea(0), loaded = faceArea(request.model.lengthMm);
+  if(request.model.kind==='single_solid_cad'&&!selections)invalid('CAD FACE mapping required');
+  const fixed = faceArea(0,selections?.fixed.facetIndices), loaded = faceArea(request.model.lengthMm,selections?.loaded.facetIndices);
   const expectedAreaMm2 = request.model.widthMm * request.model.heightMm;
   if (!fixed.facetCount || !loaded.facetCount
-    || Math.abs(fixed.areaMm2 - expectedAreaMm2) > expectedAreaMm2 * 1e-6
-    || Math.abs(loaded.areaMm2 - expectedAreaMm2) > expectedAreaMm2 * 1e-6
-    || fixed.nodeIds.some(node => loaded.nodeIds.includes(node)))
+    || !selections&&Math.abs(fixed.areaMm2 - expectedAreaMm2) > expectedAreaMm2 * 1e-6
+    || !selections&&Math.abs(loaded.areaMm2 - expectedAreaMm2) > expectedAreaMm2 * 1e-6
+    || !selections&&fixed.nodeIds.some(node => loaded.nodeIds.includes(node)))
     invalid('fixed/load FACE mapping or area mismatch');
   return {
     meshDigest: digest(mesh), nodeCount: mesh.nodes.length, elementCount: mesh.elements.length,

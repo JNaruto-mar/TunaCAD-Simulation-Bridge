@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { AXIAL_ORACLE_DIGEST, AXIAL_VALIDATION_PLAN as oracle,
   axialWaveReference, selectAxialWaveEvents } from '../simulation-bridge/openRadiossAxialBarOracle.mts';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { TIMESTEP_SENSITIVITY_PLAN as plan, TIMESTEP_SENSITIVITY_DIGEST,
   estimateTimeStepLevels, normalizedTimeStepDifference, summarizeTimeStepHistory,
   compareTimeStepSensitivity } from '../simulation-bridge/openRadiossTimeStepSensitivity.mts';

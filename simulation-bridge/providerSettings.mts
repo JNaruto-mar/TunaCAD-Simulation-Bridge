@@ -56,10 +56,10 @@ async function checkAncestry(directory: string) {
  * Local configuration is mutable, not a trusted simulation completion record. */
 export function createProviderSettingsStore(filePath: string) {
   if (!isAbsolute(filePath)) throw new Error('PROVIDER_SETTINGS_ABSOLUTE_STORAGE_REQUIRED');
-  async function read() {
+  async function readVerified() {
     let info;
     try { info = await lstat(filePath); }
-    catch (error: any) { if (error.code === 'ENOENT') return empty(); throw error; }
+    catch (error: any) { if (error.code === 'ENOENT') return { paths: empty(), fingerprints: { gmsh: null, calculix: null } }; throw error; }
     await checkAncestry(dirname(filePath));
     if (!info.isFile() || info.isSymbolicLink() || info.size > 8192) throw new Error('PROVIDER_SETTINGS_INVALID_RECORD');
     const file = await open(filePath, 'r');
@@ -78,8 +78,12 @@ export function createProviderSettingsStore(filePath: string) {
       if (!expected || JSON.stringify(actual) !== JSON.stringify(expected))
         throw new Error('PROVIDER_SETTINGS_FINGERPRINT_MISMATCH: explicitly save the changed executable again');
     }
-    return record.paths;
+    // The verified pins are returned from THIS fresh read. Consumers need not
+    // immediately hash the same executable again; independent reopened readers
+    // still repeat every content and race check. No cross-read cache.
+    return { paths: record.paths, fingerprints: record.fingerprints };
   }
+  async function read() { return (await readVerified()).paths; }
   async function save(value: ExternalProviderPaths) {
     const paths = providerPathsSchema.parse(value);
     const record = { schema: 'tunacad-provider-settings/1', paths, fingerprints: {
@@ -97,7 +101,7 @@ export function createProviderSettingsStore(filePath: string) {
       return await read();
     } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
-  return Object.freeze({ filePath, read, save });
+  return Object.freeze({ filePath, read, readVerified, save });
 }
 
 /** Same OS known-folder policy as native simulation storage, but separate from
@@ -106,7 +110,7 @@ export async function openNativeProviderSettings() {
   const location = await readNativeSimulationLocation();
   const directory = join(location.base, 'TunaCAD', 'Simulation');
   const store = createProviderSettingsStore(join(directory, 'provider-settings.json'));
-  return Object.freeze({ filePath: store.filePath, read: store.read,
+  return Object.freeze({ filePath: store.filePath, read: store.read, readVerified: store.readVerified,
     async save(paths: ExternalProviderPaths) {
       // Only explicit save provisions the fixed per-user namespace.
       await checkAncestry(location.base);

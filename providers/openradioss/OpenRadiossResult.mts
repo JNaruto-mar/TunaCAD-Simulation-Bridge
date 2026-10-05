@@ -3,6 +3,7 @@ import { parseBoundedOpenRadiossTFile4 } from '../../simulation-bridge/openRadio
 import { readOpenRadiossCycleTrace } from '../../simulation-bridge/openRadiossHistoryCoverage.mts';
 import type { ExplicitDynamicsResult, ExplicitDynamicsFieldPage } from '../../src/simulation/explicitDynamicsProviderContracts.ts';
 import type { PreparedOpenRadioss } from './OpenRadiossDeck.mts';
+import {normalizeExplicitHistoryNode,assertExplicitResultByteBudget} from './OpenRadiossHistoryResource.mts';
 
 export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buffer, trace:string, listing:string,
   identity:{providerRunId:string;providerId:string;providerVersion:string;runtimeDigest:string;artifacts:Record<string,string>;provenanceDigest:string}) {
@@ -17,7 +18,7 @@ export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buf
   const history=parseBoundedOpenRadiossTFile4(bytes,prepared.request.analysis.durationS,
     {method:'frozen-2026-cycle-trace',cycleTrace:trace,completedCycles:actualCycles,
       historyIntervalS:prepared.historyIntervalS,engineExitCode:0,normalTermination:true},
-    {nodeCount:prepared.expected.nodeCount,elementCount:prepared.expected.elementCount});
+    {nodeCount:prepared.expected.nodeCount,elementCount:prepared.expected.elementCount},prepared.expected.historyNodeIds);
   const coverage=history.coverage;
   if(!coverage?.complete || coverage.rule!=='frozen-2026-cycle-trace') throw new Error('Incomplete actual-cycle scheduled coverage');
   if(history.frames.some(f=>f.global.timestepS>prepared.request.analysis.integration.maximumTimeStepS ||
@@ -29,9 +30,7 @@ export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buf
     if(f.timeS===0&&(n.dxMm!==0||n.vxMmPerS!==0)) fail('nonzero initial state');
   }
   const frames=history.frames.map(f=>({timeS:f.timeS,timestepS:f.global.timestepS,
-    nodes:[...f.nodes].map(([nodeId,n])=>({nodeId,face:fixed.has(nodeId)?'fixed' as const:'loaded' as const,
-      displacementMm:n.dxMm,velocityMmPerS:n.vxMmPerS,accelerationMmPerS2:n.axMmPerS2,
-      reactionImpulseNs:n.reactionImpulseNs,reactionForceN:n.reactionForceN})),
+    nodes:[...f.nodes].map(([nodeId,n])=>normalizeExplicitHistoryNode(nodeId,fixed.has(nodeId)?'fixed':'loaded',n)),
     supportImpulseNs:[...f.nodes].filter(([id])=>fixed.has(id)).reduce((s,[,n])=>s+n.reactionImpulseNs,0),
     supportReactionN:[...f.nodes].filter(([id])=>fixed.has(id)).reduce((s,[,n])=>s+n.reactionForceN,0),
     kineticEnergyNmm:f.global.kineticEnergyNmm,internalEnergyNmm:f.global.internalEnergyNmm,externalWorkNmm:f.global.externalWorkNmm,
@@ -54,17 +53,21 @@ export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buf
     provider:{id:identity.providerId,version:identity.providerVersion,runtimeVersion:'2026',runtimeDigest:identity.runtimeDigest},
     meshDigest:prepared.meshDigest,durationS:r.analysis.durationS,actualCycles,
     timestepRangeS:[Math.min(...steps),Math.max(...steps)],
-    sampling:{axis:'X',location:'nodal',scope:'fixed_and_loaded_FACE_nodes_only',monitoredNodeIds:[...history.nodeIds]},
+    sampling:{axis:'X',location:'nodal',scope:'fixed_and_loaded_FACE_nodes_only',monitoredNodeIds:[...history.nodeIds],
+      faceMappingDigest:prepared.faceMappingDigest,fixedNodeIds:[...prepared.expected.fixedNodeIds],loadedNodeIds:[...prepared.expected.loadedNodeIds]},
     units:{time:'s',displacement:'mm',velocity:'mm/s',acceleration:'mm/s^2',impulse:'N*s',force:'N',energy:'N*mm',mass:'kg'},
     frames,requestedTimeSamples,cycleEvidence:{digest:coverage.cycleTraceSha256,
       orderedCycles:cycles.map(c=>({cycle:c.cycle,timeS:c.timeS,timestepS:c.timestepS}))},
     coverageDigest:digest(coverage),actualMassScaling:false,
     artifacts:identity.artifacts,provenanceDigest:identity.provenanceDigest,
-    diagnostics:['Axial X histories at ten monitored FACE nodes only; not full-mesh or 3D vector fields.',
+    diagnostics:['Axial X histories at all admitted fixed/loaded FACE nodes only; not full-mesh or 3D vector fields.',
       'Raw impulse preserved; support force is forward/centered/backward dI/dt.',
       'Requested-time samples identify authentic nearest frames without interpolation.',
       'Constant negative added-mass initialization roundoff is retained; no positive addition or later change allowed.'],
     status:'proof_of_concept',engineeringUsePermitted:false};
+  // Full real payload, including authentic cycle trace, must still fit the
+  // unchanged durable boundary. Reject before a result can be published.
+  assertExplicitResultByteBudget({...unsigned,executionStatus:'succeeded',cleanupConfirmed:true,resultDigest:'sha256:'+'0'.repeat(64)});
   return unsigned;
 }
 const fields={displacement:['displacementMm','mm'],velocity:['velocityMmPerS','mm/s'],acceleration:['accelerationMmPerS2','mm/s^2'],

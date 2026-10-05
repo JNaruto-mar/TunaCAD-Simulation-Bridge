@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { digest } from '../simulation-bridge/stableDigest.mts';
 import { sealExplicitDynamics, type ExplicitDynamicsDraft } from '../simulation-bridge/explicitDynamicsFoundation.mts';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { axialWaveReference, selectAxialWaveEvents, AXIAL_VALIDATION_PLAN } from '../simulation-bridge/openRadiossAxialBarOracle.mts';
 import { OpenRadiossExplicitSolverProvider, type OpenRadiossHost } from '../providers/openradioss/OpenRadiossExplicitSolverProvider.mts';
 import { nativeOpenRadiossProcessDriver, type OpenRadiossProcessDriver } from '../providers/openradioss/OpenRadiossProcess.mts';

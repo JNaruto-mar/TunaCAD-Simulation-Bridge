@@ -21,12 +21,10 @@ export function parseProviderSettingsArguments(args: string[]) {
 export async function runProviderSettingsCommand(args: string[], openOwner = openNativeProviderSettings) {
   const command = parseProviderSettingsArguments(args);
   const owner = await openOwner();
-  const previous = await owner.read();
-  const expected = command.mode === 'save' ? { ...previous, ...command.changes } : previous;
-  if (command.mode === 'save') await owner.save(expected);
-  const firstPaths = await owner.read();
-  const firstExecutable = firstPaths.gmshExecutable
-    ? await fingerprintConfiguredExecutable(firstPaths.gmshExecutable) : null;
+  const expected = command.mode === 'save' ? { ...await owner.read(), ...command.changes } : null;
+  if (expected) await owner.save(expected);
+  const first = await owner.readVerified();
+  const firstPaths = first.paths, firstExecutable = first.fingerprints.gmsh;
   const firstSettings = Object.values(firstPaths).some(Boolean)
     ? await fingerprintConfiguredExecutable(owner.filePath) : null;
 
@@ -34,10 +32,10 @@ export async function runProviderSettingsCommand(args: string[], openOwner = ope
   // native owner/reader, independently validating stored executable pins again.
   const reopened = await openOwner();
   if (reopened === owner || reopened.filePath !== owner.filePath) throw new Error('PROVIDER_SETTINGS_REOPEN_FAILED');
-  const paths = await reopened.read();
-  const executable = paths.gmshExecutable ? await fingerprintConfiguredExecutable(paths.gmshExecutable) : null;
+  const fresh = await reopened.readVerified();
+  const paths = fresh.paths, executable = fresh.fingerprints.gmsh;
   const settings = firstSettings ? await fingerprintConfiguredExecutable(reopened.filePath) : null;
-  if (JSON.stringify(paths) !== JSON.stringify(expected)
+  if (expected && JSON.stringify(paths) !== JSON.stringify(expected)
     || JSON.stringify(firstPaths) !== JSON.stringify(paths)
     || JSON.stringify(firstExecutable) !== JSON.stringify(executable)
     || JSON.stringify(firstSettings) !== JSON.stringify(settings)) throw new Error('PROVIDER_SETTINGS_REOPEN_MISMATCH');

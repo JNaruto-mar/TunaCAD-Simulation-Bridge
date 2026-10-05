@@ -5,11 +5,11 @@ import { digest } from './stableDigest.mts';
 import { ElectrostaticHostStorage,readElectrostaticHostJson,writeElectrostaticHostOnce } from './electrostaticHostStorage.mts';
 import { privateCapturedMeshRecordSchema,type PrivateExplicitMeshRecord } from './privateExplicitMeshRecord.mts';
 import { openPrivateExplicitExportStore } from './privateExplicitExportStore.mts';
-import { admitExplicitLinearMesh,parseExplicitMsh22,EXPLICIT_LINEAR_MESH_CONFIGURATION,EXPLICIT_LINEAR_MESH_GEO }
+import { admitExplicitLinearMesh,parseExplicitMsh22,explicitMeshConfigurationDigest }
   from '../providers/gmsh/ExplicitLinearMesh.mts';
+import {parseExplicitStepTopology} from '../providers/gmsh/ExplicitStepTopology.mts';
 type TestConfiguration={mode:'controlled_test_fixture';purpose:'private_operator_approval_fixture'};
 export const rawDigest=(bytes:Uint8Array|string)=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
-const configDigest=()=>digest({configuration:EXPLICIT_LINEAR_MESH_CONFIGURATION,geo:EXPLICIT_LINEAR_MESH_GEO});
 export async function verifyPrivateMeshStorageMode(storage:ElectrostaticHostStorage,test?:TestConfiguration){
   if(test&&(test.mode!=='controlled_test_fixture'||test.purpose!=='private_operator_approval_fixture'
     ||Object.keys(test).sort().join(',')!=='mode,purpose'))throw new Error('PRIVATE_MESH_TEST_CONFIGURATION_INVALID');
@@ -35,8 +35,17 @@ export async function writeProtectedMeshBytesOnce(path:string,bytes:Uint8Array){
     if(rawDigest(await readProtectedMeshBytes(path))!==rawDigest(bytes))throw new Error('PRIVATE_MESH_IMMUTABLE_COLLISION');return;}
   try{await file.writeFile(bytes);await file.sync();}finally{await file.close();}
 }
-function makeArtifact(receipt:any,text:string){
-  const mesh=parseExplicitMsh22(text,receipt.source.canonicalSourceDigest),admission=admitExplicitLinearMesh(receipt.request,mesh);
+async function makeArtifact(storage:ElectrostaticHostStorage,receipt:any,text:string,execution:any){
+  const exact=receipt.request.model.cad?.mappingMethod==='exact-step-boundary-v1';
+  const mesh=parseExplicitMsh22(text,receipt.source.canonicalSourceDigest,receipt.request.model.kind==='single_solid_cad',exact);
+  if(exact){
+    if(!/^sha256:[a-f0-9]{64}$/.test(execution.cadTopologyDigest)||execution.cadTopologyReadFailure||execution.stepDigest!==receipt.geometry.byteDigest)
+      throw Error('PRIVATE_MESH_CAD_TOPOLOGY_BINDING_INVALID');
+    const bytes=await readProtectedMeshBytes(join(storage.paths.results,'explicit-cad-topology-'+execution.cadTopologyDigest.slice(7)+'.txt'));
+    if(bytes.length!==execution.cadTopologyByteLength||rawDigest(bytes)!==execution.cadTopologyDigest)throw Error('PRIVATE_MESH_CAD_TOPOLOGY_TAMPERED');
+    mesh.cadEvidence={topology:parseExplicitStepTopology(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),metadataDigest:execution.cadTopologyDigest,stepByteDigest:execution.stepDigest};
+  }
+  const admission=admitExplicitLinearMesh(receipt.request,mesh);
   return {schema:'tunacad-private-explicit-c3d4-artifact/1',projectRevision:receipt.source.revision,
     geometryDigest:receipt.source.canonicalSourceDigest,domainId:receipt.source.domainId,requestDigest:receipt.request.requestDigest,
     mesh,admission};
@@ -51,12 +60,12 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
     throw new Error('PRIVATE_MESH_EXPORT_REQUEST_MISMATCH');
   const raw=await readProtectedMeshBytes(join(storage.paths.results,'explicit-raw-'+c.rawMeshDigest.slice(7)+'.msh'));
   if(rawDigest(raw)!==c.rawMeshDigest||raw.length!==c.rawMeshByteLength)throw new Error('PRIVATE_MESH_RAW_TAMPERED');
-  const expected=makeArtifact(exported.receipt,new TextDecoder('utf-8',{fatal:true}).decode(raw));
+  const execution=await readElectrostaticHostJson(join(storage.paths.results,'explicit-execution-'+c.executionReceiptDigest.slice(7)+'.json'),128*1024);
+  const expected=await makeArtifact(storage,exported.receipt,new TextDecoder('utf-8',{fatal:true}).decode(raw),execution);
   if(digest(expected)!==record.mesh.meshDigest||digest(artifact)!==digest(expected)
     ||expected.mesh.nodes.length!==record.mesh.nodeCount||expected.mesh.elements.length!==record.mesh.elementCount
     ||expected.admission.faceMappingDigest!==record.mesh.faceMappingDigest||expected.admission.validationDigest!==record.mesh.validationDigest)
     throw new Error('PRIVATE_MESH_REVALIDATION_MISMATCH');
-  const execution=await readElectrostaticHostJson(join(storage.paths.results,'explicit-execution-'+c.executionReceiptDigest.slice(7)+'.json'),128*1024);
   if(!/^[a-f0-9-]{36}$/.test(execution.runId))throw new Error('PRIVATE_MESH_EXECUTION_ID_INVALID');
   const before=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-before.json'),32768);
   const cleanup=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-cleanup.json'),4096);
@@ -69,7 +78,7 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
     throw new Error('PRIVATE_MESH_PREDISPATCH_OR_CLEANUP_MISMATCH');
   if(digest(execution)!==c.executionReceiptDigest||execution.schema!=='tunacad-explicit-gmsh-execution/1'
     ||execution.exitCode!==0||execution.rawMeshDigest!==c.rawMeshDigest||execution.rawMeshByteLength!==c.rawMeshByteLength
-    ||execution.configurationDigest!==configDigest()||c.configurationDigest!==configDigest()
+    ||execution.configurationDigest!==explicitMeshConfigurationDigest(record.request)||c.configurationDigest!==explicitMeshConfigurationDigest(record.request)
     ||execution.settingsIdentity!==c.providerSettingsIdentity||execution.executableDigest!==c.gmshExecutableDigest
     ||execution.studyId!==record.studyId||execution.exportId!==record.geometry.exportId
     ||execution.stepDigest!==record.geometry.byteDigest||execution.sourceBindingDigest!==record.geometry.sourceBindingDigest
@@ -83,7 +92,7 @@ export async function capturePrivateExplicitMesh(storage:ElectrostaticHostStorag
   execution:any,text:string,verifyCurrent:()=>Promise<void>,test?:TestConfiguration){
   await storage.assertReady();await verifyPrivateMeshStorageMode(storage,test);
   const exported=await (await openPrivateExplicitExportStore(storage.root,test)).read(exportId);
-  const r=exported.receipt,artifact=makeArtifact(r,text),meshDigest=digest(artifact),eDigest=digest(execution);
+  const r=exported.receipt,artifact=await makeArtifact(storage,r,text,execution),meshDigest=digest(artifact),eDigest=digest(execution);
   const record=privateCapturedMeshRecordSchema.parse({schema:'tunacad-private-explicit-protected-mesh/0.2',
     studyId:r.studyId,meshRevision:1,storageIdentity:storage.configurationDigest,source:r.source,geometry:r.geometry,request:r.request,
     mesh:{meshId:'gmsh-explicit-'+meshDigest.slice(7,31),meshDigest,exportId,exportByteDigest:r.geometry.byteDigest,
@@ -93,7 +102,7 @@ export async function capturePrivateExplicitMesh(storage:ElectrostaticHostStorag
     capture:{schema:'tunacad-private-explicit-gmsh-capture/1',createdAt:new Date().toISOString(),
       approvalSource:test?'controlled_test_fixture':'human',exportReceiptDigest:exported.status.receiptDigest,
       executionReceiptDigest:eDigest,rawMeshDigest:rawDigest(text),rawMeshByteLength:Buffer.byteLength(text),
-      gmshExecutableDigest:execution.executableDigest,providerSettingsIdentity:execution.settingsIdentity,configurationDigest:configDigest()}});
+      gmshExecutableDigest:execution.executableDigest,providerSettingsIdentity:execution.settingsIdentity,configurationDigest:explicitMeshConfigurationDigest(r.request)}});
   await writeProtectedMeshBytesOnce(join(storage.paths.results,'explicit-raw-'+record.capture.rawMeshDigest.slice(7)+'.msh'),new TextEncoder().encode(text));
   await writeElectrostaticHostOnce(join(storage.paths.results,'explicit-execution-'+eDigest.slice(7)+'.json'),execution,128*1024);
   await verifyCapturedMeshArtifacts(storage,record,artifact,test);await verifyCurrent();

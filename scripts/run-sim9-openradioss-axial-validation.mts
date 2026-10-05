@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { evaluateAxialWaveHistory, axialWaveReference, AXIAL_ORACLE_DIGEST,
   AXIAL_VALIDATION_PLAN } from '../simulation-bridge/openRadiossAxialBarOracle.mts';
 const hash = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');

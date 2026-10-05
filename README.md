@@ -1,5 +1,43 @@
 # TunaCAD Simulation Bridge
 
+## Prepared package 0.2.0 (publication is separate)
+
+This source-based Node 24 package retains the existing `npm start` and
+`npm run configure:providers` commands. Install it in a dedicated directory;
+the numerical executables remain separately installed external providers.
+No provider executable, machine settings, protected record, solver output,
+development fixture, or TunaCAD browser/private host code is distributed.
+Repository-only test scripts and qualification evidence are not npm runtime files.
+
+This release includes the bounded OpenRadioss foundation, direct TFILE/4
+3040/4021 recovery, native process containment/provenance and protected
+capture/replay utilities. The private explicit capability remains
+`proof_of_concept`, `engineeringUsePermitted: false`, and closed to public
+admission. The standard Bridge CLI does not enable the private Explicit
+Dynamics controller or make the TunaCAD browser smoke test ready. Packaging
+does not qualify new geometry, promote the capability, or rerun numerical evidence.
+
+Release verification from this source repository: `npm run test:package`, `npm pack`, then
+`npm publish --dry-run --access public`. Publication is a separate manual action.
+
+## Generalized private Explicit Dynamics workflow
+
+The bounded single-solid CAD path derives restraints, distributed analysis-X
+loads and selected-FACE histories from admitted semantic FACEs and actual mesh
+identities, not reference-bar dimensions or node numbering. Exact STEP topology
+and trimming ownership establish FACE identity independently of triangulated
+area approximation. Explicit mesh, history, artifact and execution resource
+limits still apply; incomplete or ambiguous mappings fail closed.
+
+Private browser integration and fresh-service durable recovery completed on a
+through-hole plate (232 nodes / 628 tetrahedra) and a filleted multi-hole
+T-bracket (287 nodes / 767 tetrahedra, 97 monitored FACE nodes). The bracket
+produced 50 complete authentic TFILE/4 frames after normal Starter/Engine exits.
+This is lifecycle/geometry-mapping evidence, not engineering accuracy,
+convergence or independent qualification. The frozen reference-bar evidence and
+historical failures remain unchanged. No public admission or engineering-use
+permission is granted by these workflow checks.
+
 Public, standalone local host for TunaCAD's provider-neutral simulation
 workflow. It pairs with the TunaCAD browser application, obtains explicit
 per-study approval, exports no geometry before approval, meshes approved STEP

@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes,randomUUID } from 'node:crypto';
 import { digest } from './stableDigest.mts';
 import { validatePrivateExplicitSolve, privateExplicitProviderSchema,
   type PrivateExplicitProvider,type PrivateExplicitSolveBinding,type PrivateSimulationApprovals,
@@ -22,6 +22,11 @@ export function createPrivateSimulationApprovals(options:{
   const now=options.now??Date.now;
   const records=new Map<string,{binding:PrivateExplicitSolveBinding;session:string;expiresAt:number;
     state:'pending'|'approved'|'denied'|'used';controller:AbortController}>();
+  const intents=new Map<object,{digest:string;session:string;controller:AbortController}>();
+  let generation=0;
+  const reviewDigest=(binding:PrivateExplicitSolveBinding)=>{
+    const {solveRevalidation,...review}=binding;return digest(review);
+  };
   const receipt=(id:string,r:ReturnType<typeof requireRecord>):PrivateSolveAuthorization=>
     ({authorizationId:id,bindingDigest:digest(r.binding),expiresAt:r.expiresAt,approvalSource});
   function requireRecord(id:string) {
@@ -44,8 +49,53 @@ export function createPrivateSimulationApprovals(options:{
       throw new Error('PRIVATE_SIMULATION_SOLVE_BINDING_EXPIRED');
     return validated;
   }
+  function consumeValidated(id:string,binding:PrivateExplicitSolveBinding){
+    const r=requireRecord(id);
+    if(r.state!=='approved'||digest(binding)!==digest(r.binding))
+      throw new Error('PRIVATE_SIMULATION_APPROVAL_REPLAY_OR_MISMATCH');
+    r.state='used';return receipt(id,r);
+  }
   return Object.freeze({
     approvalSource,
+    async review(input:PrivateExplicitSolveBinding){
+      if(input.solveRevalidation)throw new Error('PRIVATE_SIMULATION_REVIEW_IS_NOT_AUTHORITY');
+      const binding=await current(input),session=options.readSession(),version=generation;
+      if(!session||digest(session)!==binding.source.sessionBinding||intents.size>=16)
+        throw new Error('PRIVATE_SIMULATION_APPROVAL_UNAVAILABLE');
+      const token=Object.freeze({}),controller=new AbortController();
+      intents.set(token,{digest:reviewDigest(binding),session,controller});
+      try{
+        if(!await options.approve(structuredClone(binding),controller.signal)||controller.signal.aborted
+          ||version!==generation||session!==options.readSession())throw new Error('PRIVATE_SIMULATION_APPROVAL_DENIED');
+        return token;
+      }catch(e){intents.delete(token);controller.abort();throw e;}
+    },
+    async commitReviewed(token:object,input:PrivateExplicitSolveBinding,exportReceiptDigest:string){
+      const intent=intents.get(token);
+      // Destructive take before awaiting: no concurrent or replayed promotion.
+      intents.delete(token);
+      if(!intent||intent.controller.signal.aborted||intent.session!==options.readSession()
+        ||intent.digest!==reviewDigest(input)||input.solveRevalidation||!/^sha256:[a-f0-9]{64}$/.test(exportReceiptDigest))
+        throw new Error('PRIVATE_SIMULATION_REVIEW_STALE_OR_REPLAY');
+      const version=generation,review=await current(input);
+      if(version!==generation||intent.session!==options.readSession()||intent.controller.signal.aborted
+        ||records.size>=16)throw new Error('PRIVATE_SIMULATION_REVIEW_STALE_OR_REPLAY');
+      // Finish authoritative runtime validation BEFORE starting the clock.
+      // Neither the browser nor the native review may choose/reseal timestamps.
+      const createdAt=now(),binding=await validatePrivateExplicitSolve({...review,solveRevalidation:{
+        schema:'tunacad-private-solve-revalidation/0.1',solveBindingId:'solvebinding_private-'+randomUUID(),
+        createdAt,expiresAt:createdAt+120000,exportReceiptDigest}});
+      if(version!==generation||intent.session!==options.readSession()||intent.controller.signal.aborted)
+        throw new Error('PRIVATE_SIMULATION_REVIEW_STALE_OR_REPLAY');
+      const id=randomBytes(32).toString('hex'),r={binding,session:intent.session,
+        expiresAt:Math.min(now()+120000,binding.solveRevalidation!.expiresAt),
+        state:'approved' as 'pending'|'approved'|'denied'|'used',controller:intent.controller};
+      records.set(id,r);
+      // Same production consumption state machine, in one native transaction.
+      // No async gap or duplicated runtime scan between issuance and use.
+      return {binding:structuredClone(binding),authorization:consumeValidated(id,binding)};
+    },
+    cancelReviewed(token:object){const intent=intents.get(token);intents.delete(token);intent?.controller.abort();},
     async authorize(input:PrivateExplicitSolveBinding) {
       const binding=await current(input),session=options.readSession();
       if(!session||records.size>=16||[...records.values()].some(r=>r.state==='pending'&&r.expiresAt>now()))
@@ -62,15 +112,13 @@ export function createPrivateSimulationApprovals(options:{
       } catch(error) {r.state='denied';r.controller.abort();throw error;}
     },
     async consume(id:string,input:PrivateExplicitSolveBinding) {
-      const binding=await current(input),r=requireRecord(id);
-      if(r.state!=='approved'||digest(binding)!==digest(r.binding))
-        throw new Error('PRIVATE_SIMULATION_APPROVAL_REPLAY_OR_MISMATCH');
-      r.state='used';return receipt(id,r);
+      return consumeValidated(id,await current(input));
     },
     async verifyConsumed(id:string,input:PrivateExplicitSolveBinding) {
       const binding=await current(input),r=requireRecord(id);
       if(r.state!=='used'||digest(binding)!==digest(r.binding)) throw new Error('PRIVATE_SIMULATION_APPROVAL_NOT_CONSUMED');
     },
-    revoke() {for(const r of records.values()){r.controller.abort();r.state='denied';}},
+    revoke() {generation++;for(const r of records.values()){r.controller.abort();r.state='denied';}
+      for(const i of intents.values())i.controller.abort();intents.clear();},
   });
 }

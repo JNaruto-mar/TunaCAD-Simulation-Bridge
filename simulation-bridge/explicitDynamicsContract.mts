@@ -5,6 +5,11 @@ const id = z.string().min(1).max(160).regex(/^[^\u0000-\u001f\u007f]+$/)
 const hash = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const positive = z.number().finite().positive();
 const zeroVector = z.tuple([z.literal(0), z.literal(0), z.literal(0)]);
+const vector=z.tuple([z.number().finite(),z.number().finite(),z.number().finite()]);
+const cadFace=z.object({centroidPartLocalMm:vector,areaMm2:positive,
+  topology:z.object({boundingBoxMm:z.object({min:vector,max:vector}).strict(),
+    boundaryCurves:z.array(z.object({centroidPartLocalMm:vector,lengthMm:z.number().finite().nonnegative()}).strict()).max(40000),
+    surfaceKind:z.string().min(1).max(40),plane:z.object({origin:vector,normal:vector}).strict().optional()}).strict().optional()}).strict();
 
 /** Axial one-solid foundation only; declarations are not trusted CAD or mesh evidence. */
 export const explicitDynamicsDraftSchema = z.object({
@@ -29,11 +34,16 @@ export const explicitDynamicsDraftSchema = z.object({
   }).strict(),
   model: z.object({
     projectRevision: id, domainId: id, partId: id, bodyId: id,
-    geometryDigest: hash, kind: z.literal('straight_rectangular_axial_bar'),
+    geometryDigest: hash, kind: z.enum(['straight_rectangular_axial_bar','single_solid_cad']),
     lengthMm: positive.min(1).max(10_000),
     widthMm: positive.min(0.1).max(1000),
     heightMm: positive.min(0.1).max(1000),
     fixedFaceId: id, loadedFaceId: id,
+    cad:z.object({volumeMm3:positive,faceCount:z.number().int().min(2).max(20000),
+      boundingBoxMm:z.object({min:z.tuple([z.number().finite(),z.number().finite(),z.number().finite()]),
+        max:z.tuple([z.number().finite(),z.number().finite(),z.number().finite()])}).strict(),
+      fixedFace:cadFace,loadedFace:cadFace,mappingMethod:z.literal('exact-step-boundary-v1').optional(),
+    }).strict().optional(),
   }).strict(),
   material: z.object({
     materialId: id, domainId: id, model: z.literal('isotropic_linear_elastic'),
@@ -70,6 +80,10 @@ export const explicitDynamicsDraftSchema = z.object({
 }).strict().superRefine((r, ctx) => {
   const fail = (message: string) => ctx.addIssue({ code: 'custom', message });
   const a = r.analysis, m = r.model;
+  if((m.kind==='single_solid_cad')!==Boolean(m.cad))fail('CAD geometry evidence required only for single-solid CAD models.');
+  if(m.cad?.mappingMethod&&(!m.cad.fixedFace.topology||!m.cad.loadedFace.topology))fail('Exact selected FACE topology required.');
+  if(m.cad&&m.cad.boundingBoxMm.max.some((v,i)=>v<=m.cad!.boundingBoxMm.min[i]
+    ||Math.abs(v-m.cad!.boundingBoxMm.min[i]-[m.lengthMm,m.widthMm,m.heightMm][i])>1e-7))fail('CAD bounds/dimensions disagree.');
   if (r.material.domainId !== m.domainId) fail('Material must belong to the sole domain.');
   if (m.fixedFaceId === m.loadedFaceId || r.restraint.faceId !== m.fixedFaceId
     || r.load.faceId !== m.loadedFaceId) fail('Distinct owned fixed and loaded FACEs are required.');

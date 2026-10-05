@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { validateOpenRadiossExplicitCadence } from '../simulation-bridge/openRadiossHistoryCoverage.mts';
 
 // These records mirror frozen hist1.F and published th_to_csv.c, not a

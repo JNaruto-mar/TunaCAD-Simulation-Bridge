@@ -4,7 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { digest } from '../simulation-bridge/stableDigest.mts';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { AXIAL_ORACLE_DIGEST, AXIAL_VALIDATION_PLAN, evaluateAxialWaveHistory } from '../simulation-bridge/openRadiossAxialBarOracle.mts';
 import { summarizeTimeStepHistory, compareTimeStepSensitivity } from '../simulation-bridge/openRadiossTimeStepSensitivity.mts';
 import { AXIAL_ORACLE_V2_PLAN, AXIAL_ORACLE_V2_DIGEST, evaluateAxialWaveHistoryV2,

@@ -42,6 +42,11 @@ export interface PrivateSolveAuthorization {authorizationId:string;bindingDigest
 /** Trusted internal Bridge port. There is no HTTP/MCP route and no dispatch. */
 export interface PrivateSimulationApprovals {
   readonly approvalSource?:PrivateApprovalSource;
+  /** Owner-only review intent. Not authorization, not serializable/replayable. */
+  review?(binding:PrivateExplicitSolveBinding):Promise<object>;
+  commitReviewed?(intent:object,binding:PrivateExplicitSolveBinding,exportReceiptDigest:string):Promise<{
+    binding:PrivateExplicitSolveBinding;authorization:PrivateSolveAuthorization}>;
+  cancelReviewed?(intent:object):void;
   authorize(binding:PrivateExplicitSolveBinding):Promise<PrivateSolveAuthorization>;
   consume(authorizationId:string,binding:PrivateExplicitSolveBinding):Promise<PrivateSolveAuthorization>;
   verifyConsumed(authorizationId:string,binding:PrivateExplicitSolveBinding):Promise<void>;

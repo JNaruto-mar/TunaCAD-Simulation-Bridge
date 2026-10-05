@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 const directory = process.env.TUNACAD_OPENRADIOSS_RETAINED_DIR;
 const expectedDigest = process.env.TUNACAD_OPENRADIOSS_EXPECTED_T01_SHA256;
 if (!directory || !expectedDigest || !/^[a-f0-9]{64}$/.test(expectedDigest)) throw new Error('Retained directory and authenticated T01 digest required');

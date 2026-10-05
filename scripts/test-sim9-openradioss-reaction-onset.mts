@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { differentiateVerifiedReactionImpulse } from '../simulation-bridge/openRadiossBinaryHistoryRecovery.mts';
 import { AXIAL_BAR, AXIAL_ORACLE_DIGEST, evaluateAxialWaveHistory } from '../simulation-bridge/openRadiossAxialBarOracle.mts';
 const fixed = [1, 2, 3, 4, 45], loaded = [5, 6, 7, 8, 46], name = 'ExplicitBarProbe';

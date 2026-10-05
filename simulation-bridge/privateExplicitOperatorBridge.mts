@@ -3,8 +3,8 @@ import { startSimulationBridge } from './server.mts';
 import { privateExplicitProviderSchema,type PrivateExplicitSolveBinding,
   type PrivateExplicitProvider } from './privateExplicitPreparationContract.mts';
 import { inspectOpenRadiossInstallation,type OpenRadiossInstallation } from '../providers/openradioss/OpenRadiossInstallation.mts';
-import { ElectrostaticHostStorage } from './electrostaticHostStorage.mts';
-import { openNativeSimulationStorage } from './nativeSimulationStorage.mts';
+import { ElectrostaticHostStorage,retainNativeStorageInspector } from './electrostaticHostStorage.mts';
+import { openNativeSimulationWorkflowStorage } from './nativeSimulationStorage.mts';
 import { isAbsolute,relative,resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -82,7 +82,8 @@ export async function launchPrivateExplicitOperatorBridge(options:{
 export async function openPrivateExplicitOperatorHostPorts(options:{
   purpose:'private_explicit_operator_controller';allowedOrigin:string;port?:number;
   installation:OpenRadiossInstallation;expectedManifestDigest:string;
-  stopAt?:'panel_attached'|'geometry_export'|'bridge_ready';
+  stopAt?:'panel_attached'|'geometry_export'|'bridge_ready'|'results';
+  terminalConfirmation?(binding:PrivateExplicitSolveBinding,signal:AbortSignal):Promise<boolean>;
 }) {
   if(options.purpose!=='private_explicit_operator_controller'
     ||!/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(options.allowedOrigin))
@@ -90,15 +91,19 @@ export async function openPrivateExplicitOperatorHostPorts(options:{
   if(options.expectedManifestDigest!==PRIVATE_EXPLICIT_VALIDATED_RUNTIME_MANIFEST)
     throw new Error('PRIVATE_OPERATOR_RUNTIME_RESEAL_REQUIRED');
   if(Object.hasOwn(options,'protectedMeshStorageRoot'))throw new Error('PRIVATE_OPERATOR_NATIVE_ROOT_OVERRIDE_FORBIDDEN');
-  const nativeStorage=await openNativeSimulationStorage();
+  const releaseInspector=retainNativeStorageInspector();
+  try {
+  const nativeStorage=await openNativeSimulationWorkflowStorage();
   const storage=nativeStorage.storage;
   assertPrivateExplicitLiveStorageRoot(storage.root);
   if(!(storage instanceof ElectrostaticHostStorage))throw new Error('PRIVATE_OPERATOR_NATIVE_STORAGE_REQUIRED');
   const meshStore=nativeStorage.meshStore;
   const bridge=await launchPrivateExplicitOperatorBridge({purpose:options.purpose,allowedOrigin:options.allowedOrigin,
     geometryExportOnly:options.stopAt==='geometry_export',
+    terminalConfirmation:options.terminalConfirmation,
     port:options.port,readProviderIdentity:createPrivateExplicitRuntimeReader(options.installation,options.expectedManifestDigest)});
-  const owner={url:bridge.url,pairingCode:bridge.pairingCode,close:()=>bridge.close(),verifyWindowProof:bridge.verifyWindowProof,
+  const owner={url:bridge.url,pairingCode:bridge.pairingCode,async close(){try{await bridge.close();}finally{releaseInspector();}},verifyWindowProof:bridge.verifyWindowProof,
+    storage,installation:structuredClone(options.installation),
     readSessionMetadata:bridge.readSessionMetadata,
     async readNativeBindings(){await storage.assertReady();return {storageIdentity:storage.configurationDigest,
       storageSchema:'tunacad-electrostatic-host-storage/0.1' as const,reader:'protected-exact-pin-record-artifact' as const,
@@ -109,4 +114,5 @@ export async function openPrivateExplicitOperatorHostPorts(options:{
     readSessionIdentity:()=>bridge.readSessionIdentity(),readProviderIdentity:()=>bridge.readProviderIdentity(),
     bridgeApprovals:bridge.approvals,
   }};nativeOwners.add(owner);return owner;
+  }catch(error){releaseInspector();throw error;}
 }

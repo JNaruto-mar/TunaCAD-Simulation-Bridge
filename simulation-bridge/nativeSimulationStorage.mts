@@ -1,6 +1,7 @@
 import { lstat, mkdir, readdir } from 'node:fs/promises';
 import { dirname, join, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { ElectrostaticHostStorage, readNativeWindowsLocalApplicationData } from './electrostaticHostStorage.mts';
 import { openPrivateExplicitMeshStore } from './privateExplicitMeshStore.mts';
 import { openPrivateExplicitExportStore } from './privateExplicitExportStore.mts';
@@ -86,4 +87,31 @@ export async function openNativeSimulationStorage(options: { provisionIfMissing?
         exactMeshBinding: 'MESH_BINDING_PENDING' as const, fixtureFallback: false };
     },
   });
+}
+
+/** Native-owned persistent workflow namespace, not temporary fixture storage.
+ * Old evidence stays untouched; the existing per-store bounds remain intact.
+ * No browser/configuration input chooses a root, identity or existing store. */
+export function validateNativeWorkflowEntries(entries:string[]){
+  if(entries.length>=40)invalid('persistent workflow-count bound');
+  if(entries.some(name=>!/^workflow-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(name))
+    ||new Set(entries).size!==entries.length)invalid('unexpected workflow entry');
+}
+export async function openNativeSimulationWorkflowStorage() {
+  const parent=await openNativeSimulationStorage();
+  const directory=join(parent.location.root,'workflows');
+  await parent.storage.assertReady();
+  try {await mkdir(directory);}catch(error:any){if(error.code!=='EEXIST')throw error;}
+  await verifyDirectoryAncestry(directory);
+  const entries=await readdir(directory);
+  validateNativeWorkflowEntries(entries);
+  for(const name of entries){
+    await verifyDirectoryAncestry(join(directory,name));
+  }
+  const workflowId='workflow-'+randomUUID();
+  const root=join(directory,workflowId);
+  const storage=await ElectrostaticHostStorage.provisionNew(root);
+  const meshStore=await openPrivateExplicitMeshStore(root);
+  const exportStore=await openPrivateExplicitExportStore(root);
+  return Object.freeze({location:parent.location,workflowId,storage,meshStore,exportStore});
 }

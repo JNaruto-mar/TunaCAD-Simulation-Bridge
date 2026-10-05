@@ -9,15 +9,15 @@ import { ElectrostaticHostStorage,writeElectrostaticHostOnce } from '../../simul
 import { openPrivateExplicitExportStore } from '../../simulation-bridge/privateExplicitExportStore.mts';
 import { capturePrivateExplicitMesh,rawDigest,writeProtectedMeshBytesOnce } from '../../simulation-bridge/privateExplicitMeshCaptureStore.mts';
 import { digest } from '../../simulation-bridge/stableDigest.mts';
-import { EXPLICIT_LINEAR_MESH_CONFIGURATION,EXPLICIT_LINEAR_MESH_GEO } from './ExplicitLinearMesh.mts';
+import { EXPLICIT_LINEAR_MESH_CONFIGURATION,explicitMeshGeo,explicitMeshConfigurationDigest } from './ExplicitLinearMesh.mts';
 
 /** Explicit trusted launch authorization, not geometry approval or browser input.
  * A new object is NOT permission to rerun a failed operation: caller approvals
  * are bounded independently. This owner is single-use and has no solver port. */
 export function createPrivateExplicitGmshCapture(storage:ElectrostaticHostStorage,authorization:{
-  purpose:'controlled_explicit_mesh_capture';maximumRuns:1;settingsIdentity:string;executableDigest:string;executableBytes:number;
-},test:{mode:'controlled_test_fixture';purpose:'private_operator_approval_fixture'}) {
-  if(authorization.purpose!=='controlled_explicit_mesh_capture'||authorization.maximumRuns!==1
+  purpose:'controlled_explicit_mesh_capture'|'human_explicit_mesh_capture';maximumRuns:1;settingsIdentity:string;executableDigest:string;executableBytes:number;
+},test?:{mode:'controlled_test_fixture';purpose:'private_operator_approval_fixture'}) {
+  if(authorization.purpose!==(test?'controlled_explicit_mesh_capture':'human_explicit_mesh_capture')||authorization.maximumRuns!==1
     ||![authorization.settingsIdentity,authorization.executableDigest].every(s=>/^sha256:[a-f0-9]{64}$/.test(s)))
     throw new Error('PRIVATE_GMSH_AUTHORIZATION_INVALID');
   let used=false;
@@ -34,11 +34,12 @@ export function createPrivateExplicitGmshCapture(storage:ElectrostaticHostStorag
     await verifyCurrent();await storage.assertReady();
     const directory=await mkdtemp(join(tmpdir(),'tunacad-explicit-gmsh-')),runId=randomUUID();
     const rawMeshPath=join(directory,'bar.msh'),args=['bar.geo','-3','-format','msh2','-o','bar.msh','-nt','1','-v','3'];
-    const configurationDigest=digest({configuration:EXPLICIT_LINEAR_MESH_CONFIGURATION,geo:EXPLICIT_LINEAR_MESH_GEO});
+    const configurationDigest=explicitMeshConfigurationDigest(exported.receipt.request),geo=explicitMeshGeo(exported.receipt.request);
+    const exactTopology=exported.receipt.request.model.cad?.mappingMethod==='exact-step-boundary-v1';
     let cleanupConfirmed=false,cleanupRecorded=false;
     try {
       await writeFile(join(directory,'approved.step'),exported.bytes,{flag:'wx'});
-      await writeFile(join(directory,'bar.geo'),EXPLICIT_LINEAR_MESH_GEO,{flag:'wx'});
+      await writeFile(join(directory,'bar.geo'),geo,{flag:'wx'});
       if(rawDigest(Uint8Array.from(await readFile(join(directory,'approved.step'))))!==geometry.byteDigest)throw new Error('PRIVATE_GMSH_INPUT_CHANGED');
       const before={schema:'tunacad-explicit-gmsh-predispatch/1',runId,studyId,exportId:geometry.exportId,
         sourceBindingDigest:digest(source),revision:source.revision,sourceEpoch:source.sourceEpoch,
@@ -73,15 +74,20 @@ export function createPrivateExplicitGmshCapture(storage:ElectrostaticHostStorag
       let text='',meshReadFailure:string|null=null;
       try{text=await readUtf8FileBounded(rawMeshPath,EXPLICIT_LINEAR_MESH_CONFIGURATION.maximumRawBytes);}
       catch(error){meshReadFailure=String(error);}
+      let topologyText='',cadTopologyReadFailure:string|null=null;
+      if(exactTopology)try{topologyText=await readUtf8FileBounded(join(directory,'cad-topology.txt'),128*1024);}
+      catch(error){cadTopologyReadFailure=String(error);}
       const execution={schema:'tunacad-explicit-gmsh-execution/1',...termination,processFailure,meshReadFailure,
         runId,studyId,exportId:geometry.exportId,stepDigest:geometry.byteDigest,sourceBindingDigest:digest(source),
         settingsIdentity:settings.settings!.identity,executableDigest:'sha256:'+settings.gmsh!.sha256,
         invocation:{executable:settings.gmsh!.path,args,cwd:directory},configurationDigest,rawMeshPath,predispatchDigest:digest(before),
         rawMeshDigest:rawDigest(text),rawMeshByteLength:Buffer.byteLength(text),
+        ...(exactTopology?{cadTopologyDigest:rawDigest(topologyText),cadTopologyByteLength:Buffer.byteLength(topologyText),cadTopologyReadFailure}:{}),
         stdout,stderr,stdoutDigest:rawDigest(stdout),stderrDigest:rawDigest(stderr),createdAt:new Date().toISOString()};
       await writeElectrostaticHostOnce(join(storage.paths.results,'gmsh-'+runId+'-after.json'),execution,128*1024);
       if(text)await writeProtectedMeshBytesOnce(join(storage.paths.results,'explicit-raw-'+execution.rawMeshDigest.slice(7)+'.msh'),new TextEncoder().encode(text));
-      if(termination.exitCode!==0||termination.signal||processFailure||meshReadFailure)throw new Error('PRIVATE_GMSH_PROCESS_FAILED: '+JSON.stringify(termination));
+      if(topologyText)await writeProtectedMeshBytesOnce(join(storage.paths.results,'explicit-cad-topology-'+rawDigest(topologyText).slice(7)+'.txt'),new TextEncoder().encode(topologyText));
+      if(termination.exitCode!==0||termination.signal||processFailure||meshReadFailure||cadTopologyReadFailure)throw new Error('PRIVATE_GMSH_PROCESS_FAILED: '+JSON.stringify(termination));
       cleanupConfirmed=await removeWorkingDirectory(directory);
       await writeElectrostaticHostOnce(join(storage.paths.results,'gmsh-'+runId+'-cleanup.json'),{
         schema:'tunacad-explicit-gmsh-cleanup/1',runId,cleanupConfirmed},4096);cleanupRecorded=true;

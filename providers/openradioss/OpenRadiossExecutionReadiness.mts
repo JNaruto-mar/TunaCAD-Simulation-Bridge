@@ -1,7 +1,9 @@
 import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { release } from 'node:os';
 
-// Policy ceilings, not observations. No TTL or numerical policy is changed.
+// Frozen planning reserves and execution-work ceilings, not observations.
+// Fresh verification is accounted separately and remains subject to absolute
+// authority expiry; it is not a cumulative execution-work watchdog.
 export const EXECUTION_STAGE_BUDGET_MS = Object.freeze({ source:25000, runtime:25000,
   storage:15000, starter:65000, handoff:30000, engine:65000, recovery:20000,
   durable:25000, finalization:10000 });
@@ -70,30 +72,47 @@ export async function boundedReadinessRead<T>(stage:keyof typeof EXECUTION_STAGE
 const executionBudgets=new WeakSet<object>();
 export function createExecutionBudget(expiresAt:number,now:()=>number=Date.now){
   const spent=Object.fromEntries(Object.keys(EXECUTION_STAGE_BUDGET_MS).map(k=>[k,0])) as Record<keyof typeof EXECUTION_STAGE_BUDGET_MS,number>;
+  const executionSpent={...spent},verificationSpent={...spent};
   const operations:Array<Readonly<Record<string,unknown>>>=[];let verifying=false,dropped=0;
-  const budget={expiresAt,snapshot:()=>({...spent}),diagnostics:()=>({
+  const perform=async<T,>(stage:ExecutionStage,work:()=>Promise<T>,retention:boolean,operation:string,kind:'verification'|'execution'):Promise<T>=>{
+    if(!Object.hasOwn(EXECUTION_STAGE_BUDGET_MS,stage)||!Number.isFinite(expiresAt)||!/^[a-zA-Z0-9_:-]{1,80}$/.test(operation))
+      throw new Error('EXECUTION_BUDGET_OPERATION_INVALID');
+    const start=now(),remaining=EXECUTION_STAGE_BUDGET_MS[stage]-executionSpent[stage];
+    // Source/runtime/storage verification is readiness work, not execution.
+    // A planning reserve must not become a cumulative full-hashing quota.
+    // Its I/O/schema/size bounds and absolute authority expiry remain enforced.
+    // Actual execution, recovery, retention and cleanup keep their watchdogs.
+    const timeout=kind==='verification'?expiresAt-start:Math.min(remaining,retention?Infinity:expiresAt-start);
+    let timer:ReturnType<typeof setTimeout>|undefined,passed=false;
+    const fail=(reason:string)=>new Error(reason+': '+stage+'; operation='+operation);
+    try{
+      if(timeout<=0)throw fail(kind==='verification'?'EXECUTION_AUTHORITY_EXPIRED':'EXECUTION_STAGE_BUDGET_EXHAUSTED');
+      const value=await Promise.race([work(),new Promise<never>((_,reject)=>{
+        timer=setTimeout(()=>reject(fail(kind==='verification'?'EXECUTION_AUTHORITY_EXPIRED':'EXECUTION_STAGE_BUDGET_EXCEEDED')),timeout);
+      })]);
+      if(!retention&&now()>=expiresAt)throw fail('EXECUTION_AUTHORITY_EXPIRED');
+      if(now()-start>timeout)throw fail('EXECUTION_STAGE_BUDGET_EXCEEDED');
+      passed=true;return value;
+    }finally{
+      const end=now(),elapsed=Math.max(0,end-start);spent[stage]+=elapsed;
+      (kind==='verification'?verificationSpent:executionSpent)[stage]+=elapsed;
+      if(timer)clearTimeout(timer);
+      operations.push(Object.freeze({stage,operation,workClass:kind,startMs:start,endMs:end,elapsedMs:elapsed,passed,
+        spentMs:spent[stage],executionSpentMs:executionSpent[stage],verificationSpentMs:verificationSpent[stage],
+        remainingMs:Math.max(0,EXECUTION_STAGE_BUDGET_MS[stage]-executionSpent[stage])}));
+      if(operations.length>64){operations.shift();dropped++;}
+    }
+  };
+  const budget={expiresAt,snapshot:()=>({...spent}),diagnostics:()=>({policyVersion:'verification-execution-separation/1',
     stages:Object.fromEntries(Object.entries(spent).map(([stage,value])=>[stage,{ceilingMs:EXECUTION_STAGE_BUDGET_MS[stage as ExecutionStage],
-      spentMs:value,remainingMs:Math.max(0,EXECUTION_STAGE_BUDGET_MS[stage as ExecutionStage]-value)}])),
+      spentMs:value,executionSpentMs:executionSpent[stage as ExecutionStage],verificationSpentMs:verificationSpent[stage as ExecutionStage],
+      remainingMs:Math.max(0,EXECUTION_STAGE_BUDGET_MS[stage as ExecutionStage]-executionSpent[stage as ExecutionStage])}])),
     operations:[...operations],dropped}),
     async verify<T>(stage:'source'|'storage'|'runtime',operation:string,work:()=>Promise<T>):Promise<T>{
       if(verifying)throw new Error('VERIFICATION_OWNER_NESTING_REJECTED');
-      verifying=true;try{return await budget.run(stage,work,false,operation);}finally{verifying=false;}
+      verifying=true;try{return await perform(stage,work,false,operation,'verification');}finally{verifying=false;}
     },async run<T>(stage:keyof typeof EXECUTION_STAGE_BUDGET_MS,work:()=>Promise<T>,retention=false,operation='stage_work'):Promise<T>{
-    if(!Object.hasOwn(EXECUTION_STAGE_BUDGET_MS,stage)||!Number.isFinite(expiresAt)||!/^[a-zA-Z0-9_:-]{1,80}$/.test(operation))
-      throw new Error('EXECUTION_BUDGET_OPERATION_INVALID');
-    const start=now(),remaining=EXECUTION_STAGE_BUDGET_MS[stage]-spent[stage];
-    const timeout=Math.min(remaining,retention?Infinity:expiresAt-start);
-    let timer:ReturnType<typeof setTimeout>|undefined,passed=false;
-    const fail=(kind:string)=>new Error(kind+': '+stage+'; operation='+operation);
-    try{if(timeout<=0)throw fail('EXECUTION_STAGE_BUDGET_EXHAUSTED');
-      const value=await Promise.race([work(),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(fail('EXECUTION_STAGE_BUDGET_EXCEEDED')),timeout);})]);
-      if(now()-start>timeout||!retention&&now()>=expiresAt)throw fail('EXECUTION_STAGE_BUDGET_EXCEEDED');
-      passed=true;
-      return value;}
-    finally{const end=now(),elapsed=Math.max(0,end-start);spent[stage]+=elapsed;if(timer)clearTimeout(timer);
-      operations.push(Object.freeze({stage,operation,startMs:start,endMs:end,elapsedMs:elapsed,passed,
-        spentMs:spent[stage],remainingMs:Math.max(0,EXECUTION_STAGE_BUDGET_MS[stage]-spent[stage])}));
-      if(operations.length>64){operations.shift();dropped++;}}
+    return perform(stage,work,retention,operation,'execution');
   }};executionBudgets.add(budget);return budget;
 }
 export type ExecutionBudget=ReturnType<typeof createExecutionBudget>;

@@ -1,13 +1,25 @@
 {
   "name": "@tunacad/simulation-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": false,
   "type": "module",
+  "description": "Local authenticated external simulation Bridge and bounded provider adapters for TunaCAD.",
+  "repository": { "type": "git", "url": "git+https://github.com/JNaruto-mar/TunaCAD-Simulation-Bridge.git" },
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "files": [
+    "providers/**/*.mts",
+    "providers/**/*.ps1",
+    "providers/**/*.cs",
+    "providers/**/LICENSE_REPORT.md",
+    "simulation-bridge/**/*.mts",
+    "src/simulation/**/*.ts"
+  ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "start": "node --experimental-strip-types simulation-bridge/cli.mts",
+    "test:package": "node scripts/test-npm-package.mjs",
+    "start": "node --experimental-transform-types simulation-bridge/cli.mts",
     "configure:providers": "node --experimental-transform-types simulation-bridge/providerSettingsCli.mts",
     "test:providers": "node --experimental-strip-types scripts/test-provider-readiness.mts",
     "test:convergence": "node --experimental-strip-types scripts/test-mesh-convergence.mts",
@@ -91,8 +103,6 @@
     "test:sim4a-matrix": "node --experimental-strip-types scripts/test-sim4a-matrix.mts",
     "test:qualification": "node --experimental-strip-types scripts/test-sim2-qualification.mts"
   },
-  "description": "",
-  "main": "index.js",
   "keywords": [],
   "author": "",
   "license": "ISC",

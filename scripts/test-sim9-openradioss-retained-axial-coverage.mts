@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
+import { parseBoundedOpenRadiossTFile4 } from './referenceTFileReader.mts';
 import { readOpenRadiossCycleTrace } from '../simulation-bridge/openRadiossHistoryCoverage.mts';
 import { evaluateAxialWaveHistory, AXIAL_ORACLE_DIGEST } from '../simulation-bridge/openRadiossAxialBarOracle.mts';
 const directory = process.env.TUNACAD_OPENRADIOSS_VALIDATION_DIR;

@@ -1,5 +1,5 @@
 import { readBoundedStarterConcentratedLoads } from '../../simulation-bridge/openRadiossStarterLoads.mts';
-import type { PreparedOpenRadioss } from './OpenRadiossDeck.mts';
+import { fixedNodeGroupRows,type PreparedOpenRadioss } from './OpenRadiossDeck.mts';
 /** Mechanically reuses the standalone interpreted model/load/resource gates.
  * No benchmark accuracy/oracle gate is used by provider execution. */
 export function admitOpenRadiossStarter(listing:string, prepared:PreparedOpenRadioss) {
@@ -15,7 +15,7 @@ export function admitOpenRadiossStarter(listing:string, prepared:PreparedOpenRad
   const expected=prepared.expected;
   for(const [pattern,target] of [[/NUMNOD[^\r\n]*\s(\d+)\s*$/m,expected.nodeCount],
     [/NUMELS[^\r\n]*\s(\d+)\s*$/m,expected.elementCount],[/NUMBCS[^\r\n]*\s(\d+)\s*$/m,1],
-    [/NCONLD[^\r\n]*\s(\d+)\s*$/m,5],[/INITIAL DENSITY[^\r\n]*=\s*([\d.E+-]+)/,expected.densityMgPerMm3],
+    [/NCONLD[^\r\n]*\s(\d+)\s*$/m,expected.loads.length],[/INITIAL DENSITY[^\r\n]*=\s*([\d.E+-]+)/,expected.densityMgPerMm3],
     [/YOUNG'S MODULUS[^\r\n]*=\s*([\d.E+-]+)/,expected.E],[/POISSON'S RATIO[^\r\n]*=\s*([\d.E+-]+)/,expected.nu],
     [/TETRA4 FORMULATION FLAG[^\r\n]*=\s*(\d+)/,1000]] as const)
     if(one(pattern)!==Number(target.toExponential(12))) fail('mesh/material/property/constraint count mismatch');
@@ -29,7 +29,7 @@ export function admitOpenRadiossStarter(listing:string, prepared:PreparedOpenRad
   const loads=readBoundedStarterConcentratedLoads(listing,expected.loads,expected.forceN);
   // The frozen Starter listing does not enumerate BCS membership; independently
   // bind exact emitted group/Trarot/deck bytes, plus NUMBCS and later fixed DX/VX/AX.
-  const fixedBlock=`/GRNOD/NODE/1\nFixed x min\n${expected.fixedNodeIds.map(id=>String(id).padStart(10)).join('')}\n`;
+  const fixedBlock=`/GRNOD/NODE/1\nFixed x min\n${fixedNodeGroupRows(expected.fixedNodeIds).join('\n')}\n`;
   if(!prepared.starter.includes(fixedBlock)||!prepared.starter.includes('   111 000         0         1')) fail('fixed group/BCS mapping');
   const sections=listing.split('NODAL TIME STEP (estimation)');
   if(sections.length!==2) fail('missing/ambiguous native timestep section');
