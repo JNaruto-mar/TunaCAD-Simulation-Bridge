@@ -15,19 +15,9 @@ import { verifyTwoLayerAuthoring, type TwoLayerAuthoring }
   from './electrostaticTwoLayerAuthoring.mts';
 
 const faceKeys = ['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'] as const;
-type Faces = Record<(typeof faceKeys)[number], string>;
-export interface LiveTwoLayerDomain {
-  domainId: string;
-  partId: string;
-  bodyId: string;
-  faces: Faces;
-  /** Authoritative part-to-analysis transform in mm, column-major. */
-  worldMatrix: number[];
-}
-export interface LiveTwoLayerInventory {
-  projectRevision: string;
-  domains: LiveTwoLayerDomain[];
-}
+type Faces = LiveTwoLayerDomain['faces'];
+import type { LiveTwoLayerDomain,LiveTwoLayerInventory } from './electrostaticTwoLayerInventoryContract.mts';
+export type { LiveTwoLayerDomain,LiveTwoLayerInventory } from './electrostaticTwoLayerInventoryContract.mts';
 export interface TwoLayerPreparationHost {
   cad: ElectrostaticCadReaders;
   /** Host CAD/model store only. No client request, mesh or digest accepted. */

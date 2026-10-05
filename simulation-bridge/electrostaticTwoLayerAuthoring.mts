@@ -1,5 +1,5 @@
 import * as z from 'zod/v4';
-import type { LiveTwoLayerInventory } from './electrostaticTwoLayerHostPreparation.mts';
+import type { LiveTwoLayerInventory } from './electrostaticTwoLayerInventoryContract.mts';
 
 const id = z.string().min(1).max(160);
 const electrode = z.object({

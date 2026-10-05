@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline/promises';
 import { startSimulationBridge } from './server.mts';
+import { isExplicitWorkspaceOrigin } from './explicitWorkspaceOrigin.mts';
 import { privateExplicitProviderSchema,type PrivateExplicitSolveBinding,
   type PrivateExplicitProvider } from './privateExplicitPreparationContract.mts';
 import { inspectOpenRadiossInstallation,type OpenRadiossInstallation } from '../providers/openradioss/OpenRadiossInstallation.mts';
@@ -40,7 +41,7 @@ export async function launchPrivateExplicitOperatorBridge(options:{
   terminalConfirmation?(binding:PrivateExplicitSolveBinding,signal:AbortSignal):Promise<boolean>;
 }) {
   if(options.purpose!=='private_explicit_operator_controller'
-    ||!/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(options.allowedOrigin)
+    ||!isExplicitWorkspaceOrigin(options.allowedOrigin)
     ||typeof options.readProviderIdentity!=='function')throw new Error('PRIVATE_OPERATOR_LAUNCH_INVALID');
   if(!options.geometryExportOnly&&!options.terminalConfirmation&&(!process.stdin.isTTY||!process.stdout.isTTY))
     throw new Error('PRIVATE_OPERATOR_INTERACTIVE_TERMINAL_REQUIRED');
@@ -86,7 +87,7 @@ export async function openPrivateExplicitOperatorHostPorts(options:{
   terminalConfirmation?(binding:PrivateExplicitSolveBinding,signal:AbortSignal):Promise<boolean>;
 }) {
   if(options.purpose!=='private_explicit_operator_controller'
-    ||!/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(options.allowedOrigin))
+    ||!isExplicitWorkspaceOrigin(options.allowedOrigin))
     throw new Error('PRIVATE_OPERATOR_LAUNCH_INVALID');
   if(options.expectedManifestDigest!==PRIVATE_EXPLICIT_VALIDATED_RUNTIME_MANIFEST)
     throw new Error('PRIVATE_OPERATOR_RUNTIME_RESEAL_REQUIRED');

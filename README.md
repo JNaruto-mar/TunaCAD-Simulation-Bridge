@@ -1,5 +1,22 @@
 # TunaCAD Simulation Bridge
 
+## Authenticated production-origin Preview handoff
+
+The existing native Explicit Dynamics owner now admits exact
+`https://tunacad.com` as well as canonical local-development loopback origins.
+This allowlist is not authentication: existing HMAC pairing/session proof and
+separate single-use geometry/run approvals remain mandatory. TunaCAD's native
+controller additionally requires a current, challenge-bound, one-use account
+attachment ticket from its production Worker. Public generic provider submission
+remains closed; `proof_of_concept` and `engineeringUsePermitted: false` remain.
+No numerical behavior, manifest, executable selection, resource limit or
+qualification evidence changed. The shared inventory type contract is
+browser-safe; native preparation continues to own its implementation.
+The standard Bridge CLI alone does not launch TunaCAD's native controller.
+This source integration does not require npm publication or a package version
+change. `scripts/test-explicit-workspace-origin.mts` checks the exact allowlist
+without executing providers.
+
 ## Prepared package 0.2.0 (publication is separate)
 
 This source-based Node 24 package retains the existing `npm start` and
