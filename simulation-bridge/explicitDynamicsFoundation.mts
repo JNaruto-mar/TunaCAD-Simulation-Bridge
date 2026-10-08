@@ -19,6 +19,7 @@ export function sealExplicitDynamics(value: ExplicitDynamicsDraft): ExplicitDyna
 export function explicitAxialBarReference(value: unknown) {
   const r = validateExplicitDynamics(value);
   if(r.model.kind!=='straight_rectangular_axial_bar')throw new Error('Axial reference applies only to the frozen rectangular reference problem.');
+  if(r.load.history!=='constant_after_onset')throw new Error('Frozen axial reference supports only the step load.');
   const areaMm2 = r.model.widthMm * r.model.heightMm;
   const stiffnessNPerMm = r.material.youngsModulusMPa * areaMm2 / r.model.lengthMm;
   const generalizedMassKg = r.material.densityKgM3 * areaMm2 * r.model.lengthMm * 1e-9 / 3;

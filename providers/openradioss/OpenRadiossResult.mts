@@ -4,6 +4,7 @@ import { readOpenRadiossCycleTrace } from '../../simulation-bridge/openRadiossHi
 import type { ExplicitDynamicsResult, ExplicitDynamicsFieldPage } from '../../src/simulation/explicitDynamicsProviderContracts.ts';
 import type { PreparedOpenRadioss } from './OpenRadiossDeck.mts';
 import {normalizeExplicitHistoryNode,assertExplicitResultByteBudget} from './OpenRadiossHistoryResource.mts';
+import {assertExplicitLoadResolution} from '../../simulation-bridge/explicitLoadHistory.mts';
 
 export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buffer, trace:string, listing:string,
   identity:{providerRunId:string;providerId:string;providerVersion:string;runtimeDigest:string;artifacts:Record<string,string>;provenanceDigest:string}) {
@@ -14,6 +15,8 @@ export function recoverOpenRadiossResult(prepared:PreparedOpenRadioss, bytes:Buf
   const actualCycles=Number(totals[0][1]);
   if(actualCycles>prepared.request.analysis.integration.maximumIncrements || actualCycles>20000) fail('increment resource bound');
   const cycles=readOpenRadiossCycleTrace(trace,actualCycles);
+  assertExplicitLoadResolution(prepared.request.load.history,prepared.request.analysis.durationS,
+    cycles.reduce((maximum,c)=>Math.max(maximum,c.timestepS),0));
   if(cycles.some(c=>c.timestepS>prepared.request.analysis.integration.maximumTimeStepS)) fail('actual-cycle timestep resource bound');
   const history=parseBoundedOpenRadiossTFile4(bytes,prepared.request.analysis.durationS,
     {method:'frozen-2026-cycle-trace',cycleTrace:trace,completedCycles:actualCycles,

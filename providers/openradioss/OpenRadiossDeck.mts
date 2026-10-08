@@ -6,6 +6,7 @@ import type { ExplicitC3D4Mesh } from '../calculix/ExplicitDynamicsMeshAdmission
 import { admitExplicitLinearMesh } from '../gmsh/ExplicitLinearMesh.mts';
 import {serializeExplicitFaceLoads} from './OpenRadiossFaceLoads.mts';
 import {estimateExplicitHistoryBytes,EXPLICIT_NORMALIZED_RESULT_MAXIMUM_BYTES} from './OpenRadiossHistoryResource.mts';
+import {explicitLoadHistoryPoints,assertExplicitLoadResolution,explicitLoadHistoryOnset} from '../../simulation-bridge/explicitLoadHistory.mts';
 
 export const RUN_NAME = 'ExplicitBarProbe'; // Fixed safe file root; per-run directories isolate jobs.
 const fail = (why:string):never => { throw new Error('OpenRadioss admission: '+why); };
@@ -94,6 +95,16 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   const times=[0,...request.analysis.outputTimesS];
   const historyIntervalS=Math.min(...times.slice(1).map((t,i)=>t-times[i]));
   if(Math.ceil(request.analysis.durationS/historyIntervalS)+1>64) fail('history resource bound');
+  assertExplicitLoadResolution(request.load.history,request.analysis.durationS,historyIntervalS);
+  const loadPoints=explicitLoadHistoryPoints(request.load.history,request.analysis.durationS);
+  // Native cycles can cross the requested end. Constant terminal extension
+  // prevents FUNCT extrapolation above peak or below zero, without changing RUN.
+  const last=loadPoints.at(-1)!;
+  if(last[1]!==loadPoints.at(-2)![1])loadPoints.push([last[0]+request.analysis.durationS,last[1]]);
+  const loadOnsetS=explicitLoadHistoryOnset(request.load.history),loadSensorId:0|1=loadOnsetS>0?1:0;
+  if(loadOnsetS>0&&Number(real(loadOnsetS))<=0)fail('unrepresentable load onset');
+  // Fail closed if fixed-width serialization collapses distinct phase times.
+  if(loadPoints.some(([t],i)=>i>0&&Number(real(t))<=Number(real(loadPoints[i-1][0]))))fail('unrepresentable load-history timing');
   // Existing 8 MiB binary and 2 MiB normalized/durable limits, reserved before
   // dispatch. No partial FACE sampling or silently dropped history is allowed.
   const frames=Math.ceil(request.analysis.durationS/historyIntervalS)+1;
@@ -107,10 +118,12 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   starter.push('/MAT/LAW1/1','Steel elastic',real(densityMgPerMm3),real(request.material.youngsModulusMPa)+real(request.material.poissonRatio),
     ...solidTetra4Block(),'/PART/1','One elastic bar',fixedField(1,10)+fixedField(1,10),
     '/GRNOD/NODE/1','Fixed x min',...fixedNodeGroupRows(fixed.nodeIds),...bcsBlock(1),
-    '/FUNCT/1','Axial step from t zero',real(0)+real(1),real(request.analysis.durationS)+real(1));
+    ...(loadSensorId?['/SENSOR/TIME/1','Approved load onset',real(loadOnsetS),'']:[]),
+    '/FUNCT/1',request.load.history==='constant_after_onset'?'Axial step from t zero':'Approved axial load history',
+    ...loadPoints.map(([time,factor])=>real(time)+real(factor)));
   loads.forEach(({id,forceN},i)=>{const group=10+i;
     starter.push(`/GRNOD/NODE/${group}`,`Load node ${id}`,fixedField(id,10),`/CLOAD/${group}`,`Axial force on ${id}`,
-      fixedField(1,10)+fixedField('X',10)+[0,0,group,0].map(v=>fixedField(v,10)).join('')+real(1)+(exactLoads?fixedField(exactLoads[i].forceText,20):real(forceN)));});
+      fixedField(1,10)+fixedField('X',10)+[0,loadSensorId,group,0].map(v=>fixedField(v,10)).join('')+real(1)+(exactLoads?fixedField(exactLoads[i].forceText,20):real(forceN)));});
   starter.push('/TH/NODE/1','Bounded axial bar nodes',['DX','VX','AX','REACX'].map(v=>v.padEnd(10)).join(''));
   for(const id of request.model.kind==='straight_rectangular_axial_bar'?[...fixed.nodeIds,...loaded.nodeIds]:historyNodeIds)
     starter.push(fixedField(id,10)+fixedField(0,10)+`node_${id}`);
@@ -121,7 +134,7 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   if(/\/(?:AMS|ADMAS|DAMP|DYREL|KEREL|INTER|INIVEL|IMPLICIT|DT\/[^\r\n]*\/(?:CST|AMS|DEL|SET))/i.test(starterText+engine)) fail('forbidden physics/mass-scaling card');
   return {request,meshDigest:digest(mesh),faceMappingDigest:admission.faceMappingDigest,starter:starterText,engine,historyIntervalS,dtNodaScale:0.6,
     expected:{nodeCount:nodes.size,elementCount:elementIds.size,densityMgPerMm3,massMg:volume*densityMgPerMm3,
-      E:request.material.youngsModulusMPa,nu:request.material.poissonRatio,loads,forceN:force,
+      E:request.material.youngsModulusMPa,nu:request.material.poissonRatio,loads,forceN:force,loadOnsetS,loadSensorId,
       fixedNodeIds:fixed.nodeIds,loadedNodeIds:loaded.nodeIds,historyNodeIds,minimumAltitudeMm}};
 }
 /** Radioss node groups contain at most ten fixed-width IDs on each row. */

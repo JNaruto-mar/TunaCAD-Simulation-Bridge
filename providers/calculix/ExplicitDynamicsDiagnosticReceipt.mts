@@ -9,6 +9,7 @@ type Admission = ReturnType<typeof assessExplicitC3D4Mesh>;
 export function createExplicitDiagnosticReceipt(
   request: ExplicitDynamicsRequest, admitted: Admission, deck: string,
 ) {
+  if(request.load.history!=='constant_after_onset')throw new Error('EXPLICIT_DIAGNOSTIC_INVALID: frozen CalculiX diagnostic supports step only');
   const lines = deck.split(/\r?\n/);
   const dynamicAt = lines.findIndex(line => /^\*DYNAMIC\b/i.test(line));
   const dynamicCard = lines[dynamicAt];

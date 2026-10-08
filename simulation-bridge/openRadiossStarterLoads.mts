@@ -31,10 +31,11 @@ function roundedListingValue(token:string, expected:string) {
  * NCONLD count-summary text cannot be a heading. Reordering rows is harmless;
  * normalized output is sorted by trusted node ID, never inferred from a deck. */
 export function readBoundedStarterConcentratedLoads(listing: string,
-  expected: readonly { id: number; forceN: number; forceText?:string }[], expectedResultantN = 100) {
+  expected: readonly { id: number; forceN: number; forceText?:string }[], expectedResultantN = 100, expectedSensorId:0|1=0, expectedOnsetS=0) {
   if (typeof listing !== 'string' || Buffer.byteLength(listing) > 8 * 1024 * 1024 ||
       !Number.isFinite(expectedResultantN) || expectedResultantN <= 0 ||
-      expected.length < 3 || expected.length > 128 || new Set(expected.map(n => n.id)).size !== expected.length ||
+      (expectedSensorId!==0&&expectedSensorId!==1)||!Number.isFinite(expectedOnsetS)||expectedOnsetS<0||expectedOnsetS>.01||
+      (expectedSensorId===1)!==(expectedOnsetS>0)||expected.length < 3 || expected.length > 128 || new Set(expected.map(n => n.id)).size !== expected.length ||
       expected.some(n => !Number.isSafeInteger(n.id) || n.id <= 0 || !Number.isFinite(n.forceN) || n.forceN <= 0))
     reject('invalid bounded listing or trusted expected loads');
   const serialized=expected.some(n=>n.forceText!==undefined);
@@ -49,8 +50,29 @@ export function readBoundedStarterConcentratedLoads(listing: string,
       lines[at + 2]?.trim().split(/\s+/).join('|') !== COLUMNS.join('|'))
     reject('wrong detailed heading underline/column schema');
   const end = lines.findIndex((line, i) => i > at + 2 && line.trim() === BOUNDARY);
-  if (end < 0 || end - at > expected.length+16) reject('missing or unbounded detailed section terminator');
-  const rows = lines.slice(at + 3, end).filter(line => line.trim());
+  // The native listing places interpreted sensors between CLOAD and SPMD.
+  // Parse that exact separate schema; never discard arbitrary trailing text.
+  if (end < 0 || end - at > expected.length+(expectedSensorId?32:16)) reject('missing or unbounded detailed section terminator');
+  const body = lines.slice(at + 3, end).map(line=>line.trim()).filter(Boolean);
+  const sensorAt=body.indexOf('SENSORS'),rows=sensorAt<0?body:body.slice(0,sensorAt);
+  let sensorInterpretation:Readonly<{id:1;onsetS:number;printedOnsetS:number;stopS:number}>|undefined;
+  if(expectedSensorId){
+    const sensor=body.slice(sensorAt);
+    if(sensorAt<0||sensor.length!==7||sensor[0]!=='SENSORS'||sensor[1]!=='-------'||
+      sensor[2]!=='SENSOR TYPE 0: TIME'||sensor[3]!=='--------------------')reject('missing/unsupported sensor interpretation');
+    const id=sensor[4].match(/^SENSOR ID(?:\s*\.)+\s*=\s*(\d+)$/);
+    const delay=sensor[5].match(new RegExp('^TIME DELAY BEFORE ACTIVATION(?:\\s*\\.)+\\s*=\\s*('+numeric+')$'));
+    const stop=sensor[6].match(new RegExp('^STOP TIME(?:\\s*\\.)+\\s*=\\s*('+numeric+')$'));
+    if(!id||Number(id[1])!==1||!delay||!stop||Number(stop[1])!==1e20)return reject('wrong native TIME sensor identity/fields');
+    // Native E12.4 summary rounds to four significant decimal digits. Match
+    // its EXACT decimal rounding interval; exact input delay stays deck-pinned.
+    const printed=decimal(delay[1]),trusted=decimal(expectedOnsetS.toExponential(12));
+    if(printed.digits!==4||Number(delay[1])<=0)reject('unsupported sensor delay precision');
+    const exponent=Math.min(printed.exponent,trusted.exponent),units=(v:ReturnType<typeof decimal>)=>v.coefficient*10n**BigInt(v.exponent-exponent);
+    const residual=units(printed)-units(trusted),difference=residual<0n?-residual:residual;
+    if(2n*difference>10n**BigInt(printed.exponent-exponent))reject('wrong interpreted load onset');
+    sensorInterpretation=Object.freeze({id:1,onsetS:expectedOnsetS,printedOnsetS:Number(delay[1]),stopS:1e20});
+  }else if(sensorAt>=0)reject('unexpected native sensor interpretation');
   if (rows.length !== expected.length) reject('missing or extra detailed load row');
   const seen = new Set<string>();
   const printedTokens:string[]=[];
@@ -65,7 +87,7 @@ export function readBoundedStarterConcentratedLoads(listing: string,
     if (seen.has(key)) reject('duplicate node/component pair');
     seen.add(key);
     if (!Number.isSafeInteger(nodeId) || nodeId <= 0 || component !== 'X' ||
-        skewId !== 0 || loadCurveId !== 1 || sensorId !== 0 || scaleX !== 1 ||
+        skewId !== 0 || loadCurveId !== 1 || sensorId !== expectedSensorId || scaleX !== 1 ||
         !Number.isFinite(scaleY) || !Number.isFinite(forceN)) reject('unsupported component/load interpretation');
     const target = expected.find(n => n.id === nodeId);
     if (!target) return reject('wrong node or interpreted force value');
@@ -91,6 +113,7 @@ export function readBoundedStarterConcentratedLoads(listing: string,
       !conserved||!reported)
     reject('wrong axial resultant');
   return Object.freeze({ selector: 'standalone heading + underline + exact columns + SPMD terminator',
+    ...(sensorInterpretation?{sensorInterpretation}:{}),
     loads: Object.freeze(loads.map(n => Object.freeze(n))), resultantN,
     resultantToleranceN: STARTER_LOAD_RESULTANT_TOLERANCE_N,
     ...(serialized?{serializedLoadConservation:Object.freeze({method:'bounded-exact-decimal',

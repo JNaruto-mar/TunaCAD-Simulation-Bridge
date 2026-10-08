@@ -1,5 +1,6 @@
 import { readBoundedStarterConcentratedLoads } from '../../simulation-bridge/openRadiossStarterLoads.mts';
 import { fixedNodeGroupRows,type PreparedOpenRadioss } from './OpenRadiossDeck.mts';
+import {assertExplicitLoadResolution} from '../../simulation-bridge/explicitLoadHistory.mts';
 /** Mechanically reuses the standalone interpreted model/load/resource gates.
  * No benchmark accuracy/oracle gate is used by provider execution. */
 export function admitOpenRadiossStarter(listing:string, prepared:PreparedOpenRadioss) {
@@ -26,7 +27,12 @@ export function admitOpenRadiossStarter(listing:string, prepared:PreparedOpenRad
   const mass=Number(massRows?.[1]);
   if(!Number.isFinite(mass)||Math.abs(mass-expected.massMg)>expected.massMg*1e-10 ||
     one(/TOTAL ADDED MASS\s*=\s*([\d.E+-]+)/)!==0) fail('interpreted mass/added mass mismatch');
-  const loads=readBoundedStarterConcentratedLoads(listing,expected.loads,expected.forceN);
+  const loads=readBoundedStarterConcentratedLoads(listing,expected.loads,expected.forceN,expected.loadSensorId,expected.loadOnsetS);
+  // Only the source-bound, internally emitted one-shot TIME sensor is allowed.
+  const sensorBlock=`/SENSOR/TIME/1\nApproved load onset\n${expected.loadOnsetS.toExponential(12).padStart(20)}\n\n`;
+  const sensors=prepared.starter.match(/^\/SENSOR[^\r\n]*/gm)??[];
+  if(expected.loadSensorId?(sensors.length!==1||!prepared.starter.includes(sensorBlock)):sensors.length!==0)
+    fail('load onset sensor mapping');
   // The frozen Starter listing does not enumerate BCS membership; independently
   // bind exact emitted group/Trarot/deck bytes, plus NUMBCS and later fixed DX/VX/AX.
   const fixedBlock=`/GRNOD/NODE/1\nFixed x min\n${fixedNodeGroupRows(expected.fixedNodeIds).join('\n')}\n`;
@@ -39,6 +45,7 @@ export function admitOpenRadiossStarter(listing:string, prepared:PreparedOpenRad
   if(!estimates.length||estimates.some(v=>!Number.isFinite(v)||v<=0)) fail('invalid native timestep estimate');
   const criticalNodalEstimateS=Math.min(...estimates), selectedEstimatedStepS=prepared.dtNodaScale*criticalNodalEstimateS;
   const expectedCycles=Math.floor(prepared.request.analysis.durationS/selectedEstimatedStepS)+1;
+  assertExplicitLoadResolution(prepared.request.load.history,prepared.request.analysis.durationS,selectedEstimatedStepS);
   if(selectedEstimatedStepS>=criticalNodalEstimateS || selectedEstimatedStepS>=prepared.historyIntervalS ||
     selectedEstimatedStepS>prepared.request.analysis.integration.maximumTimeStepS ||
     expectedCycles>Math.min(20000,prepared.request.analysis.integration.maximumIncrements)) fail('native stability/time/history/resource bound');

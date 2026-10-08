@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import {explicitLoadHistorySchema,assertExplicitLoadResolution,explicitLoadHistoryOnset} from './explicitLoadHistory.mts';
 
 const id = z.string().min(1).max(160).regex(/^[^\u0000-\u001f\u007f]+$/)
   .refine(value => value.trim().length > 0);
@@ -57,10 +58,10 @@ export const explicitDynamicsDraftSchema = z.object({
     velocityMmPerS: zeroVector }).strict(),
   restraint: z.object({ kind: z.literal('fixed_face'), faceId: id,
     displacementMm: zeroVector }).strict(),
-  load: z.object({ kind: z.literal('axial_step_face_force'), faceId: id,
-    onsetS: z.literal(0), forceN: z.tuple([positive.max(1_000_000),
+  load: z.object({ kind: z.enum(['axial_step_face_force','axial_history_face_force']), faceId: id,
+    onsetS: z.number().finite().nonnegative().max(.01), forceN: z.tuple([positive.max(1_000_000),
       z.literal(0), z.literal(0)]), coordinateSystem: z.literal('analysis'),
-    history: z.literal('constant_after_onset') }).strict(),
+    history: explicitLoadHistorySchema }).strict(),
   mesh: z.object({
     elementFormulation: z.literal('C3D4'),
     maximumNodes: z.number().int().min(4).max(100_000),
@@ -80,6 +81,10 @@ export const explicitDynamicsDraftSchema = z.object({
 }).strict().superRefine((r, ctx) => {
   const fail = (message: string) => ctx.addIssue({ code: 'custom', message });
   const a = r.analysis, m = r.model;
+  if((r.load.kind==='axial_step_face_force')!==(r.load.history==='constant_after_onset'))fail('Load kind/history mismatch.');
+  if(r.load.onsetS!==explicitLoadHistoryOnset(r.load.history))fail('Load onset/history mismatch.');
+  const times=[0,...a.outputTimesS],interval=Math.min(...times.slice(1).map((t,i)=>t-times[i]));
+  try{assertExplicitLoadResolution(r.load.history,a.durationS,interval);}catch(e){fail((e as Error).message);}
   if((m.kind==='single_solid_cad')!==Boolean(m.cad))fail('CAD geometry evidence required only for single-solid CAD models.');
   if(m.cad?.mappingMethod&&(!m.cad.fixedFace.topology||!m.cad.loadedFace.topology))fail('Exact selected FACE topology required.');
   if(m.cad&&m.cad.boundingBoxMm.max.some((v,i)=>v<=m.cad!.boundingBoxMm.min[i]
