@@ -99,6 +99,7 @@ export function admitExplicitLinearMesh(requestValue: unknown, mesh: ExplicitC3D
   }
   const faceMappings={domainId:request.model.domainId,bodyId:request.model.bodyId,
     fixed:{...quality.fixedFace,...selections?.fixed,referenceId:request.model.fixedFaceId,...(!selections?{planeXMm:0}:{})},
-    loaded:{...quality.loadedFace,...selections?.loaded,referenceId:request.model.loadedFaceId,...(!selections?{planeXMm:request.model.lengthMm}:{})},boundaryCounts};
+    loaded:{...quality.loadedFace,...selections?.loaded,referenceId:request.model.loadedFaceId,...(!selections?{planeXMm:request.model.lengthMm}:{})},
+    ...(selections?.monitoring?{monitoring:selections.monitoring}:{}),boundaryCounts};
   return {quality,faceMappings,faceMappingDigest:digest(faceMappings),validationDigest:digest({quality,faceMappings})};
 }

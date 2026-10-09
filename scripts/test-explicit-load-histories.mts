@@ -46,6 +46,18 @@ for(const e of elements)for(let i=0;i<4;i++){
 const mesh={runtime:'Gmsh 4.15.2',inputGeometryDigest:draft.model.geometryDigest,nodes,elements,
  surfaceTriangles:[...facets.values()].filter(f=>f.uses===1).map((f,i)=>({id:i+1,nodes:f.nodes}))};
 const base=sealExplicitDynamics(draft),step=prepareOpenRadiossDeck(base,mesh);
+for(const count of [2,25,63]){
+ const altered={...draft,analysis:{...draft.analysis,outputTimesS:[draft.analysis.durationS/count,draft.analysis.durationS]}};
+ const request=sealExplicitDynamics(altered),deck=prepareOpenRadiossDeck(request,mesh);
+ assert.notEqual(request.requestDigest,base.requestDigest);
+ assert.equal(deck.starter,step.starter);assert.deepEqual(deck.expected,step.expected);
+ assert.ok(deck.engine.includes('/TFILE/4\n'+(draft.analysis.durationS/count).toExponential(12).padStart(20)));
+ assert.equal(deck.dtNodaScale,step.dtNodaScale);
+ const tampered=structuredClone(request);tampered.analysis.outputTimesS[0]*=1.1;
+ assert.throws(()=>validateExplicitDynamics(tampered),/digest/);
+}
+assert.throws(()=>sealExplicitDynamics({...draft,analysis:{...draft.analysis,outputTimesS:[draft.analysis.durationS/64,draft.analysis.durationS]}}),/64-frame/);
+console.log('PASS sampling deck: source-bound TFILE cadence, unchanged Starter/loads/timestep, request tamper and excess frames rejected.');
 assert.ok(step.starter.includes('/FUNCT/1\nAxial step from t zero\n'+(0).toExponential(12).padStart(20)+(1).toExponential(12).padStart(20)+'\n'));
 for(const history of histories){
  const request=sealExplicitDynamics({...draft,load:{...draft.load,kind:'axial_history_face_force',history}});

@@ -34,6 +34,8 @@ function invalid(detail:string):never {throw new Error('PRIVATE_APPROVED_EXPORT_
 
 async function verifyBinding(r:PrivateApprovedExportInput,bytes:Uint8Array){
   const s=r.source,g=r.geometry,q=r.request,{requestDigest,...unsigned}=q;
+  if(JSON.stringify(q.model.cad?.monitoringFaces?.map(f=>f.referenceId))!==JSON.stringify(s.monitoringFaces?.map(f=>f.referenceId))
+    ||s.monitoringFaces?.some(f=>f.bodyId!==s.bodyId))invalid('monitoring FACE source binding');
   if(bytes.length!==g.byteLength||hashBytes(bytes)!==g.byteDigest
     ||await electrostaticStepGeometryDigest(bytes)!==s.canonicalSourceDigest
     ||digest(s)!==g.sourceBindingDigest||g.canonicalSourceDigest!==s.canonicalSourceDigest

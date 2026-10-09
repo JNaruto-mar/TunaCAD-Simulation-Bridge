@@ -78,5 +78,7 @@ export function mapExactExplicitCadFaces(request:ExplicitDynamicsRequest,mesh:Ex
         maximumBoundaryDeflectionBoundMm,curveQuality}};
   };
   const fixed=resolve(cad.fixedFace),loaded=resolve(cad.loadedFace);if(fixed.entityTag===loaded.entityTag)throw Error('Fixed/load selections must own distinct CAD FACEs');
-  return {fixed,loaded};
+  const monitoring=cad.monitoringFaces?.map(f=>({referenceId:f.referenceId,...resolve(f)}));
+  if(monitoring&&new Set(monitoring.map(f=>f.entityTag)).size!==monitoring.length)throw Error('Aliased monitoring CAD FACEs');
+  return {fixed,loaded,...(monitoring?{monitoring}:{})};
 }

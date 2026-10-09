@@ -1,5 +1,7 @@
 import * as z from 'zod/v4';
 import {explicitLoadHistorySchema,assertExplicitLoadResolution,explicitLoadHistoryOnset} from './explicitLoadHistory.mts';
+import {explicitHistorySampling} from './explicitHistorySampling.mts';
+import {EXPLICIT_MAXIMUM_MONITORING_FACES} from './explicitMonitoring.mts';
 
 const id = z.string().min(1).max(160).regex(/^[^\u0000-\u001f\u007f]+$/)
   .refine(value => value.trim().length > 0);
@@ -44,6 +46,7 @@ export const explicitDynamicsDraftSchema = z.object({
       boundingBoxMm:z.object({min:z.tuple([z.number().finite(),z.number().finite(),z.number().finite()]),
         max:z.tuple([z.number().finite(),z.number().finite(),z.number().finite()])}).strict(),
       fixedFace:cadFace,loadedFace:cadFace,mappingMethod:z.literal('exact-step-boundary-v1').optional(),
+      monitoringFaces:z.array(cadFace.extend({referenceId:id})).min(1).max(EXPLICIT_MAXIMUM_MONITORING_FACES).optional(),
     }).strict().optional(),
   }).strict(),
   material: z.object({
@@ -83,10 +86,13 @@ export const explicitDynamicsDraftSchema = z.object({
   const a = r.analysis, m = r.model;
   if((r.load.kind==='axial_step_face_force')!==(r.load.history==='constant_after_onset'))fail('Load kind/history mismatch.');
   if(r.load.onsetS!==explicitLoadHistoryOnset(r.load.history))fail('Load onset/history mismatch.');
-  const times=[0,...a.outputTimesS],interval=Math.min(...times.slice(1).map((t,i)=>t-times[i]));
-  try{assertExplicitLoadResolution(r.load.history,a.durationS,interval);}catch(e){fail((e as Error).message);}
+  try{const sampling=explicitHistorySampling(a.durationS,a.outputTimesS);
+    assertExplicitLoadResolution(r.load.history,a.durationS,sampling.intervalS);}catch(e){fail((e as Error).message);}
   if((m.kind==='single_solid_cad')!==Boolean(m.cad))fail('CAD geometry evidence required only for single-solid CAD models.');
   if(m.cad?.mappingMethod&&(!m.cad.fixedFace.topology||!m.cad.loadedFace.topology))fail('Exact selected FACE topology required.');
+  if(m.cad?.monitoringFaces&&(m.cad.mappingMethod!=='exact-step-boundary-v1'
+    ||m.cad.monitoringFaces.some(f=>!f.topology)||new Set(m.cad.monitoringFaces.map(f=>f.referenceId)).size!==m.cad.monitoringFaces.length))
+    fail('Distinct exact monitoring FACE topology required.');
   if(m.cad&&m.cad.boundingBoxMm.max.some((v,i)=>v<=m.cad!.boundingBoxMm.min[i]
     ||Math.abs(v-m.cad!.boundingBoxMm.min[i]-[m.lengthMm,m.widthMm,m.heightMm][i])>1e-7))fail('CAD bounds/dimensions disagree.');
   if (r.material.domainId !== m.domainId) fail('Material must belong to the sole domain.');

@@ -27,6 +27,8 @@ export interface PrivateProtectedMeshReader {
 export async function verifyPrivateExplicitMeshRecord(value:unknown,studyId:string,
   geometry:PrivateExplicitExport,source:PrivateExplicitSource) {
   const r=privateExplicitMeshRecordSchema.parse(value),s=await hash(source),m=r.mesh;
+  if(JSON.stringify(source.monitoringFaces?.map(f=>f.referenceId))!==JSON.stringify(m.monitoringFaces?.map(f=>f.referenceId)))
+    throw Error('PRIVATE_EXPLICIT_MESH_MONITORING_MISMATCH');
   if(r.studyId!==studyId||await hash(r.source)!==s||await hash(r.geometry)!==await hash(geometry)
     ||m.sourceBindingDigest!==s||m.geometryDigest!==source.canonicalSourceDigest
     ||m.exportId!==geometry.exportId||m.exportByteDigest!==geometry.byteDigest)
@@ -36,7 +38,8 @@ export async function verifyPrivateExplicitMeshRecord(value:unknown,studyId:stri
     if(await hash(unsigned)!==requestDigest||r.request.studyId!==studyId||r.request.model.projectRevision!==source.revision
       ||r.request.model.domainId!==source.domainId||r.request.model.bodyId!==source.bodyId
       ||r.request.model.geometryDigest!==source.canonicalSourceDigest||r.request.material.materialId!==source.materialId
-      ||r.request.model.fixedFaceId!==source.fixedFace.referenceId||r.request.model.loadedFaceId!==source.loadedFace.referenceId)
+      ||r.request.model.fixedFaceId!==source.fixedFace.referenceId||r.request.model.loadedFaceId!==source.loadedFace.referenceId
+      ||JSON.stringify(r.request.model.cad?.monitoringFaces?.map(f=>f.referenceId))!==JSON.stringify(source.monitoringFaces?.map(f=>f.referenceId)))
       throw new Error('PRIVATE_EXPLICIT_MESH_REQUEST_MISMATCH');
   }
   return r;

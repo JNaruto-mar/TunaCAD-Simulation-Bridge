@@ -5,8 +5,9 @@ import { beginBlock, bcsBlock, solidTetra4Block, fixedField, RADIOSSS_FIELD_RULE
 import type { ExplicitC3D4Mesh } from '../calculix/ExplicitDynamicsMeshAdmission.mts';
 import { admitExplicitLinearMesh } from '../gmsh/ExplicitLinearMesh.mts';
 import {serializeExplicitFaceLoads} from './OpenRadiossFaceLoads.mts';
-import {estimateExplicitHistoryBytes,EXPLICIT_NORMALIZED_RESULT_MAXIMUM_BYTES} from './OpenRadiossHistoryResource.mts';
+import {admitExplicitHistoryResources} from './OpenRadiossHistoryResource.mts';
 import {explicitLoadHistoryPoints,assertExplicitLoadResolution,explicitLoadHistoryOnset} from '../../simulation-bridge/explicitLoadHistory.mts';
+import {explicitHistorySampling} from '../../simulation-bridge/explicitHistorySampling.mts';
 
 export const RUN_NAME = 'ExplicitBarProbe'; // Fixed safe file root; per-run directories isolate jobs.
 const fail = (why:string):never => { throw new Error('OpenRadioss admission: '+why); };
@@ -84,7 +85,8 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   const fixed=face(0,admission.faceMappings.fixed), loaded=face(request.model.lengthMm,admission.faceMappings.loaded), force=request.load.forceN[0];
   // A CAD edge can belong to both distinct FACEs. Such nodes receive their
   // load share AND their restraint; raw histories are emitted once per node.
-  const historyNodeIds=[...new Set([...fixed.nodeIds,...loaded.nodeIds])].sort((a,b)=>a-b);
+  const monitoringFaces=admission.faceMappings.monitoring?.map(f=>({referenceId:f.referenceId,nodeIds:[...f.nodeIds]}));
+  const historyNodeIds=[...new Set([...fixed.nodeIds,...loaded.nodeIds,...(monitoringFaces?.flatMap(f=>f.nodeIds)??[])])].sort((a,b)=>a-b);
   let preceding=0;
   const exactLoads=request.model.cad?.mappingMethod==='exact-step-boundary-v1'?serializeExplicitFaceLoads(loaded.nodeIds,loaded.weights,loaded.areaMm2,force):null;
   const loads=exactLoads?exactLoads.map(({id,forceN,forceText})=>({id,forceN,forceText})):loaded.nodeIds.map((id,i)=>{const forceN=Number((i===loaded.nodeIds.length-1?force-preceding:force*loaded.weights.get(id)!/loaded.areaMm2).toExponential(12));
@@ -92,9 +94,8 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   if(!exactLoads&&Math.abs(preceding-force)>=1e-12) fail('serialized load resultant mismatch');
   // Resolve a bounded uniform cadence from requested spacing. Actual requested
   // sample identities retain their true timestamps; never fabricate exact frames.
-  const times=[0,...request.analysis.outputTimesS];
-  const historyIntervalS=Math.min(...times.slice(1).map((t,i)=>t-times[i]));
-  if(Math.ceil(request.analysis.durationS/historyIntervalS)+1>64) fail('history resource bound');
+  const sampling=explicitHistorySampling(request.analysis.durationS,request.analysis.outputTimesS);
+  const historyIntervalS=sampling.intervalS;
   assertExplicitLoadResolution(request.load.history,request.analysis.durationS,historyIntervalS);
   const loadPoints=explicitLoadHistoryPoints(request.load.history,request.analysis.durationS);
   // Native cycles can cross the requested end. Constant terminal extension
@@ -107,9 +108,8 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   if(loadPoints.some(([t],i)=>i>0&&Number(real(t))<=Number(real(loadPoints[i-1][0]))))fail('unrepresentable load-history timing');
   // Existing 8 MiB binary and 2 MiB normalized/durable limits, reserved before
   // dispatch. No partial FACE sampling or silently dropped history is allowed.
-  const frames=Math.ceil(request.analysis.durationS/historyIntervalS)+1;
-  if(historyNodeIds.length>128 || estimateExplicitHistoryBytes(frames,historyNodeIds)>EXPLICIT_NORMALIZED_RESULT_MAXIMUM_BYTES)
-    fail('complete FACE histories exceed normalized result resource bound');
+  const frames=sampling.maximumFrames;
+  admitExplicitHistoryResources(frames,historyNodeIds,Boolean(monitoringFaces));
   const densityMgPerMm3=request.material.densityKgM3/1e12;
   const starter=['#RADIOSS STARTER',RADIOSSS_FIELD_RULER,...beginBlock(RUN_NAME),'/NODE'];
   for(const [id,xyz] of [...nodes].sort((a,b)=>a[0]-b[0])) starter.push(fixedField(id,10)+xyz.map(real).join(''));
@@ -135,7 +135,7 @@ export function prepareOpenRadiossDeck(value:unknown, meshValue:unknown) {
   return {request,meshDigest:digest(mesh),faceMappingDigest:admission.faceMappingDigest,starter:starterText,engine,historyIntervalS,dtNodaScale:0.6,
     expected:{nodeCount:nodes.size,elementCount:elementIds.size,densityMgPerMm3,massMg:volume*densityMgPerMm3,
       E:request.material.youngsModulusMPa,nu:request.material.poissonRatio,loads,forceN:force,loadOnsetS,loadSensorId,
-      fixedNodeIds:fixed.nodeIds,loadedNodeIds:loaded.nodeIds,historyNodeIds,minimumAltitudeMm}};
+      fixedNodeIds:fixed.nodeIds,loadedNodeIds:loaded.nodeIds,historyNodeIds,...(monitoringFaces?{monitoringFaces}:{}),minimumAltitudeMm}};
 }
 /** Radioss node groups contain at most ten fixed-width IDs on each row. */
 export function fixedNodeGroupRows(ids:readonly number[]) {

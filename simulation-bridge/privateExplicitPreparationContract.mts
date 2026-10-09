@@ -1,6 +1,7 @@
 import * as z from 'zod/v4';
 import { explicitDynamicsSchema } from './explicitDynamicsContract.mts';
 import { electrostaticBrowserDigest as hash } from './electrostaticLiveSource.mts';
+import {EXPLICIT_MAXIMUM_MONITORING_FACES,explicitMonitoringMappingsSchema} from './explicitMonitoring.mts';
 
 const id=z.string().min(1).max(160).regex(/^[^\u0000-\u001f\u007f]+$/);
 const sha=z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -10,6 +11,9 @@ export const privateExplicitSourceSchema=z.object({
   documentId:id,modelId:id,sessionBinding:sha,revision:id,sourceEpoch:z.number().int().nonnegative(),
   componentId:id,bodyId:id,domainId:id,topologyDigest:sha,
   fixedFace:face,loadedFace:face,materialId:id,materialDigest:sha,
+  monitoringFaces:z.array(face).min(1).max(EXPLICIT_MAXIMUM_MONITORING_FACES)
+    .refine(f=>new Set(f.map(v=>v.referenceId)).size===f.length&&new Set(f.map(v=>v.fingerprint)).size===f.length,
+      'Monitoring FACE identities must be distinct.').optional(),
   canonicalSourceDigest:sha,studyParameterDigest:sha,unitSystemDigest:sha,
 }).strict();
 export const privateExplicitExportSchema=z.object({exportId:id,sourceBindingDigest:sha,
@@ -17,7 +21,7 @@ export const privateExplicitExportSchema=z.object({exportId:id,sourceBindingDige
 export const privateExplicitMeshSchema=z.object({meshId:id,meshDigest:sha,exportId:id,exportByteDigest:sha,
   sourceBindingDigest:sha,geometryDigest:sha,faceMappingDigest:sha,validationDigest:sha,
   meshingRuntime:z.literal('Gmsh 4.15.2'),nodeCount:z.number().int().min(4).max(100000),elementCount:z.number().int().min(1).max(50000),
-  elementFormulation:z.literal('C3D4')}).strict();
+  elementFormulation:z.literal('C3D4'),monitoringFaces:explicitMonitoringMappingsSchema.optional()}).strict();
 export const privateExplicitProviderSchema=z.object({providerId:z.literal('tunacad-openradioss-explicit-private'),
   providerVersion:z.literal('0.1.0-poc'),runtimeVersion:z.literal('2026'),runtimeManifestDigest:sha,runtimeDigest:sha}).strict();
 export const privateExplicitSolveSchema=z.object({
@@ -53,6 +57,10 @@ export interface PrivateSimulationApprovals {
 }
 export async function validatePrivateExplicitSolve(value:unknown) {
   const r=privateExplicitSolveSchema.parse(value),s=r.source,m=r.mesh,g=r.geometry,q=r.request;
+  const monitors=q.model.cad?.monitoringFaces?.map(f=>f.referenceId);
+  if(JSON.stringify(monitors)!==JSON.stringify(s.monitoringFaces?.map(f=>f.referenceId))
+    ||JSON.stringify(monitors)!==JSON.stringify(m.monitoringFaces?.map(f=>f.referenceId))
+    ||s.monitoringFaces?.some(f=>f.bodyId!==s.bodyId))throw Error('PRIVATE_MONITORING_FACE_BINDING_MISMATCH');
   const {requestDigest,...unsigned}=q;
   if(r.solveRevalidation&&(r.solveRevalidation.expiresAt-r.solveRevalidation.createdAt!==120000
     ||!r.solveRevalidation.solveBindingId.startsWith('solvebinding_private-'))

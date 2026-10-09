@@ -6,6 +6,8 @@ import { admitExplicitLinearMesh } from '../providers/gmsh/ExplicitLinearMesh.mt
 import {parseExplicitStepTopology} from '../providers/gmsh/ExplicitStepTopology.mts';
 import { parseBoundedOpenRadiossTFile4 } from '../simulation-bridge/openRadiossBinaryTFileParser.mts';
 import { readBoundedStarterConcentratedLoads } from '../simulation-bridge/openRadiossStarterLoads.mts';
+import {admitExplicitHistoryResources} from '../providers/openradioss/OpenRadiossHistoryResource.mts';
+import {recoverOpenRadiossResult} from '../providers/openradioss/OpenRadiossResult.mts';
 import type { ExplicitC3D4Mesh } from '../providers/calculix/ExplicitDynamicsMeshAdmission.mts';
 // Connected concave L-prism; synthetic geometry/mesh only, no CAD or solver
 // execution. Non-contiguous IDs and unequal FACE populations are intentional.
@@ -114,6 +116,44 @@ const reordered=structuredClone(exactMesh);reordered.cadEvidence!.topology.surfa
 assert.equal(admitExplicitLinearMesh(exactRequest,reordered).faceMappingDigest,exact.faceMappingDigest);
 assert.deepEqual(tetraDeck.expected.fixedNodeIds,[1,2,3]);assert.deepEqual(tetraDeck.expected.loadedNodeIds,[1,3,4]);
 assert.deepEqual(tetraDeck.expected.historyNodeIds,[1,2,3,4]);assert.equal(tetraDeck.expected.loads.length,3);
+// A third CAD FACE is a monitoring choice, not a load or restraint. Adjacent
+// surfaces share nodes; native TH cards emit the exact union once.
+const monitoredDraft=structuredClone(exactDraft),third=surfaces[2];
+monitoredDraft.model.cad!.monitoringFaces=[{referenceId:'monitor-side',areaMm2:third.areaMm2,centroidPartLocalMm:third.centroidPartLocalMm,
+ topology:{boundingBoxMm:third.boundingBoxMm,boundaryCurves:third.boundaryCurveTags.map(t=>({centroidPartLocalMm:curves[t-1].centroidPartLocalMm,lengthMm:curves[t-1].lengthMm})),
+ surfaceKind:'plane',plane:{origin:[0,0,0],normal:[0,1,0]}}}];
+const exactDeck=prepareOpenRadiossDeck(exactRequest,exactMesh);
+const monitoredRequest=sealExplicitDynamics(monitoredDraft),monitoredDeck=prepareOpenRadiossDeck(monitoredRequest,exactMesh);
+assert.deepEqual(monitoredDeck.expected.monitoringFaces,[{referenceId:'monitor-side',nodeIds:[1,2,4]}]);
+assert.deepEqual(monitoredDeck.expected.historyNodeIds,[1,2,3,4]);
+assert.deepEqual(monitoredDeck.expected.loads,exactDeck.expected.loads);assert.deepEqual(monitoredDeck.expected.fixedNodeIds,exactDeck.expected.fixedNodeIds);
+assert.notEqual(monitoredDeck.faceMappingDigest,exact.faceMappingDigest);
+const duplicateMonitor=structuredClone(monitoredDraft);
+duplicateMonitor.model.cad!.monitoringFaces!.push({...duplicateMonitor.model.cad!.monitoringFaces![0],referenceId:'alias'});
+assert.throws(()=>prepareOpenRadiossDeck(sealExplicitDynamics(duplicateMonitor),exactMesh),/Aliased monitoring/);
+const missingMonitor=structuredClone(monitoredDraft);missingMonitor.model.cad!.monitoringFaces![0].areaMm2*=2;
+assert.throws(()=>prepareOpenRadiossDeck(sealExplicitDynamics(missingMonitor),exactMesh));
+const unsupportedMonitor=structuredClone(monitoredDraft);delete unsupportedMonitor.model.cad!.monitoringFaces![0].topology;
+assert.throws(()=>sealExplicitDynamics(unsupportedMonitor));
+const monitorIds=Array.from({length:128},(_,i)=>10001+i*13);
+admitExplicitHistoryResources(2,monitorIds,true);
+assert.throws(()=>admitExplicitHistoryResources(2,[...monitorIds,999999999],true),/128 nodes/);
+assert.throws(()=>admitExplicitHistoryResources(64,monitorIds,true),/normalized result resource bound/);
+// Refine the edge between nodes 2/4: the new node belongs to the third FACE,
+// neither the loaded nor fixed FACE. B-Rep identity itself is unchanged.
+const monitorMesh=structuredClone(exactMesh),monitorNativeDraft=structuredClone(monitoredDraft);
+monitorMesh.nodes.push({id:503,xyzMm:[5,0,5]});
+monitorMesh.elements=[{id:71,type:'C3D4',nodes:[1,2,3,503]},{id:83,type:'C3D4',nodes:[1,503,3,4]}];
+monitorMesh.surfaceTriangles=[...monitorMesh.surfaceTriangles.slice(0,2),
+ {id:102,entityTag:3,nodes:[1,2,503]},{id:112,entityTag:3,nodes:[1,503,4]},
+ {id:103,entityTag:4,nodes:[2,3,503]},{id:113,entityTag:4,nodes:[503,3,4]}];
+monitorMesh.curveSegments=monitorMesh.curveSegments!.filter(s=>s.entityTag!==6);
+monitorMesh.curveSegments.push({id:205,nodes:[2,503],entityTag:6},{id:215,nodes:[503,4],entityTag:6});
+monitorNativeDraft.analysis.durationS=5e-6;monitorNativeDraft.analysis.outputTimesS=[2.5e-6,5e-6];
+const monitorNativeDeck=prepareOpenRadiossDeck(sealExplicitDynamics(monitorNativeDraft),monitorMesh);
+assert.deepEqual(monitorNativeDeck.expected.historyNodeIds,[1,2,3,4,503]);
+assert.deepEqual(monitorNativeDeck.expected.monitoringFaces,[{referenceId:'monitor-side',nodeIds:[1,2,4,503]}]);
+assert.deepEqual(monitorNativeDeck.expected.loads,exactDeck.expected.loads);
 const listing='NCONLD: NUMBER OF CONCENTRATED LOADS 15\nCONCENTRATED LOADS\n------------------\nNODE SKEW DIR LOAD_CURVE SENSOR SCALE_X SCALE_Y\n'+deck.expected.loads.map(n=>`${n.id} 0 X 1 0 1 ${n.forceN}`).join('\n')+'\nSPMD IS CHECKING FOR ELEMENT DELETION IN :\n';
 assert.equal(readBoundedStarterConcentratedLoads(listing,deck.expected.loads).resultantN,100);
 assert.throws(()=>readBoundedStarterConcentratedLoads(listing.replace(/\n\d+ 0 X 1 0 1 [^\n]+/,'\n'),deck.expected.loads));
@@ -130,13 +170,15 @@ const reals=(values:number[])=>{const b=Buffer.alloc(values.length*4);values.for
 const title=(s:string,n:number)=>Buffer.from(s.padEnd(n));
 const concat=(rows:Buffer[])=>Buffer.concat(rows.map(b=>Uint8Array.from(b)));
 const record=(b:Buffer)=>concat([ints([b.length]),b,ints([b.length])]);
-function binary(version:number,bounded=deck){const w=version===3040?40:100,t=(s:string)=>title(s,w),ids=bounded.expected.historyNodeIds;
+function binary(version:number,bounded=deck,validRecovery=false){const w=version===3040?40:100,t=(s:string)=>title(s,w),ids=bounded.expected.historyNodeIds;
   const rows=[concat([ints([version]),title('Explicit',80)]),title('2026',80),...(version===3040?[]:[ints([2]),ints([100]),reals([1,1,1])]),
     ints([1,2,1,1,1,22]),ints(Array.from({length:22},(_,i)=>i+1)),concat([ints([1]),t('One elastic bar'),ints([0,1,1,0])]),
     concat([ints([1]),t('Elastic')]),concat([ints([0]),t('none')]),concat([ints([1]),t('Tetra')]),concat([ints([0,0,0,1,0]),t('global')]),ints([1]),
     concat([ints([1,0,0,ids.length,4]),t('Bounded axial bar nodes')]),...ids.map(id=>concat([ints([id]),t('node_'+id)])),ints([1,4,7,620])];
-  for(const time of [0,3e-6]){const g=Array(22).fill(0);g[5]=bounded.expected.massMg;
-    rows.push(reals([time]),reals(g),reals(ids.flatMap(()=>[time,1,2,100*time])));}
+  for(const time of validRecovery?[0,2.7e-6]:[0,3e-6]){const g=Array(22).fill(0);g[5]=bounded.expected.massMg;
+    if(validRecovery)g[6]=3e-7;
+    rows.push(reals([time]),reals(g),reals(ids.flatMap(id=>validRecovery?
+      bounded.expected.fixedNodeIds.includes(id)?[0,0,0,100*time]:[time,time?1:0,time?2:0,0]:[time,1,2,100*time])));}
   return concat(rows.map(record));
 }
 for(const version of [3040,4021]){
@@ -148,5 +190,16 @@ for(const version of [3040,4021]){
   assert.throws(()=>parseBoundedOpenRadiossTFile4(bytes,3e-6,undefined,{nodeCount:mesh.nodes.length,elementCount:elements.length},[...deck.expected.historyNodeIds].reverse()),/node/);
   const four=parseBoundedOpenRadiossTFile4(binary(version,tetraDeck),3e-6,undefined,{nodeCount:4,elementCount:1},tetraDeck.expected.historyNodeIds);
   assert.equal(four.frames[0].nodes.size,4);
+  const monitoredBinary=parseBoundedOpenRadiossTFile4(binary(version,monitoredDeck),3e-6,undefined,{nodeCount:4,elementCount:1},monitoredDeck.expected.historyNodeIds);
+  assert.deepEqual([...monitoredBinary.frames[0].nodes.keys()],monitoredDeck.expected.historyNodeIds);
+  const scientific=(v:number)=>v.toExponential(4).replace(/e([+-])(\d)$/,(_,sign,n)=>'E'+sign+'0'+n).toUpperCase();
+  const listing='TOTAL NUMBER OF CYCLES : 17\nNORMAL TERMINATION';
+  const trace=Array.from({length:17},(_,i)=>`NC= ${i} T= ${scientific(i*3e-7)} DT= 3.0000E-07 ERR= 0% DM/M= 0`).join('\n')+'\n'+listing;
+  const recovered=recoverOpenRadiossResult(monitorNativeDeck,binary(version,monitorNativeDeck,true),trace,listing,
+    {providerRunId:'synthetic-monitor',providerId:'fixture',providerVersion:'0.1',runtimeDigest:digest('runtime'),artifacts:{},provenanceDigest:digest('synthetic')});
+  assert.equal(recovered.sampling.scope,'selected_FACE_nodes');assert.equal(recovered.frames[1].nodes.find(n=>n.nodeId===503)!.face,'monitor');
+  assert.deepEqual(recovered.sampling.monitoringFaces,monitorNativeDeck.expected.monitoringFaces);
+  assert.ok(recovered.frames[1].nodes.find(n=>n.nodeId===503)!.displacementMm>0);
+  assert.equal(recovered.frames[1].supportImpulseNs,recovered.frames[1].nodes.filter(n=>monitorNativeDeck.expected.fixedNodeIds.includes(n.nodeId)).reduce((s,n)=>s+n.reactionImpulseNs,0));
 }
 console.log('PASS exact STEP topology identity, >0.5% bounded trimming approximation, malformed/missing/ambiguous topology and insufficient-resolution rejection; legacy concave, rotated/translated and adjacent-FACE compatibility, 576 tetrahedra/42 nonhistorical IDs, strict 3040/4021 recovery. Solver executions: 0.');

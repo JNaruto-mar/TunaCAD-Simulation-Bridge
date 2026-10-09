@@ -34,5 +34,5 @@ export function mapExplicitCadFaces(request:ExplicitDynamicsRequest,mesh:Explici
   };
   const fixed=resolve(cad.fixedFace),loaded=resolve(cad.loadedFace);
   if(fixed.entityTag===loaded.entityTag)throw Error('Fixed/load selections must own distinct CAD FACEs');
-  return {fixed,loaded};
+  return {fixed,loaded,monitoring:undefined};
 }

@@ -10,13 +10,14 @@ export interface ExplicitDynamicsResult {
   provider: { id: string; version: string; runtimeVersion: string; runtimeDigest: string };
   meshDigest: string; executionStatus: 'succeeded'; durationS: number; actualCycles: number;
   timestepRangeS: [number, number];
-  sampling: { axis: 'X'; location: 'nodal'; scope: 'fixed_and_loaded_FACE_nodes_only'; monitoredNodeIds: number[];
+  sampling: { axis: 'X'; location: 'nodal'; scope: 'fixed_and_loaded_FACE_nodes_only'|'selected_FACE_nodes'; monitoredNodeIds: number[];
     /** Absent only on preserved historical results; new runs bind admitted selections. */
-    faceMappingDigest?:string;fixedNodeIds?:number[];loadedNodeIds?:number[] };
+    faceMappingDigest?:string;fixedNodeIds?:number[];loadedNodeIds?:number[];
+    monitoringFaces?:Array<{referenceId:string;nodeIds:number[]}> };
   units: { time: 's'; displacement: 'mm'; velocity: 'mm/s'; acceleration: 'mm/s^2';
     impulse: 'N*s'; force: 'N'; energy: 'N*mm'; mass: 'kg' };
   frames: Array<{ timeS: number; timestepS: number;
-    nodes: Array<{ nodeId: number; face: 'fixed' | 'loaded'; displacementMm: number;
+    nodes: Array<{ nodeId: number; face: 'fixed' | 'loaded' | 'monitor'; displacementMm: number;
       velocityMmPerS: number; accelerationMmPerS2: number;
       reactionImpulseNs: number; reactionForceN: number }>;
     supportImpulseNs: number; supportReactionN: number;

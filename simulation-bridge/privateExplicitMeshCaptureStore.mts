@@ -8,6 +8,8 @@ import { openPrivateExplicitExportStore } from './privateExplicitExportStore.mts
 import { admitExplicitLinearMesh,parseExplicitMsh22,explicitMeshConfigurationDigest }
   from '../providers/gmsh/ExplicitLinearMesh.mts';
 import {parseExplicitStepTopology} from '../providers/gmsh/ExplicitStepTopology.mts';
+import {explicitHistorySampling} from './explicitHistorySampling.mts';
+import {admitExplicitHistoryResources} from '../providers/openradioss/OpenRadiossHistoryResource.mts';
 type TestConfiguration={mode:'controlled_test_fixture';purpose:'private_operator_approval_fixture'};
 export const rawDigest=(bytes:Uint8Array|string)=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
 export async function verifyPrivateMeshStorageMode(storage:ElectrostaticHostStorage,test?:TestConfiguration){
@@ -46,6 +48,12 @@ async function makeArtifact(storage:ElectrostaticHostStorage,receipt:any,text:st
     mesh.cadEvidence={topology:parseExplicitStepTopology(new TextDecoder('utf-8',{fatal:true}).decode(bytes)),metadataDigest:execution.cadTopologyDigest,stepByteDigest:execution.stepDigest};
   }
   const admission=admitExplicitLinearMesh(receipt.request,mesh);
+  // Reject an over-budget complete selection before publishing the protected
+  // mesh or presenting run approval. The deck independently rechecks it.
+  const histories=[...new Set([...admission.faceMappings.fixed.nodeIds,...admission.faceMappings.loaded.nodeIds,
+    ...(admission.faceMappings.monitoring?.flatMap(f=>f.nodeIds)??[])])].sort((a,b)=>a-b);
+  admitExplicitHistoryResources(explicitHistorySampling(receipt.request.analysis.durationS,receipt.request.analysis.outputTimesS).maximumFrames,
+    histories,Boolean(admission.faceMappings.monitoring));
   return {schema:'tunacad-private-explicit-c3d4-artifact/1',projectRevision:receipt.source.revision,
     geometryDigest:receipt.source.canonicalSourceDigest,domainId:receipt.source.domainId,requestDigest:receipt.request.requestDigest,
     mesh,admission};
@@ -64,7 +72,8 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
   const expected=await makeArtifact(storage,exported.receipt,new TextDecoder('utf-8',{fatal:true}).decode(raw),execution);
   if(digest(expected)!==record.mesh.meshDigest||digest(artifact)!==digest(expected)
     ||expected.mesh.nodes.length!==record.mesh.nodeCount||expected.mesh.elements.length!==record.mesh.elementCount
-    ||expected.admission.faceMappingDigest!==record.mesh.faceMappingDigest||expected.admission.validationDigest!==record.mesh.validationDigest)
+    ||expected.admission.faceMappingDigest!==record.mesh.faceMappingDigest||expected.admission.validationDigest!==record.mesh.validationDigest
+    ||JSON.stringify(expected.admission.faceMappings.monitoring?.map(f=>({referenceId:f.referenceId,nodeIds:f.nodeIds})))!==JSON.stringify(record.mesh.monitoringFaces))
     throw new Error('PRIVATE_MESH_REVALIDATION_MISMATCH');
   if(!/^[a-f0-9-]{36}$/.test(execution.runId))throw new Error('PRIVATE_MESH_EXECUTION_ID_INVALID');
   const before=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-before.json'),32768);
@@ -98,7 +107,8 @@ export async function capturePrivateExplicitMesh(storage:ElectrostaticHostStorag
     mesh:{meshId:'gmsh-explicit-'+meshDigest.slice(7,31),meshDigest,exportId,exportByteDigest:r.geometry.byteDigest,
       sourceBindingDigest:digest(r.source),geometryDigest:r.source.canonicalSourceDigest,
       faceMappingDigest:artifact.admission.faceMappingDigest,validationDigest:artifact.admission.validationDigest,
-      meshingRuntime:'Gmsh 4.15.2',nodeCount:artifact.mesh.nodes.length,elementCount:artifact.mesh.elements.length,elementFormulation:'C3D4'},
+      meshingRuntime:'Gmsh 4.15.2',nodeCount:artifact.mesh.nodes.length,elementCount:artifact.mesh.elements.length,elementFormulation:'C3D4',
+      ...(artifact.admission.faceMappings.monitoring?{monitoringFaces:artifact.admission.faceMappings.monitoring.map(f=>({referenceId:f.referenceId,nodeIds:f.nodeIds}))}:{})},
     capture:{schema:'tunacad-private-explicit-gmsh-capture/1',createdAt:new Date().toISOString(),
       approvalSource:test?'controlled_test_fixture':'human',exportReceiptDigest:exported.status.receiptDigest,
       executionReceiptDigest:eDigest,rawMeshDigest:rawDigest(text),rawMeshByteLength:Buffer.byteLength(text),
