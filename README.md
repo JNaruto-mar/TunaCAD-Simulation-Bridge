@@ -46,6 +46,22 @@ and trimming ownership establish FACE identity independently of triangulated
 area approximation. Explicit mesh, history, artifact and execution resource
 limits still apply; incomplete or ambiguous mappings fail closed.
 
+The prepared Explicit Dynamics request optionally includes `mesh.sizeMm`, a
+finite global Gmsh target from 0.1 to 1,000 mm. Omission retains the original
+10 mm configuration and durable digests. The selected size is bound to the
+approved request, generated mesher configuration and protected capture/replay;
+changing it requires a new study and separate approvals.
+
+Source-bounds and selected-FACE history resource planning rejects unsupported
+requests before scratch allocation or native dispatch. These estimates are not
+actual-count, uniform-element-size or accuracy guarantees. Exact mesh quality,
+mapping, complete history node/byte admission, native process quotas and Starter
+stability checks remain authoritative. There is no automatic coarsening, retry,
+truncation or budget increase. Pure sizing/configuration/replay checks (no native
+tools): `node --experimental-strip-types scripts/test-explicit-mesh-sizing.mts`.
+This authoring increment preserves the existing single-solid linear-elastic
+scope, Experimental/Preview status and `engineeringUsePermitted: false`.
+
 Private browser integration and fresh-service durable recovery completed on a
 through-hole plate (232 nodes / 628 tetrahedra) and a filleted multi-hole
 T-bracket (287 nodes / 767 tetrahedra, 97 monitored FACE nodes). The bracket

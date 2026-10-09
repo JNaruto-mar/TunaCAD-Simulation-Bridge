@@ -9,7 +9,8 @@ import { ElectrostaticHostStorage,writeElectrostaticHostOnce } from '../../simul
 import { openPrivateExplicitExportStore } from '../../simulation-bridge/privateExplicitExportStore.mts';
 import { capturePrivateExplicitMesh,rawDigest,writeProtectedMeshBytesOnce } from '../../simulation-bridge/privateExplicitMeshCaptureStore.mts';
 import { digest } from '../../simulation-bridge/stableDigest.mts';
-import { EXPLICIT_LINEAR_MESH_CONFIGURATION,explicitMeshGeo,explicitMeshConfigurationDigest } from './ExplicitLinearMesh.mts';
+import { EXPLICIT_LINEAR_MESH_CONFIGURATION,explicitMeshConfiguration,explicitMeshGeo,explicitMeshConfigurationDigest } from './ExplicitLinearMesh.mts';
+import {preflightExplicitMesh} from '../../simulation-bridge/explicitMeshSizing.mts';
 
 /** Explicit trusted launch authorization, not geometry approval or browser input.
  * A new object is NOT permission to rerun a failed operation: caller approvals
@@ -32,6 +33,9 @@ export function createPrivateExplicitGmshCapture(storage:ElectrostaticHostStorag
       ||digest(exported.receipt.geometry)!==digest(geometry)||rawDigest(exported.bytes)!==geometry.byteDigest)
       throw new Error('PRIVATE_GMSH_APPROVED_EXPORT_CHANGED');
     await verifyCurrent();await storage.assertReady();
+    // This is freshly derived from the immutable approved request, never a UI
+    // estimate. Reject before allocating scratch, consuming the run or spawning.
+    const meshResourcePreflight=preflightExplicitMesh(exported.receipt.request);
     const directory=await mkdtemp(join(tmpdir(),'tunacad-explicit-gmsh-')),runId=randomUUID();
     const rawMeshPath=join(directory,'bar.msh'),args=['bar.geo','-3','-format','msh2','-o','bar.msh','-nt','1','-v','3'];
     const configurationDigest=explicitMeshConfigurationDigest(exported.receipt.request),geo=explicitMeshGeo(exported.receipt.request);
@@ -46,7 +50,8 @@ export function createPrivateExplicitGmshCapture(storage:ElectrostaticHostStorag
         stepDigest:geometry.byteDigest,stepBytes:geometry.byteLength,exportReceiptDigest:exported.status.receiptDigest,
         settingsIdentity:settings.settings!.identity,executablePath:settings.gmsh!.path,
         executableDigest:'sha256:'+settings.gmsh!.sha256,executableBytes:settings.gmsh!.size,
-        args,cwd:directory,rawMeshPath,configuration:EXPLICIT_LINEAR_MESH_CONFIGURATION,configurationDigest,
+        args,cwd:directory,rawMeshPath,configuration:explicitMeshConfiguration(exported.receipt.request),configurationDigest,
+        meshResourcePreflight,
         createdAt:new Date().toISOString(),solverDispatchEnabled:false};
       await writeElectrostaticHostOnce(join(storage.paths.results,'gmsh-'+runId+'-before.json'),before,32768);
       // Re-read source and settings immediately before the single authorized process.

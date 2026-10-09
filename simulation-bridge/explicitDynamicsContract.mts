@@ -2,6 +2,7 @@ import * as z from 'zod/v4';
 import {explicitLoadHistorySchema,assertExplicitLoadResolution,explicitLoadHistoryOnset} from './explicitLoadHistory.mts';
 import {explicitHistorySampling} from './explicitHistorySampling.mts';
 import {EXPLICIT_MAXIMUM_MONITORING_FACES} from './explicitMonitoring.mts';
+import {explicitMeshSizeSchema} from './explicitMeshSizing.mts';
 
 const id = z.string().min(1).max(160).regex(/^[^\u0000-\u001f\u007f]+$/)
   .refine(value => value.trim().length > 0);
@@ -67,6 +68,8 @@ export const explicitDynamicsDraftSchema = z.object({
     history: explicitLoadHistorySchema }).strict(),
   mesh: z.object({
     elementFormulation: z.literal('C3D4'),
+    // Optional to preserve existing durable request/configuration digests.
+    sizeMm: explicitMeshSizeSchema.optional(),
     maximumNodes: z.number().int().min(4).max(100_000),
     maximumElements: z.number().int().min(1).max(50_000),
   }).strict(),

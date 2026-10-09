@@ -5,7 +5,7 @@ import { digest } from './stableDigest.mts';
 import { ElectrostaticHostStorage,readElectrostaticHostJson,writeElectrostaticHostOnce } from './electrostaticHostStorage.mts';
 import { privateCapturedMeshRecordSchema,type PrivateExplicitMeshRecord } from './privateExplicitMeshRecord.mts';
 import { openPrivateExplicitExportStore } from './privateExplicitExportStore.mts';
-import { admitExplicitLinearMesh,parseExplicitMsh22,explicitMeshConfigurationDigest }
+import { admitExplicitLinearMesh,parseExplicitMsh22,explicitMeshConfigurationDigest,verifyExplicitMeshPreflightBinding }
   from '../providers/gmsh/ExplicitLinearMesh.mts';
 import {parseExplicitStepTopology} from '../providers/gmsh/ExplicitStepTopology.mts';
 import {explicitHistorySampling} from './explicitHistorySampling.mts';
@@ -78,6 +78,9 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
   if(!/^[a-f0-9-]{36}$/.test(execution.runId))throw new Error('PRIVATE_MESH_EXECUTION_ID_INVALID');
   const before=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-before.json'),32768);
   const cleanup=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-cleanup.json'),4096);
+  // Old captures have neither an explicit size nor a preflight receipt. Keep
+  // their exact replay valid; new sized captures require the bound preflight.
+  verifyExplicitMeshPreflightBinding(record.request,before.meshResourcePreflight);
   if(digest(before)!==execution.predispatchDigest||before.studyId!==record.studyId||before.exportId!==record.geometry.exportId
     ||before.executableDigest!==c.gmshExecutableDigest||before.settingsIdentity!==c.providerSettingsIdentity
     ||before.configurationDigest!==c.configurationDigest||before.stepDigest!==record.geometry.byteDigest

@@ -5,22 +5,36 @@ import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { mapExplicitCadFaces } from './ExplicitCadFaceMapping.mts';
 import {EXPLICIT_STEP_TOPOLOGY_GEO} from './ExplicitStepTopology.mts';
 import type {ExplicitDynamicsRequest} from '../../simulation-bridge/explicitDynamicsContract.mts';
+import {explicitMeshSizeSchema,EXPLICIT_MESH_DEFAULT_SIZE_MM,preflightExplicitMesh} from '../../simulation-bridge/explicitMeshSizing.mts';
 
 export const EXPLICIT_LINEAR_MESH_CONFIGURATION = Object.freeze({ schema: 'tunacad-explicit-gmsh-config/1',
-  meshSizeMm: 10, elementOrder: 1, mshVersion: '2.2_ascii', threads: 1, maximumRawBytes: 16 * 1024 * 1024,
+  meshSizeMm: EXPLICIT_MESH_DEFAULT_SIZE_MM, elementOrder: 1, mshVersion: '2.2_ascii', threads: 1, maximumRawBytes: 16 * 1024 * 1024,
   cpuTimeLimitMs: 30000, memoryLimitBytes: 512 * 1024 * 1024 });
-export const EXPLICIT_LINEAR_MESH_GEO = `SetFactory("OpenCASCADE");
+const linearMeshGeo=(sizeMm:number)=>`SetFactory("OpenCASCADE");
 Merge "approved.step";
-Mesh.MeshSizeMin = 10;
-Mesh.MeshSizeMax = 10;
+Mesh.MeshSizeMin = ${sizeMm};
+Mesh.MeshSizeMax = ${sizeMm};
 Mesh.ElementOrder = 1;
 Mesh.MshFileVersion = 2.2;
 Mesh.Binary = 0;
 Mesh.RandomSeed = 1;
 General.NumThreads = 1;
 `;
-export function explicitMeshGeo(request:ExplicitDynamicsRequest){return EXPLICIT_LINEAR_MESH_GEO+(request.model.cad?.mappingMethod?EXPLICIT_STEP_TOPOLOGY_GEO:'');}
-export function explicitMeshConfigurationDigest(request:ExplicitDynamicsRequest){return digest({configuration:EXPLICIT_LINEAR_MESH_CONFIGURATION,geo:explicitMeshGeo(request)});}
+export const EXPLICIT_LINEAR_MESH_GEO = linearMeshGeo(EXPLICIT_MESH_DEFAULT_SIZE_MM);
+export function explicitMeshConfiguration(request:ExplicitDynamicsRequest){
+  return {...EXPLICIT_LINEAR_MESH_CONFIGURATION,meshSizeMm:explicitMeshSizeSchema.parse(request.mesh.sizeMm??EXPLICIT_MESH_DEFAULT_SIZE_MM)};
+}
+export function explicitMeshGeo(request:ExplicitDynamicsRequest){
+  const size=explicitMeshConfiguration(request).meshSizeMm;
+  return linearMeshGeo(size)+(request.model.cad?.mappingMethod?EXPLICIT_STEP_TOPOLOGY_GEO:'');
+}
+export function explicitMeshConfigurationDigest(request:ExplicitDynamicsRequest){return digest({configuration:explicitMeshConfiguration(request),geo:explicitMeshGeo(request)});}
+export function verifyExplicitMeshPreflightBinding(request:ExplicitDynamicsRequest,value:unknown){
+  // Absence is compatible only with unsized historical captures. Never reseal.
+  if(request.mesh.sizeMm===undefined&&value===undefined)return;
+  if(!value||digest(value)!==digest(preflightExplicitMesh(request)))
+    throw Error('PRIVATE_MESH_RESOURCE_PREFLIGHT_BINDING_MISMATCH');
+}
 function invalid(reason: string): never { throw new Error('EXPLICIT_GMSH_MESH_INVALID: ' + reason); }
 
 /** Explicit ASCII MSH 2.2 schema. No offset guessing, C3D10 fallback or synthetic
