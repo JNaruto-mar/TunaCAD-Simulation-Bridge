@@ -150,10 +150,12 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       stressHistorySelection, stressHistories: new Map<string, StructuralStressHistory>(),
       status: { providerRunId, status: 'running', progress: null, phase: 'external_solver_v2', updatedAt: submittedAt },
       timeout: undefined as unknown as NodeJS.Timeout, stopResourceMonitor: () => undefined } satisfies Run;
-    run.timeout = setTimeout(() => void this.fail(run, 'SIMULATION_TIMEOUT', 'CalculiX exceeded its execution timeout.'), this.capabilities.execution.executionTimeoutMs); run.timeout.unref();
-    this.runs.set(providerRunId, run);
     let diagnostic = ''; const collect = (chunk: unknown) => { diagnostic = `${diagnostic}${String(chunk)}`.slice(-LOCAL_PROVIDER_RESOURCE_LIMITS.maximumDiagnosticCharacters); };
     child.stdout?.on('data', collect); child.stderr?.on('data', collect);
+    run.timeout = setTimeout(() => void this.fail(run, 'SIMULATION_TIMEOUT',
+      `CalculiX exceeded its execution timeout.${diagnostic ? ' Last bounded solver output: ' + diagnostic.slice(-1500) : ' No solver output was received.'}`),
+    this.capabilities.execution.executionTimeoutMs); run.timeout.unref();
+    this.runs.set(providerRunId, run);
     child.once('error', () => void this.fail(run, 'SIMULATION_SOLVER_UNAVAILABLE', 'The configured CalculiX process could not start.'));
     child.once('exit', (code, signal) => void this.finish(run, code, signal, diagnostic));
     run.stopResourceMonitor = monitorWorkingDirectory({ child, directory, onExceeded: bytes => this.fail(run, 'SIMULATION_DISK_LIMIT', `CalculiX working data exceeded its limit (${bytes} bytes).`) });

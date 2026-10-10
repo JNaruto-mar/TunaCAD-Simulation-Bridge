@@ -18,6 +18,8 @@
     "node": ">=24"
   },
   "scripts": {
+    "test:composed-thermal-fields": "node --experimental-transform-types scripts/test-composed-thermal-fields.mts",
+    "test:thermal-timeout-diagnostics": "node --experimental-transform-types scripts/test-thermal-timeout-diagnostics.mjs",
     "test:package": "node scripts/test-npm-package.mjs",
     "start": "node --experimental-transform-types simulation-bridge/cli.mts",
     "configure:providers": "node --experimental-transform-types simulation-bridge/providerSettingsCli.mts",
