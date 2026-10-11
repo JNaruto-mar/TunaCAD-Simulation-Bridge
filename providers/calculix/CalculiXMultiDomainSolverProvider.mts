@@ -16,7 +16,7 @@ import {
   LOCAL_PROVIDER_RESOURCE_LIMITS, hasEnforcedProviderProcessQuotas, monitorWorkingDirectory,
   readUtf8FileBounded, removeWorkingDirectory, spawnProviderProcess, terminateChildProcess,
 } from '../processLifecycle.mts';
-import { asV1Mesh, createCalculiXInputDeckV2, mappedThermalFaceAreaMm2, requireRegions } from './CalculiXMultiDomainDeck.mts';
+import { asV1Mesh, createCalculiXInputDeckV2, mappedThermalFaceAreaMm2, mappedThermalFluxNodalLoadsW, requireRegions } from './CalculiXMultiDomainDeck.mts';
 import { parseCalculiXImplicitDynamicsDatV2 } from './CalculiXImplicitDynamics.mts';
 import { parseCalculiXHarmonicDatV2 } from './CalculiXHarmonic.mts';
 import { extractCalculiXStressHistory, validateStressHistorySelection,
@@ -933,8 +933,11 @@ function normalizeTransientThermal(
   return { result, datasets };
 }
 
-function normalizeSteadyThermal(
-  run: Run,
+/** Pure recovery of already captured native output; no approval, dispatch or
+ * process execution. The live finish path and solver-free replay use this same
+ * normalizer and unchanged result-validation gates. */
+export function normalizeSteadyThermal(
+  run: Pick<Run, 'request' | 'model' | 'providerRunId' | 'submittedAt'>,
   parsed: CalculiXSteadyThermalDatV2,
   adapterId: string,
   adapterVersion: string,
@@ -980,8 +983,27 @@ function normalizeSteadyThermal(
   }
   const nodalRflReactionHeatW = Object.values(parsed.reactionHeatBySetW).reduce((sum, heatW) => sum + heatW, 0);
   const convection = request.loads[0].type === 'surface_convection';
+  // CalculiX RFL reports the internal nodal heat sum at prescribed nodes. When
+  // a DFLUX FACE shares an edge/node with the temperature FACE, external heat
+  // acts at those constrained nodes too. Subtract that source-derived load to
+  // obtain the net support reaction; never force balance from total power.
+  const prescribedNodes = new Set(request.constraints.flatMap(constraint => {
+    if (constraint.type !== 'prescribed_temperature') throw new Error('SIM-8 heat recovery requires prescribed-temperature constraints.');
+    return requireRegions(run.model, constraint.semanticReferenceIds).flatMap(region => region.facetIndices)
+      .flatMap(index => run.model.boundaryFacets.connectivity[index]);
+  }));
+  let appliedHeatAtPrescribedNodesW = 0;
+  if (!convection) for (const load of request.loads) {
+    if (load.type !== 'surface_heat_power' && load.type !== 'surface_heat_flux')
+      throw new Error('SIM-8 prescribed-node heat correction received an unsupported load.');
+    const facets = requireRegions(run.model, load.semanticReferenceIds).flatMap(region => region.facetIndices);
+    const fluxWPerMm2 = load.type === 'surface_heat_power'
+      ? load.heatPowerW / mappedThermalFaceAreaMm2(run.model, facets) : load.heatFluxWPerM2 * 1e-6;
+    for (const [node, heatW] of mappedThermalFluxNodalLoadsW(run.model, facets, fluxWPerMm2))
+      if (prescribedNodes.has(node)) appliedHeatAtPrescribedNodesW += heatW;
+  }
   if (convection && parsed.sectionBaseHeatFlowW === null) throw new Error('SIM-8 convection lacks the independent base-section heat-flow integral.');
-  const totalReactionHeatW = convection ? -parsed.sectionBaseHeatFlowW! : nodalRflReactionHeatW;
+  const totalReactionHeatW = convection ? -parsed.sectionBaseHeatFlowW! : nodalRflReactionHeatW - appliedHeatAtPrescribedNodesW;
   const reactionDisagreementW = Math.abs(totalReactionHeatW - nodalRflReactionHeatW);
   if (convection && reactionDisagreementW > Math.max(1e-6, Math.abs(totalReactionHeatW) * .02)) {
     throw new Error('SIM-8 convection base-section and nodal-RFL reactions disagree by more than 2%.');
@@ -1063,6 +1085,10 @@ function normalizeSteadyThermal(
       code: 'SIMULATION_THERMAL_REACTION_METHOD_DISAGREEMENT',
       message: 'CalculiX section-FLUX and nodal-RFL base heat-flow recoveries differ; inspect the reported method evidence before relying on this experimental result.',
       severity: 'warning' as const,
+    }] : []), ...(!convection && Math.abs(appliedHeatAtPrescribedNodesW) > 1e-12 ? [{
+      code: 'SIMULATION_THERMAL_PRESCRIBED_NODE_HEAT_CORRECTION',
+      message: `Net support reaction subtracts ${appliedHeatAtPrescribedNodesW.toPrecision(12)} W of source-bound DFLUX at prescribed-temperature nodes from raw nodal RFL ${nodalRflReactionHeatW.toPrecision(12)} W. This is quadratic mapped-load integration, not a heat-balance adjustment.`,
+      severity: 'warning' as const,
     }] : [])],
     convergence: { status: 'converged', iterations: nonlinearIterations, residual: heatBalanceResidualW, providerDeclared: true },
     suggestedEngineeringIssues: ['Verify conductivity and thermal units, FACE mapping, flux or convection sign, heat balance, and mesh convergence.'],
@@ -1103,7 +1129,7 @@ function transientThermalDatasetId(runId: string, domainId: string, frameIndex: 
   return runId + ':' + domainId + ':frame:' + String(frameIndex).padStart(3, '0') + ':' + suffix;
 }
 function buildThermalFieldDatasets(
-  run: Run, parsed: CalculiXSteadyThermalDatV2, frame?: { index: number; timeS: number },
+  run: Pick<Run, 'request' | 'model' | 'providerRunId' | 'submittedAt'>, parsed: CalculiXSteadyThermalDatV2, frame?: { index: number; timeS: number },
 ) {
   const datasets = new Map<string, { descriptor: NeutralSimulationFieldDatasetV2; triangles: NeutralSimulationFieldTriangleV2[] }>();
   const elementByFace = new Map<string, number>();

@@ -508,6 +508,26 @@ export function mappedThermalFaceAreaMm2(model: NeutralFemModelV2, facetIndices:
   return area;
 }
 
+/** Integrate the actual quadratic DFLUX equivalent nodal load. Signed shape
+ * weights are intentional: equal shares and corner-only areas are incorrect
+ * for quadratic/curved facets. Each selected facet is counted only once. */
+export function mappedThermalFluxNodalLoadsW(model: NeutralFemModelV2, facetIndices: number[], fluxWPerMm2: number): Map<number, number> {
+  if (!Number.isFinite(fluxWPerMm2) || fluxWPerMm2 <= 0 || fluxWPerMm2 > 1e6)
+    throw deckError('SIMULATION_THERMAL_CAPABILITY_MISMATCH', 'Mapped thermal flux must remain within the existing bounded range.');
+  mappedThermalFaceAreaMm2(model, facetIndices);
+  const loads = new Map<number, number>();
+  for (const index of [...new Set(facetIndices)].sort((a, b) => a - b)) {
+    const facet = model.boundaryFacets.connectivity[index];
+    for (const sample of quadraticTriangleSurfaceSamples(facet.map(node => model.nodes[node]))) {
+      facet.forEach((node, local) => loads.set(node, (loads.get(node) ?? 0)
+        + fluxWPerMm2 * sample.areaWeightMm2 * sample.shapeFunctions[local]));
+    }
+  }
+  if ([...loads.values()].some(value => !Number.isFinite(value)))
+    throw deckError('SIMULATION_THERMAL_FACE_MAPPING_INVALID', 'Mapped thermal nodal power is non-finite.');
+  return loads;
+}
+
 /** Fail before solver launch when an explicit multi-domain connection graph
  * contains an independently unsupported component, or when one connected
  * assembly leaves a rigid-body mode free. The rank calculation considers only

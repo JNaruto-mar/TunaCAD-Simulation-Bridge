@@ -595,6 +595,16 @@ preparation, field visualization, and additional boundary conditions remain
 deferred. SIM-8 remains `proof_of_concept` with
 `engineeringUsePermitted: false`.
 
+For steady inward flux and total surface-power loads, net support heat reaction
+subtracts the consistent external DFLUX contribution at prescribed-temperature
+nodes from CalculiX's raw nodal RFL sum. Distinct FACEs can share edge nodes;
+their quadratic shape-function loads must not be omitted or divided equally.
+The correction integrates the approved mapped load, never derives a reaction
+from the desired heat balance. A result warning preserves the raw RFL and
+subtracted watts. Existing heat-balance gates and convection's independent
+section-FLUX method are unchanged. `npm run test:steady-thermal-reaction` is a
+small solver-free regression for this recovery behavior, not native qualification.
+
 ## Provider readiness
 
 ```powershell
