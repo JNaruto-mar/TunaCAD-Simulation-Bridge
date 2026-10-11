@@ -13,6 +13,7 @@ import type {
 import { digest } from './stableDigest.mts';
 import { isBoundedThermalConductivityCurve } from './thermalConductivity.mts';
 import { HARMONIC_MODE_POLICY } from './harmonicModePolicy.mts';
+import { isValidSteadyThermalConvectionEvidence } from './steadyThermalConvectionEvidence.mts';
 
 const text = z.string().min(1).max(500).regex(/^[^\u0000-\u001f\u007f]*$/);
 const finite = z.number().finite();
@@ -1220,7 +1221,8 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || thermal.temperatureSamples.some(sample => sample.temperatureC < thermal.minimumTemperatureC - 1e-9
         || sample.temperatureC > thermal.maximumTemperatureC + 1e-9)
       || Math.abs(Math.abs(thermal.totalAppliedHeatW + thermal.totalReactionHeatW) - thermal.heatBalanceResidualW) > 1e-9
-      || thermal.heatBalanceResidualW > Math.max(1e-9, Math.abs(thermal.totalAppliedHeatW) * (convection ? .005 : 1e-6))
+      || (convection ? !isValidSteadyThermalConvectionEvidence(thermal)
+        : thermal.heatBalanceResidualW > Math.max(1e-9, Math.abs(thermal.totalAppliedHeatW) * 1e-6))
       || (conductanceInteraction ? !interfaceEvidence
         || interfaceEvidence.interactionId !== conductanceInteraction.id
         || Math.abs(interfaceEvidence.primaryTemperatureC - interfaceEvidence.secondaryTemperatureC - interfaceEvidence.temperatureJumpC) > 1e-6
@@ -1232,11 +1234,7 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
         || Math.abs(interfaceEvidence.conductancePredictedHeatFlowW - thermal.totalAppliedHeatW)
           > Math.max(1e-5, thermal.totalAppliedHeatW * .05)
         : interfaceEvidence !== undefined)
-      || (convection ? !methodEvidence
-        || methodEvidence.sectionBaseReactionHeatW !== thermal.totalReactionHeatW
-        || Math.abs(Math.abs(methodEvidence.sectionBaseReactionHeatW - methodEvidence.nodalRflReactionHeatW) - methodEvidence.disagreementW) > 1e-9
-        || methodEvidence.disagreementW > Math.max(1e-6, Math.abs(thermal.totalReactionHeatW) * .02)
-        : methodEvidence !== undefined)
+      || !convection && methodEvidence !== undefined
       || !result.warnings.some(warning => warning.code === 'SIMULATION_STEADY_THERMAL_POC')) fail('BRIDGE_V2_THERMAL_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
     return result as NeutralSimulationResultV2;
