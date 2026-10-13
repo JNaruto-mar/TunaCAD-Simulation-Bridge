@@ -15,6 +15,40 @@ import { digest } from './stableDigest.mts';
 
 const jobPattern = /^electrical_[a-f0-9-]{36}$/;
 const fail = (why: string): never => { throw new Error('ELECTROSTATIC_TWO_LAYER_ADMISSION_INVALID: ' + why); };
+/** Inner validation only, not ledger authentication or admission. Runtime
+ * callers retain protected storage/pin checks and fresh source rebinding.
+ * Enables in-memory fault injection after authentic reads without modifying
+ * or re-signing protected records, approvals or completion pins. */
+export function validateTwoLayerCompletionRecord(record: any, source: TwoLayerSourceSnapshot, id: string) {
+    const result = record?.result, completion = record?.completion;
+    // A specific deck comparison precedes aggregate checks. Ledger pins,
+    // source rebinding and all existing aggregate checks remain mandatory.
+    if (!/^sha256:[a-f0-9]{64}$/.test(result?.binding?.deckDigest ?? '')
+      || result.binding.deckDigest !== source.identity.deckDigest
+      || digest(source.deck) !== source.identity.deckDigest)
+      fail('completion deck digest mismatch');
+    if (record.studyId !== source.request.studyId || !result || !completion
+      || result.schema !== 'tunacad-electrostatic-two-layer-completed-result/0.1'
+      || result.jobId !== id || result.studyId !== record.studyId
+      || result.completedProviderState !== 'completed_converged'
+      || result.status !== 'proof_of_concept' || result.engineeringUsePermitted !== false
+      || result.providerAdmission !== 'closed' || result.binding.sourceDigest !== source.identity.sourceDigest
+      || digest(result.binding) !== digest(source.identity)
+      || result.normalizedElectricalResultDigest !== result.electrical.resultDigest
+      || digest((({ resultDigest, ...rest }) => rest)(result.electrical)) !== result.electrical.resultDigest
+      || digest((({ resultDigest, ...rest }) => rest)(result)) !== result.resultDigest
+      || result.completionDigest !== digest(completion)
+      || completion.jobId !== id || completion.state !== 'completed_converged'
+      || completion.cleanupConfirmed !== true || completion.sourceDigest !== source.identity.sourceDigest
+      || completion.normalizedElectricalResultDigest !== result.electrical.resultDigest
+      || completion.rawOutputDigest !== result.electrical.rawOutputDigest
+      || digest(completion.runtime) !== digest(source.identity.runtime)
+      || result.electrical.requestDigest !== source.request.requestDigest
+      || result.electrical.meshDigest !== source.identity.fragmentMeshDigest
+      || result.electrical.interfaceEvidence.sharedFacetDigest
+        !== source.verified.interfaceEvidence.sharedFacetDigest) fail('completion/source/result mismatch');
+    electrostaticNativeEvidenceSchema.parse(completion.nativeEvidence);
+  }
 export interface TrustedTwoLayerSourceReader {
   /** Owning host readers, never constructed from submitted/caller JSON. */
   cad: ElectrostaticCadReaders;
@@ -175,28 +209,7 @@ export class TwoLayerElectrostaticLifecycle {
     }
   }
   private validateRecord(record: any, source: TwoLayerSourceSnapshot, id: string) {
-    const result = record.result, completion = record.completion;
-    if (record.studyId !== source.request.studyId || !result || !completion
-      || result.schema !== 'tunacad-electrostatic-two-layer-completed-result/0.1'
-      || result.jobId !== id || result.studyId !== record.studyId
-      || result.completedProviderState !== 'completed_converged'
-      || result.status !== 'proof_of_concept' || result.engineeringUsePermitted !== false
-      || result.providerAdmission !== 'closed' || result.binding.sourceDigest !== source.identity.sourceDigest
-      || digest(result.binding) !== digest(source.identity)
-      || result.normalizedElectricalResultDigest !== result.electrical.resultDigest
-      || digest((({ resultDigest, ...rest }) => rest)(result.electrical)) !== result.electrical.resultDigest
-      || digest((({ resultDigest, ...rest }) => rest)(result)) !== result.resultDigest
-      || result.completionDigest !== digest(completion)
-      || completion.jobId !== id || completion.state !== 'completed_converged'
-      || completion.cleanupConfirmed !== true || completion.sourceDigest !== source.identity.sourceDigest
-      || completion.normalizedElectricalResultDigest !== result.electrical.resultDigest
-      || completion.rawOutputDigest !== result.electrical.rawOutputDigest
-      || digest(completion.runtime) !== digest(source.identity.runtime)
-      || result.electrical.requestDigest !== source.request.requestDigest
-      || result.electrical.meshDigest !== source.identity.fragmentMeshDigest
-      || result.electrical.interfaceEvidence.sharedFacetDigest
-        !== source.verified.interfaceEvidence.sharedFacetDigest) fail('completion/source/result mismatch');
-    electrostaticNativeEvidenceSchema.parse(completion.nativeEvidence);
+    validateTwoLayerCompletionRecord(record, source, id);
   }
   private async quarantine(id: string) {
     this.#quarantined.add(id);

@@ -1,8 +1,8 @@
 # SIM-9 two-layer electrostatics: bounded evidence and provider-admission gate
 
-Recorded 2026-09-29. Capability status: `proof_of_concept`;
+Recorded 2026-09-29; A01/native CAD-path evidence updated 2026-10-13. Capability status: `proof_of_concept`;
 `engineeringUsePermitted: false`. Private exact-scope host-only provider
-admission is exercised; browser/MCP and public admission remain closed. This
+admission is exercised; browser/MCP public execution admission remains closed. This
 matrix is separate from the single-domain P01–P04 matrix.
 It assesses only two constant-permittivity homogeneous linear isotropic
 dielectric slabs in series, one trusted planar conformal interface, two
@@ -38,12 +38,19 @@ Evidence abbreviations:
   `simulation-bridge/electrostaticTwoLayerAdmission.mts`,
   `electrostaticTwoLayerHostRecords.mts`, `requestValidation.mts` and
   `server.mts`. Inspection is not a new runtime test.
+- **J**: 2026-10-13 actual CAD-authored 3/2 mm two-dielectric case: one
+  authorized fragment mesh and solve, authenticated original-root completion,
+  fresh host recovery, six field datasets and real Chrome viewer checks.
+  `scripts/verify-electrostatic-two-layer-a01.mts` injected a deck-only fault
+  after authentic reads, without rewriting/resealing protected evidence.
+  The separate technical approval gates used a controlled integration fixture,
+  not real human-interactive approval. See the dated development-status receipt.
 
 | Gate | State | Evidence | Bounded result / limitation |
 | --- | --- | --- | --- |
 | T01 Strict two-layer electrical contract and units | PASS | F | Exactly two ordered rectangular layers, ε in F/m, V/E/D/Q/C/U electrical units; unsupported keys and physics rejected. |
 | T02 Analytical series-capacitor reference | PASS | F | Piecewise-linear V, 66.667/33.333 V drops, −166667/−55556 V/m E, continuous D, ±2.9513959376e-10 C Q, 2.9513959376 pF C, 1.4756979688e-8 J U. |
-| S01 Trusted live CAD, two domain/body identities and material provenance | PASS | N, D, H | Both current bodies/revision/material assignments independently reread; H derives the preparation from the live TunaCAD document rather than a fixture request. Browser/MCP authoring remains closed. |
+| S01 Trusted live CAD, two domain/body identities and material provenance | PASS | N, D, H, J | Both current bodies/revision/material assignments independently reread; H/J derive preparation from the live TunaCAD document rather than a fixture request. Public execution remains closed. |
 | S02 Canonical geometry/source identity | PASS | N, D | Both native STEP digests recomputed; substituted geometry and stale revisions rejected. Raw STEP-byte identity is not substituted for canonical identity. |
 | S03 Electrode and interface FACE ownership | PASS | F, N, D | Correct outer electrodes and opposing xMax/xMin interface; live FACE remapping rejected. Declaration alone is insufficient. |
 | M01 Independently meshed/nonconformal domains rejected | PASS | N | Separate meshes failed shared quadratic topology; shifted interface mesh fails closed. This is rejection evidence, not support for nonconformal transfer. |
@@ -65,17 +72,17 @@ Evidence abbreviations:
 | D04 Tampered host record/result rejection | PASS | D | Altered host interface record and result digest rejected; result quarantine remains sticky after restoring bytes. |
 | D05 Failed/cancelled completion rejection | PASS | L, D | Controlled failure and queued/active cancellation remain distinct from cleaned success and expose no result. |
 | D06 Sticky quarantine | PASS | L, D | Once quarantined, restored mesh/result bytes do not make the same job retrievable. |
-| A01 Direct deck-digest tamper injection | PENDING / not demonstrated | C | The later automated two-gate fixture retained an authentic completion, but its protected storage is bound to an absolute root, directory identities, ACL configuration digest, content-addressed study, preparation receipt, and completion pin. A separate copy cannot be replayed without resealing those trusted records; mutating the original is forbidden. The lifecycle currently checks aggregate source/binding digests before any distinct deck-specific comparison, so a copied-and-resealed synthetic completion would not demonstrate rejection specifically at deck comparison. No test-only production completion was fabricated and no solver was rerun. Existing deck rebinding remains covered by D02/A03, but the stricter direct A01 injection is unproved. |
+| A01 Direct deck-digest tamper injection | PASS | J | Original-root completion/pin authenticated and source freshly rebound. Only the in-memory completed binding's deck digest was changed, without resealing any digest. The same inner validator used by lifecycle completion/retrieval rejected specifically with `completion deck digest mismatch`, before aggregate checks. Original ledger/pin bytes stayed identical and the original remained retrievable and unquarantined. This is post-authentication in-memory fault evidence, not destructive on-disk tampering or human-interactive approval. |
 | A02 Live host-owned two-domain preparation/capture | PASS | H | Private TunaCAD adapter reads the current two-Part tree, semantic FACEs, material assignments, revision and assembly transforms; native canonical STEP verification and one OCC BooleanFragments 1.0 mm mesh precede the protected study pin. Fresh-source replay passed. 2,956 nodes, 1,641 elements, 533 matched interface nodes, 246 shared facets, 100 mm². No CalculiX solve was run for this capture gate. |
 | A03 Exact-scope two-layer provider admission | PASS | A, A-real, C | One authenticated `host-live-two-layer` study passed protected receipt/replay, fresh live source and mesh/deck/runtime rebinds, private admission, existing CalculiX lifecycle, validated cleaned completion and fresh-source durable replay. No browser/MCP/Bridge public route exists. |
 | X01 Unsupported electrical physics | NOT APPLICABLE | F, C | Free charge, floating conductors, nonlinearity, nonconformal transfer, open domain, fringing and coupling are excluded, not failed qualification lanes. |
-| X02 Browser/MCP/public authoring | NOT APPLICABLE | C | Explicitly outside this provider-only review; remains closed. |
+| X02 Browser/MCP/public authoring | NOT APPLICABLE | C, J | Outside this provider-only matrix. Private CAD authoring/preparation and technical gates are covered separately; public two-layer submission/result attachment remains closed. |
 | H01 Independent-domain meshing as a conformal provider path (historical) | FAIL | N | The first separate-mesh attempt did not share exact interface topology and was rejected. It is not an admitted current path. |
 | H02 First durable-record receipt (historical) | FAIL | D | One solve completed but post-solve adapter lacked required reader methods. Corrected adapter plus one later approved solve passed durable replay. Historical failure retained. |
 
-**Totals:** 26 PASS, 2 historical FAIL, 1 PENDING / not demonstrated,
+**Totals:** 27 PASS, 2 historical FAIL, 0 PENDING,
 2 NOT APPLICABLE. Active capability gates excluding historical findings:
-26 PASS, 0 FAIL, 1 PENDING, 2 NOT APPLICABLE.
+27 PASS, 0 FAIL, 0 PENDING, 2 NOT APPLICABLE.
 
 ## Provider-admission decision
 
@@ -90,24 +97,25 @@ fixture-owned capture. Admission independently reloads the study pin and
 record, recomposes the conformal mesh, rereads current native CAD sources,
 checks both material/FACE bindings and runtime, and then uses the existing
 lifecycle for another dispatch-time rebind and all quarantine rules. The
-existing public Bridge electrical transport and approval code is still
-single-domain. No request validation, server routing, CLI approval, public
+existing public Bridge electrical execution transport is still single-domain;
+the separately implemented two-layer authorization descriptor cannot submit.
+No execution request validation, server routing, CLI approval, public
 provider capability, result status or `providerAdmission: 'closed'` value
 has changed.
 
-Next bounded item: the remaining direct authenticated completed-record
-deck-digest tamper check A01, if a meaningful no-solver retained-record
-injection can be arranged; otherwise keep it PENDING. Browser/MCP/public
-authoring and exposure remain separately closed. Controlled record-mismatch
-tests do not substitute for completed-record deck-digest injection.
+The 2026-10-13 authenticated completed-record injection closes A01 only in its
+explicit post-read, in-memory deck-fault scope. It does not open public routing,
+waive either approval gate, or establish real human-interactive approval.
+Next bounded item: deliberate source-bound two-layer submission/result attachment
+integration and admission review. Public exposure remains separately closed.
 
 The focused A-real fixture ran exactly one real provider solve. Existing
 analytical, mesh-refinement, lifecycle and durable evidence remains current.
 No status promotion or engineering-use permission is inferred.
 
-## Subsequent bounded authoring/presentation work
+## Subsequent bounded authoring/presentation work (historical checkpoint)
 
-A strict choices-only contract now accepts ordered domain IDs, owned external
+At this historical checkpoint, a strict choices-only contract accepted ordered domain IDs, owned external
 electrode and interface FACE IDs, and two distinct potentials in V. It
 rejects caller-supplied mesh, deck, canonical digest, provider request and
 unsupported physics. The existing host preparer validates these choices
@@ -118,8 +126,42 @@ datasets from an authenticated two-domain completion and verified conformal
 mesh. It reuses the existing bounded pages, chunk/full digests, nodal
 potential and explicitly element-averaged E/D semantics. Controlled no-solver
 authoring and paging tests pass. This is **development evidence, not a new
-exit-gate PASS**: no browser/MCP-to-protected-host preparation transport or
-approved two-domain user dispatch route exists yet, and no authenticated
-two-domain field-page retrieval has been exercised. A01 stays PENDING;
-matrix totals above remain unchanged. Browser/MCP/public admission remains
-closed.
+exit-gate PASS** at that checkpoint: browser/MCP-to-protected-host preparation
+transport and authenticated two-domain field-page retrieval had not yet been
+exercised, and A01 was PENDING. The later evidence J and A01 closure below
+supersede those pending findings. Public two-domain submission/result attachment
+remains closed.
+
+## A01 diagnostic preparation (2026-10-13; not gate closure)
+
+The completion lifecycle now calls the same extracted inner validator with a
+distinct deck-digest comparison before aggregate binding/result checks. Protected
+storage, original completion-pin authentication, fresh source/mesh/deck/runtime
+rebinding, all aggregate checks and sticky quarantine remain mandatory and
+unchanged. This inner validator is not authentication or a public admission API.
+
+`scripts/verify-electrostatic-two-layer-a01.mts` provides a read-only audit for an
+authentic, unquarantined completion in its original protected root. It first
+authenticates the original ledger/pin and freshly binds the source, then changes
+only the deck digest of an in-memory snapshot. It requires the specific deck
+rejection, revalidates the untouched original and checks that original ledger/pin
+bytes remain identical. No record is moved, rewritten, resealed or unquarantined.
+
+At the preparation checkpoint, focused synthetic metadata tests passed for distinct deck rejection, existing
+aggregate/cleanup/Preview checks and pre-source rejection of unauthenticated or
+quarantined audit inputs. They are **not native completion evidence**. The audit
+had not yet been exercised on an authentic completion of the new CAD-authored
+case. A01 was **PENDING** at that checkpoint; unit tests alone did not close it.
+
+## A01 evidence closure (2026-10-13)
+
+Evidence J now exercises that audit against the authentic, unquarantined native
+completion in its unchanged protected root. The audit authenticated ledger digest
+`sha256:49ac2da0faa2fbd9aa960896f802b21466b4f0029edc75f162080e365cc0a2ee`
+and original deck digest
+`sha256:40f094f89140dbd8788391e9763065ff3124a82720e6b1d79d3a3b091d614cef`.
+The deck-only in-memory fault reached the exact comparison, produced the expected
+specific rejection, and left protected bytes and original retrieval unchanged.
+The audit ran zero native processes and resealed zero records. A01 is **PASS**;
+current totals above are updated, historical failures/reference evidence remain,
+and public execution stays closed. No engineering-use promotion is inferred.

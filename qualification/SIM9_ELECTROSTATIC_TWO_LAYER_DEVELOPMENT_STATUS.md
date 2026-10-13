@@ -1,6 +1,6 @@
 # SIM-9 electrostatics: two-layer series dielectric foundation
 
-Status: `proof_of_concept`; `engineeringUsePermitted: false`; private exact-scope host-only provider admission exercised; MCP/browser, public and field admission closed. This is separate from the existing single-domain P01–P04 evidence. P04 remains unchanged and PENDING.
+Status: `proof_of_concept`; `engineeringUsePermitted: false`; private exact-scope host-only provider admission and authenticated six-dataset field access exercised; public submission/field admission remains closed. A01 passed its bounded authenticated post-read deck-fault audit on 2026-10-13 (see final section). This is separate from the existing single-domain P01–P04 evidence. P04 remains unchanged and PENDING.
 
 ## Bounded analytical contract
 
@@ -572,3 +572,65 @@ the current matrix totals and all earlier validated physics, completion,
 field-page and replay evidence remain unchanged. A future A01-specific
 testability design would need to preserve the production trust boundary
 while proving an isolated, deck-only mutation reaches the precise comparison.
+
+## Actual CAD-authored native acceptance and A01 closure (2026-10-13)
+
+One explicitly authorized controlled integration fixture used the actual UI-saved
+two-Part CAD project: 3 × 6 × 4 mm and 2 × 6 × 4 mm rectangular solids, Layer B
+translated to X = 3 mm, absolute permittivities 2.9e-11 / 5.8e-11 F/m, outer
+electrodes +125 / −75 V and twelve native owned FACE bindings. Source revision,
+governed material snapshots/provenance, transforms and persistent FACE identities
+were replayed from that saved project, not substituted by a provider request.
+
+Exactly one 1 mm Gmsh 4.15.2 BooleanFragments mesh and one CalculiX 2.16 solve
+completed and cleaned up. Existing Gmsh limits remained 60 s wall / 30 s CPU /
+512 MiB; CalculiX remained 30 s wall/CPU / 512 MiB; approval caps stayed 8,000
+nodes / 4,000 elements. The unchanged nine-minute workflow watchdog was not
+exceeded. Source/session-bound browser confirmation and real paired Bridge
+single-use authorization consumption were exercised separately. These are
+controlled technical gates, **not real human-interactive approval evidence**.
+
+| Native quantity | Recorded value |
+| --- | ---: |
+| Composed nodes / elements | 1,499 / 802 |
+| Shared interface nodes / facets | 149 / 64 |
+| Full conformal interface area | 24.00000000000005 mm² |
+| Interface potential, both retained domain surfaces | −25 V |
+| Per-layer voltage drops | −150 / −50 V |
+| Per-layer +X electric fields | approximately 50,000 / 25,000 V/m |
+| Common normal electric displacement | approximately 1.45e-6 C/m² |
+| Mean interface normal-D jump | 4.02340649945793e-21 C/m² |
+| Net electrode charge | 7.08335043841211e-19 C |
+| Capacitance | 1.73999997589089e-13 F |
+| Field energy | 3.47999937231229e-9 J |
+| Field-minus-charge energy residual | −5.79469480785273e-16 J |
+
+All existing provider numerical gates and tighter fixture checks passed without
+changes. This is one representative acceptance case, not a new refinement,
+repeatability distribution, general geometry qualification or engineering-use
+approval. The original reference qualification and historical failures remain.
+
+A fresh protected storage reader/private admission facade recovered the identical
+completed result and all six field dataset identities. Full bounded page/chunk/
+dataset-digest loading passed. Real installed Chrome then rendered the actual
+viewer with these retained authenticated datasets: potential/E/D contours,
+both dielectric probes with signed vectors and SI units, independent domain
+visibility, electrical summaries, nonempty WebGL frames and clipping. Both
+domain surfaces retained exactly −25 V at all interface triangle samples. There
+were no page errors/context losses, native reruns or browser security changes.
+The local retained-page loader is **not live production result attachment or
+durable browser-local recovery**. Viewer verification ran outside the native
+workflow watchdog. Full private field-page rebinds were comparatively slow but
+completed within the bounded native workflow; no safety checks were cached away.
+
+The read-only A01 audit authenticated the original ledger/completion pin and
+fresh source/mesh/deck/runtime binding, then changed only the deck digest in an
+in-memory snapshot. The actual lifecycle inner validator rejected specifically
+with `completion deck digest mismatch`, before aggregate comparisons. No source,
+result or completion digest was resealed; original ledger/pin bytes stayed
+identical and the original remained retrievable, without a quarantine tombstone.
+This closes A01 in its stated **post-authentication in-memory fault** scope;
+on-disk destructive tampering was neither necessary nor performed. The audit
+required zero additional native runs. Current matrix: 27 PASS, 2 historical FAIL,
+0 PENDING, 2 NOT APPLICABLE. Public execution remains closed and both approval
+gates, source binding, storage integrity, quotas and Preview restrictions remain.
