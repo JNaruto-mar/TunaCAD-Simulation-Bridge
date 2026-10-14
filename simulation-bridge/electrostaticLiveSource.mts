@@ -14,6 +14,9 @@ export interface ElectrostaticHostRecords {
   readCurrentRuntimeIdentity(): Promise<unknown>;
 }
 export interface ElectrostaticCadReaders {
+  /** Authenticated host adapter may batch native facts into one immutable
+   * revision/epoch snapshot, with fresh remote checkpoints around this scope. */
+  withSourceReadScope?<T>(read: () => Promise<T>): Promise<T>;
   getProjectRevision(): Promise<string>;
   inspectBody(bodyId: string): Promise<unknown>;
   readPartMaterial(partId: string): Promise<unknown>;
@@ -100,8 +103,13 @@ export class ElectrostaticLiveSourceReader implements TrustedElectrostaticSource
       || !Array.isArray(topology.faces) || topology.faces.length !== faces.length
       || !Array.isArray(topology.edges) || topology.edges.length > 64) fail('unique topology evidence missing');
     const semanticNativeFaces: number[] = [];
+    // Independent FACE reads share the same authenticated session and source
+    // epoch. Fetch them concurrently, then validate every response in semantic
+    // order; the final revision read still detects any intervening CAD edit.
+    const faceResponses = await Promise.all(faces.map(([, faceId]) =>
+      this.cad.resolveFace(domain.partId, faceId)));
     for (const [index, [, faceId]] of faces.entries()) {
-      const response = object(await this.cad.resolveFace(domain.partId, faceId));
+      const response = object(faceResponses[index]);
       if (response.projectRevision !== before || response.context?.ownerId !== domain.partId
         || !Array.isArray(response.references) || response.references.length !== 1) fail('missing/ambiguous FACE');
       const face = object(response.references[0]); const resolution = object(face.resolution);

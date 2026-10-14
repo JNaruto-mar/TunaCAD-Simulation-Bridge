@@ -567,6 +567,31 @@ would fail at storage/study identity first. Moreover, lifecycle replay
 compares the aggregate source and binding digests before a distinct
 deck-digest check; a synthetic resealed copy would not prove the required
 deck-specific rejection. No such completion was fabricated, and no generic
+
+## Final local manual acceptance and read-only recovery (2026-10-14)
+
+The final source-bound private local study passed both real human approvals,
+bounded native execution, numerical/interface validation, protected integrity
+and user-observed attachment. The user then manually accepted the recovered
+potential (-75 to +125 V), E magnitude (approximately 25,000 to 50,000 V/m),
+and D magnitude (approximately 1.45e-6 C/m²) contours with color legends.
+This closes the final local viewer check; earlier fixture images are not used
+as evidence for that final job. Private source artifacts and raw screenshots
+remain outside this public repository.
+
+Authenticated read-only recovery uses the protected historical runtime pin,
+current CAD source/revision, completion pins and result digest. It does not
+probe or execute a solver or reuse approvals. Its bounded session lease and
+per-page live source, pairing, protected-result and digest checks remain;
+stale-source access does not mutate valid archived evidence. A verified
+session-local field snapshot avoids rebuilding all six fields on every page.
+
+Public execution remains hard-disabled and production-origin Companion access
+remains denied. Deliberate public transport/origin admission is still required.
+Live production result attachment/viewers and browser-local durable archives
+are not claimed. Engineering use remains forbidden, Preview scope, with the
+same physics, numerical tolerances, solver/resource and approval limits.
+
 checksum rejection was counted as A01 evidence. A01 remains **PENDING**;
 the current matrix totals and all earlier validated physics, completion,
 field-page and replay evidence remain unchanged. A future A01-specific
@@ -634,3 +659,26 @@ on-disk destructive tampering was neither necessary nor performed. The audit
 required zero additional native runs. Current matrix: 27 PASS, 2 historical FAIL,
 0 PENDING, 2 NOT APPLICABLE. Public execution remains closed and both approval
 gates, source binding, storage integrity, quotas and Preview restrictions remain.
+
+## Gated normal-workflow job/attachment integration (2026-10-13)
+
+The canonical browser-safe workflow contracts and host-owned execution session
+now cover strict job operations, separate authorization consumption, source/session
+binding, aggregate 16-job/two-active ceilings, bounded reads/cancellation and six
+domain-owned electrical datasets. The existing protected provider remains the
+authority for source/mesh/deck/runtime rebinds, completion pins, cleanup, normalized
+results and quarantine. Numerical tolerances, mesh caps and native process/memory
+limits are unchanged. No solver or source-validation implementation is duplicated.
+
+`TWO_LAYER_PUBLIC_EXECUTION_ENABLED` remains false. The normal host supplies no
+private override, and no browser choice, URL or environment setting admits a run.
+Private integration fixtures can exercise the plumbing, but are not protected
+approval, real human interaction, provider qualification or public admission.
+`scripts/test-electrostatic-two-layer-workflow.mts` covers metadata-only controller
+security boundaries. TunaCAD's focused transport, browser-session and retained-
+result Chrome tests cover the new attachment/client/UI wiring without a new native
+run or modification to protected evidence. The existing A01/native matrix is not
+promoted or requalified by these tests. Human-interactive two-gate evidence,
+uninterrupted normal protected-native job/result attachment and deliberate public
+transport/origin review remain required before safe public execution. No new
+durable browser recovery, general geometry or electrical physics is claimed.

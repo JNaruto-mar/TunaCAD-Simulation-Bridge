@@ -121,6 +121,16 @@ export class FileElectrostaticTwoLayerHostRecords implements TrustedTwoLayerSour
     return { pin, record };
   }
   private async readRecord(studyId: string) {
+    return (await this.readRecordSnapshot(studyId)).record;
+  }
+  /** Historical, read-only runtime identity from an integrity-pinned study.
+   * Never use this for new preparation, admission or solver dispatch. */
+  async readPinnedRecoveryRuntime(studyId: string) {
+    const {record} = await this.readPinnedRecord(studyId);
+    return structuredClone(record.validatedMesh.runtime);
+  }
+
+  private async readRecordSnapshot(studyId: string) {
     const { pin, record } = await this.readPinnedRecord(studyId);
     const domainBinding = async (_studyId: string, domainId: string) => {
       const rows = record.domains.filter((d: any) => d.domainId === domainId);
@@ -163,14 +173,21 @@ export class FileElectrostaticTwoLayerHostRecords implements TrustedTwoLayerSour
     const pinAgain = await readElectrostaticHostJson(this.pinPath(studyId), 2048);
     await this.storage.verifyConfiguration();
     if (digest(pinAgain) !== digest(pin)) invalid('study pin changed during read');
-    return structuredClone(record);
+    return { record: structuredClone(record), source: rebound };
   }
   /** Admission reads the protected pin and a fresh live-source rebound
    * together; a caller-supplied request, mesh or digest is not accepted. */
   async readAdmissionRecord(studyId: string) {
+    const { recordDigest, record } = await this.readAdmissionSnapshot(studyId);
+    return { recordDigest, record };
+  }
+  /** One fresh protected read AND its already verified source/mesh/deck/runtime
+   * snapshot. Reuse within this read only; no persisted/cached admission proof. */
+  async readAdmissionSnapshot(studyId: string) {
     const { pin } = await this.readPinnedRecord(studyId);
-    const record = await this.readRecord(studyId);
-    return { recordDigest: pin.recordDigest, record };
+    const { record, source } = await this.readRecordSnapshot(studyId);
+    if (digest(record) !== pin.recordDigest) invalid('study pin changed before admission');
+    return { recordDigest: pin.recordDigest, record, source };
   }
   async readSealedRequest(studyId: string) { return (await this.readRecord(studyId)).request; }
   /** The outer binder recomposes and freshly rebinds these protected meshes. */

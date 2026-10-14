@@ -85,6 +85,11 @@ interface Job {
  * local meshes and current executable identity. No caller-supplied proof is
  * accepted by this binder. */
 export async function bindTwoLayerSource(studyId: string, reader: TrustedTwoLayerSourceReader) {
+  return reader.cad.withSourceReadScope
+    ? reader.cad.withSourceReadScope(() => bindScopedTwoLayerSource(studyId, reader))
+    : bindScopedTwoLayerSource(studyId, reader);
+}
+async function bindScopedTwoLayerSource(studyId: string, reader: TrustedTwoLayerSourceReader) {
   const request = validateElectrostaticTwoLayer(await reader.readSealedRequest(studyId));
   if (request.studyId !== studyId) fail('study ID mismatch');
   const before = await verifyTwoLayerLiveSource(request, reader.records, reader.cad);
@@ -173,6 +178,13 @@ export class TwoLayerElectrostaticLifecycle {
     return structuredClone(job.status);
   }
   async getResult(id: string): Promise<CompletedTwoLayerElectricalResult | null> {
+    return this.readResult(id, true);
+  }
+  /** Recovery never quarantines valid evidence merely because the CAD source changed. */
+  async getResultReadOnly(id: string): Promise<CompletedTwoLayerElectricalResult | null> {
+    return this.readResult(id, false);
+  }
+  private async readResult(id: string, quarantineOnFailure: boolean): Promise<CompletedTwoLayerElectricalResult | null> {
     if (!jobPattern.test(id) || this.#quarantined.has(id)) return null;
     const job = this.#jobs.get(id);
     if (job && (job.revoked || job.status.state !== 'succeeded'
@@ -201,7 +213,8 @@ export class TwoLayerElectrostaticLifecycle {
       if (digest(pinAgain) !== digest(pin)) fail('pin changed during trusted read');
       await this.storage.assertReady();
       return structuredClone(record.result);
-    } catch {
+    } catch (error) {
+      if (!quarantineOnFailure) throw new Error('ELECTROSTATIC_TWO_LAYER_RECOVERY_INVALID: protected result or current CAD source mismatch', { cause: error });
       await this.quarantine(id);
       if (job) { job.result = null; job.status = { ...job.status, state: 'failed',
         phase: 'retrieval_quarantined', failureCode: 'ELECTROSTATIC_TWO_LAYER_REBIND_INVALID' }; }

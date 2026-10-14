@@ -11,6 +11,7 @@ import { bindTwoLayerSource } from './electrostaticTwoLayerAdmission.mts';
 import { liveTwoLayerPreparationReceiptPath } from './electrostaticTwoLayerHostAdmission.mts';
 import { twoLayerInterfaceGeometryDigest, verifyTwoLayerLiveSource } from './electrostaticTwoLayerSource.mts';
 import { digest } from './stableDigest.mts';
+import {electrostaticRuntimeSchema} from './electrostaticAdmission.mts';
 import { verifyTwoLayerAuthoring, type TwoLayerAuthoring }
   from './electrostaticTwoLayerAuthoring.mts';
 
@@ -74,6 +75,9 @@ function requireInventory(value: LiveTwoLayerInventory) {
 export async function prepareHostTwoLayerElectrostaticStudy(
   studyId: string, host: TwoLayerPreparationHost) {
   await host.storage.assertReady();
+  // Fail BEFORE STEP transfer/meshing if the protected driver cannot verify its
+  // real executable. General Bridge readiness is not this protected identity.
+  const initialRuntime=electrostaticRuntimeSchema.parse(await host.readCurrentRuntimeIdentity());
   const first = requireInventory(await host.readLiveInventory());
   const authoring = host.authoring
     ? verifyTwoLayerAuthoring(host.authoring, first) : null;
@@ -194,6 +198,8 @@ export async function prepareHostTwoLayerElectrostaticStudy(
     };
     const before = await verifyTwoLayerLiveSource(request, records, host.cad);
     if (changed.value) fail('source changed during native inspection');
+    if(digest(electrostaticRuntimeSchema.parse(await host.readCurrentRuntimeIdentity()))!==digest(initialRuntime))
+      fail('runtime changed before meshing');
     const meshes = await (host.mesh ?? meshTwoLayerNativeSteps)(
       request, steps as [Uint8Array, Uint8Array], host.gmshExecutable, 1);
     if (changed.value || await host.cad.getProjectRevision() !== first.projectRevision)

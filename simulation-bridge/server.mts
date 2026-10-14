@@ -141,6 +141,7 @@ export async function startSimulationBridge(options: {
         return reply(res, 200, { sessionToken: session.key, expiresAt: session.expiresAt, serverProof });
       }
       if (!session || session.expiresAt <= now() || !secretEquals(String(req.headers.authorization ?? ''), `Bearer ${session.key}`)) return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
+      const authenticatedSession = session;
       // One human terminal question at a time; default-private-disabled public
       // behavior is unchanged. DELETE/session still revokes the pending gate.
       if(privateApprovalPending&&req.method==='POST')return reply(res,409,{error:'BRIDGE_BUSY'});
@@ -175,6 +176,8 @@ export async function startSimulationBridge(options: {
         if (!readiness.meshing.ready || !readiness.solving.ready)
           return reply(res, 503, { error: 'BRIDGE_PROVIDERS_UNAVAILABLE' });
         const request = twoLayerApprovalSchema.parse(await readJson(req, 8192));
+        if (session !== authenticatedSession || authenticatedSession.expiresAt <= now())
+          return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
         if (++authorizationAttempts > 8) return reply(res, 429, { error: 'BRIDGE_AUTHORIZATION_LIMIT' });
         if (busy || submissions >= 4 || [...approvals.values()].some(a =>
           a.expiresAt > now() && ['pending', 'approved'].includes(a.state)))
@@ -208,6 +211,14 @@ export async function startSimulationBridge(options: {
           if (approval.state !== 'approved')
             return reply(res, 403, { error: 'BRIDGE_TRANSFER_NOT_APPROVED' });
           const bound = twoLayerApprovalSchema.parse(await readJson(req, 8192));
+          // Body I/O is asynchronous: session revocation, expiry, grant revocation
+          // and a competing consume may have happened since the initial check.
+          if (session !== authenticatedSession || authenticatedSession.expiresAt <= now()
+            || approvals.get(approval.id) !== approval
+            || approval.sessionKey !== authenticatedSession.key || approval.expiresAt <= now())
+            return reply(res, 403, { error: 'BRIDGE_AUTHORIZATION_EXPIRED' });
+          if (approval.state !== 'approved')
+            return reply(res, 403, { error: 'BRIDGE_TRANSFER_NOT_APPROVED' });
           if (digest(bound) !== digest(approval.request))
             return reply(res, 403, { error: 'BRIDGE_TWO_LAYER_BINDING_MISMATCH' });
           approval.state = 'used';

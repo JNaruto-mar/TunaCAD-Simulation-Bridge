@@ -159,14 +159,16 @@ export class HostTwoLayerProviderAdmission {
   getStatus(jobId: string) { return this.#lifecycle.getStatus(jobId); }
   cancel(jobId: string) { return this.#lifecycle.cancel(jobId); }
   getResult(jobId: string) { return this.#lifecycle.getResult(jobId); }
-  private async presentation(jobId: string) {
-    const result = await this.#lifecycle.getResult(jobId);
+  getResultReadOnly(jobId: string) { return this.#lifecycle.getResultReadOnly(jobId); }
+  private async presentation(jobId: string, readOnly = false) {
+    const read = readOnly ? this.getResultReadOnly.bind(this) : this.getResult.bind(this);
+    const result = await read(jobId);
     if (!result) return null;
     const source = await bindTwoLayerSource(result.studyId, this.#records);
     if (source.identity.sourceDigest !== result.binding.sourceDigest)
       invalid('electrical presentation source changed');
     const fields = buildTwoLayerElectricalFields(jobId, result, source.request, source.verified);
-    if ((await this.#lifecycle.getResult(jobId))?.resultDigest !== result.resultDigest)
+    if ((await read(jobId))?.resultDigest !== result.resultDigest)
       invalid('electrical completion changed during presentation');
     return { summary: twoLayerElectricalViewerResult(source.request, result, fields), fields };
   }
@@ -174,9 +176,24 @@ export class HostTwoLayerProviderAdmission {
   async getElectricalPresentation(jobId: string) {
     return (await this.presentation(jobId))?.summary ?? null;
   }
+  async getElectricalPresentationReadOnly(jobId: string) {
+    return (await this.presentation(jobId, true))?.summary ?? null;
+  }
+  /** Host-only verified snapshot for a bounded read-only recovery lease. */
+  async getElectricalPresentationSnapshotReadOnly(jobId: string) {
+    return this.presentation(jobId, true);
+  }
   async getElectricalFieldPage(jobId: string, datasetId: string,
     cursor = '0', limit = 128) {
     const presentation = await this.presentation(jobId);
+    if (!presentation) return null;
+    const field = presentation.fields.get(datasetId);
+    if (!field) invalid('dataset not owned by completed job');
+    return electricalFieldPage(field, cursor, limit);
+  }
+  async getElectricalFieldPageReadOnly(jobId: string, datasetId: string,
+    cursor = '0', limit = 128) {
+    const presentation = await this.presentation(jobId, true);
     if (!presentation) return null;
     const field = presentation.fields.get(datasetId);
     if (!field) invalid('dataset not owned by completed job');
@@ -188,13 +205,19 @@ export class HostTwoLayerProviderAdmission {
 export async function verifyTwoLayerHostAdmissionFresh(
   storage: ElectrostaticHostStorage,
   records: FileElectrostaticTwoLayerHostRecords, studyId: string) {
+    return records.cad.withSourceReadScope
+      ? records.cad.withSourceReadScope(() => verifyScopedHostAdmissionFresh(storage, records, studyId))
+      : verifyScopedHostAdmissionFresh(storage, records, studyId);
+}
+async function verifyScopedHostAdmissionFresh(storage: ElectrostaticHostStorage,
+  records: FileElectrostaticTwoLayerHostRecords, studyId: string) {
     const receipt = await readLiveTwoLayerPreparationReceipt(storage, studyId);
-    const firstRecord = await records.readAdmissionRecord(studyId);
-    const first = await bindTwoLayerSource(studyId, records);
+    const firstRecord = await records.readAdmissionSnapshot(studyId);
+    const first = firstRecord.source;
     const admitted = verifyTwoLayerHostAdmission(
       receipt, firstRecord.recordDigest, firstRecord.record, first);
-    const secondRecord = await records.readAdmissionRecord(studyId);
-    const second = await bindTwoLayerSource(studyId, records);
+    const secondRecord = await records.readAdmissionSnapshot(studyId);
+    const second = secondRecord.source;
     const confirmed = verifyTwoLayerHostAdmission(
       receipt, secondRecord.recordDigest, secondRecord.record, second);
     if (digest(admitted) !== digest(confirmed)) invalid('source changed before dispatch');

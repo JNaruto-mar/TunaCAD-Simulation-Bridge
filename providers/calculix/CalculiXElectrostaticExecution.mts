@@ -13,6 +13,7 @@ import {
   type ElectrostaticNativeOutcome, type ElectrostaticRuntimeIdentity, type ElectrostaticNativeEvidence,
 } from '../../simulation-bridge/electrostaticAdmission.mts';
 import { digest } from '../../simulation-bridge/stableDigest.mts';
+import {probeElectrostaticRuntime,assertElectrostaticRuntimeProbe,type ElectrostaticRuntimeProbeEvidence} from './ElectrostaticRuntimeProbe.mts';
 
 // CalculiX prints "no convergence" for INTERMEDIATE iterations before a
 // successful final iteration. Settings and iteration progress are not terminal
@@ -62,6 +63,9 @@ export function assertElectrostaticNativeCompletion(code: number | null, diagnos
 export class CalculiXElectrostaticExecution implements ElectrostaticExecutionDriver {
   private readonly executable: string;
   private verifiedExecutableDigest: string | null = null;
+  private identityProbe: {digest:string;task:Promise<void>} | null = null;
+  private lastProbe: ElectrostaticRuntimeProbeEvidence | null = null;
+  runtimeProbeEvidence(){return this.lastProbe?structuredClone(this.lastProbe):null;}
   constructor(executable: string) {
     if (!/^ccx(?:\d+(?:\.\d+)*)?(?:\.exe)?$/i.test(basename(executable))) throw new Error('ELECTROSTATIC_EXECUTABLE_INVALID');
     this.executable = resolve(executable);
@@ -70,27 +74,20 @@ export class CalculiXElectrostaticExecution implements ElectrostaticExecutionDri
     if (!hasEnforcedProviderProcessQuotas()) throw new Error('ELECTROSTATIC_HOST_UNSUPPORTED');
     const executableDigest = await electrostaticExecutableDigest(this.executable);
     if (this.verifiedExecutableDigest !== executableDigest) {
-      const child = spawnProviderProcess(this.executable, ['-v'], {
-        cwd: dirname(this.executable), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, PATH: dirname(this.executable) + ';' + (process.env.PATH ?? '') },
-      }, { cpuTimeLimitMs: 5_000, memoryLimitBytes: 512 * 1024 * 1024 });
-      let diagnostic = ''; let exceeded = false;
-      const collect = (chunk: unknown) => {
-        diagnostic += String(chunk);
-        if (Buffer.byteLength(diagnostic) > 4096) { exceeded = true; void terminateChildProcess(child); }
-      };
-      child.stdout?.on('data', collect); child.stderr?.on('data', collect);
-      const timer = setTimeout(() => { exceeded = true; void terminateChildProcess(child); }, 5_000); timer.unref();
-      try {
-        await new Promise<void>((resolve, reject) => { child.once('error', reject); child.once('close', () => resolve()); });
-        // ccx216 -v returns nonzero even for a valid metadata response. This
-        // exception applies ONLY to -v; a solve still requires exit code zero.
-        if (exceeded || !/This is Version 2\.16(?:\s|$)/.test(diagnostic)
-          || await electrostaticExecutableDigest(this.executable) !== executableDigest) {
-          throw new Error('ELECTROSTATIC_RUNTIME_VERSION_INVALID');
-        }
-        this.verifiedExecutableDigest = executableDigest;
-      } finally { clearTimeout(timer); await terminateChildProcess(child); }
+      if(this.identityProbe&&this.identityProbe.digest!==executableDigest)throw Error('ELECTROSTATIC_EXECUTABLE_CHANGED');
+      if(!this.identityProbe){
+        const task=(async()=>{
+          this.lastProbe=await probeElectrostaticRuntime(this.executable,executableDigest,electrostaticExecutableDigest);
+          // Windows ccx216 -v exits 201 even on success. This narrow metadata
+          // exception never applies to a solve, which still requires exit zero.
+          assertElectrostaticRuntimeProbe(this.lastProbe);
+          this.verifiedExecutableDigest=executableDigest;
+        })();
+        this.identityProbe={digest:executableDigest,task};
+      }
+      const current=this.identityProbe;
+      try{await current.task;}finally{if(this.identityProbe===current)this.identityProbe=null;}
+      if(await electrostaticExecutableDigest(this.executable)!==executableDigest)throw Error('ELECTROSTATIC_EXECUTABLE_CHANGED');
     }
     return electrostaticRuntimeSchema.parse({
       providerId: 'tunacad-calculix-electrostatic-development', providerVersion: '0.1.0',

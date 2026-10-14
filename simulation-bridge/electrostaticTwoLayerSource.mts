@@ -51,11 +51,17 @@ export function twoLayerLocalSlabRequest(r: ElectrostaticTwoLayer, index: 0 | 1)
  * bindings, native FACE/topology and canonical STEP digests. */
 export async function verifyTwoLayerLiveSource(value: unknown,
   records: ElectrostaticHostRecords, cad: ElectrostaticCadReaders) {
+  return cad.withSourceReadScope
+    ? cad.withSourceReadScope(() => verifyScopedTwoLayerLiveSource(value, records, cad))
+    : verifyScopedTwoLayerLiveSource(value, records, cad);
+}
+async function verifyScopedTwoLayerLiveSource(value: unknown,
+  records: ElectrostaticHostRecords, cad: ElectrostaticCadReaders) {
   const r = validateElectrostaticTwoLayer(value);
   const before = await cad.getProjectRevision();
   if (before !== r.model.projectRevision) throw new Error('ELECTROSTATIC_TWO_LAYER_SOURCE_STALE');
   const local = [twoLayerLocalSlabRequest(r, 0), twoLayerLocalSlabRequest(r, 1)];
-  for (const request of local) {
+  await Promise.all(local.map(async request => {
     const trusted = new ElectrostaticLiveSourceReader({
       readSealedRequest: async () => request,
       readDomainBinding: async (_studyId, domainId) =>
@@ -65,7 +71,7 @@ export async function verifyTwoLayerLiveSource(value: unknown,
     }, cad);
     await trusted.readSealedRequest(request.studyId);
     if (await cad.getProjectRevision() !== before) throw new Error('ELECTROSTATIC_TWO_LAYER_SOURCE_STALE');
-  }
+  }));
   const [a, b] = r.model.domains;
   const nativeInterfaceDigest = twoLayerInterfaceGeometryDigest(
     a.shape.xMaxM, a.shape.widthM, a.shape.heightM);
