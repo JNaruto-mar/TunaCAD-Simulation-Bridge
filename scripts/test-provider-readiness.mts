@@ -19,7 +19,7 @@ assert.equal(pipeline.providerV2?.capabilities.fieldResults.paginated, true);
 assert.deepEqual(pipeline.providerV2?.capabilities.analysisTypes, ['linear_static', 'modal', 'linear_buckling', 'static_contact', 'nonlinear_static', 'steady_thermal']);
 assert.deepEqual(pipeline.providerV2?.capabilities.study.modal, { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 });
 assert.ok(pipeline.providerV2?.capabilities.fieldResults.components.includes('mode_shape_magnitude'));
-assert.deepEqual(pipeline.providerV2?.capabilities.study.buckling, { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] });
+assert.deepEqual(pipeline.providerV2?.capabilities.study.buckling, { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force','pressure'], constraintTypes: ['fixed','prescribed_displacement'] });
 assert.ok(pipeline.providerV2?.capabilities.fieldResults.components.includes('buckling_mode_shape_magnitude'));
 assert.ok(pipeline.providerV2?.capabilities.fieldResults.components.includes('contact_pressure'));
 assert.ok(pipeline.providerV2?.capabilities.fieldResults.components.includes('normal_gap'));

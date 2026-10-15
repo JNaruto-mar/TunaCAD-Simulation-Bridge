@@ -319,13 +319,13 @@ normalization for browser animation; this normalization is explicitly not a
 physical displacement amplitude.
 
 The additive `linear_buckling` request declares 1–12 modes and one unit-scale
-preload case that exactly names every submitted load. The first provider
-envelope is intentionally limited to one domain, fixed FACE supports,
-surface-force preload, and no interactions. CalculiX `*BUCKLE` factors and FRD
+reference pattern (legacy preloadCase) that exactly names every submitted load. The provider
+envelope is limited to one homogeneous elastic domain, fixed/zero-displacement supports,
+compressive force/inward pressure, and no independent prestress or interactions. CalculiX `*BUCKLE` factors and FRD
 eigenvectors become digest-verified `buckling_mode_shape_magnitude` pages. A
 mandatory warning states that these idealized bifurcation factors are not
 nonlinear collapse predictions and do not include imperfections, plasticity,
-or contact changes.
+or contact changes. See qualification/LINEAR_BUCKLING_PREVIEW.md for coarse native acceptance and remaining experimental validation limits.
 
 The real constrained steel-cantilever, free-free beam, and clamped-plate
 refinement fixtures and their proof-of-concept matrix run with:

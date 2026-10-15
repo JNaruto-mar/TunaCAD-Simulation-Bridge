@@ -1,3 +1,4 @@
+import {bucklingStepCards} from '../../simulation-bridge/linearBuckling.mts';
 import type {
   NeutralFemMesh,
   NeutralFemModelV2,
@@ -216,15 +217,8 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     `*NODE PRINT, NSET=${reactionName(0)}, TOTALS=ONLY, GLOBAL=YES, TIME POINTS=DYNAMICS_OUTPUT`, 'RF',
     '*EL PRINT, ELSET=EALL, TOTALS=ONLY, TIME POINTS=DYNAMICS_OUTPUT', 'ELKE,ELSE',
     '*END STEP',
-  ] : request.analysis.type === 'linear_buckling' ? [
-    '*STEP',
-    '*BUCKLE',
-    solverNumber(request.analysis.settings.requestedModeCount),
-    ...boundaryCards,
-    ...concentratedLoadCards,
-    '*NODE FILE, NSET=NALL, GLOBAL=YES', 'U',
-    '*END STEP',
-  ] : request.analysis.type === 'static_contact' ? [
+  ] : request.analysis.type === 'linear_buckling' ? bucklingStepCards(request.analysis.settings.requestedModeCount,boundaryCards,concentratedLoadCards)
+  : request.analysis.type === 'static_contact' ? [
     `*STEP${request.interactions.some(interaction => (interaction.type === 'frictionless_contact' || interaction.type === 'frictional_contact') && interaction.sliding === 'finite') ? ', NLGEOM' : ''}, INC=${request.analysis.settings.maximumIncrements}`,
     '*STATIC',
     `${solverNumber(request.analysis.settings.initialIncrement)},1,${solverNumber(request.analysis.settings.minimumIncrement)},${solverNumber(request.analysis.settings.maximumIncrement)}`,

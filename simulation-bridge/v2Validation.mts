@@ -1,4 +1,5 @@
 import * as z from 'zod/v4';
+import {isBucklingReferenceLoad,isBucklingRestraint,validBucklingCriticalLoads,bucklingForcesActInward} from './linearBuckling.mts';
 import type {
   MeshProviderCapabilities,
   MeshProviderCapabilitiesV2,
@@ -626,7 +627,9 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   } else if (request.analysis.type === 'linear_buckling') {
     const preloadIds = request.analysis.settings.preloadCase.loadIds;
     if (request.model.domains.length !== 1 || request.interactions.length || !request.loads.length || !request.constraints.length
-      || request.loads.some(load => load.type !== 'surface_force') || request.constraints.some(constraint => constraint.type !== 'fixed')
+      || request.materials.length !== 1 || request.materials[0].model !== 'isotropic_linear_elastic'
+      || request.loads.some(load => !isBucklingReferenceLoad(load)) || request.constraints.some(constraint => !isBucklingRestraint(constraint))
+      || !bucklingForcesActInward(request)
       || preloadIds.length !== request.loads.length || preloadIds.some(loadId => !request.loads.some(load => load.id === loadId))
       || request.requestedResults.length !== 2 || !requestedResults.includes('buckling_load_factors') || !requestedResults.includes('buckling_mode_shapes')) {
       fail('BRIDGE_V2_BUCKLING_REQUEST_INVALID');
@@ -961,7 +964,11 @@ const modalResult = z.object({
 const bucklingResult = z.object({
   preloadCaseId: text, requestedModeCount: z.number().int().min(1).max(12), solverNormalization: z.literal('eigenvector'),
   visualizationNormalization: z.literal('maximum_vector_magnitude_1'), prediction: z.literal('linear_eigenvalue_not_nonlinear_collapse'),
-  modes: z.array(z.object({ modeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive, fieldDatasetIds: z.array(text).min(1).max(128) }).strict()).min(1).max(12),
+  modes: z.array(z.object({ modeNumber: z.number().int().positive(), eigenvalueLoadFactor: positive, fieldDatasetIds: z.array(text).min(1).max(128),
+    criticalLoads:z.array(z.discriminatedUnion('type',[
+      z.object({loadId:text,type:z.literal('surface_force'),forceN:vector,magnitudeN:positive}).strict(),
+      z.object({loadId:text,type:z.literal('pressure'),pressureMPa:positive}).strict(),
+    ])).min(1).max(64).optional() }).strict()).min(1).max(12),
 }).strict();
 const contactResult = z.object({
   formulation: z.literal('node_to_surface_penalty'), sliding: z.enum(['small', 'finite']),
@@ -1272,6 +1279,7 @@ export function validateNeutralSimulationResultV2(value: unknown, request: Neutr
       || result.buckling.modes.some((mode, index) => mode.modeNumber !== index + 1 || mode.modeNumber > analysis.settings.requestedModeCount
         || mode.fieldDatasetIds.length !== domainIds.length || mode.fieldDatasetIds.some(id => !datasetIds.includes(id)))
       || !result.warnings.some(warning => warning.code === 'SIMULATION_LINEAR_BUCKLING_LIMITATION')) fail('BRIDGE_V2_BUCKLING_RESULT_INVALID');
+    if (result.buckling.modes.some(mode => !validBucklingCriticalLoads(mode,request.loads))) fail('BRIDGE_V2_BUCKLING_RESULT_INVALID');
     if (result.review.engineeringUsePermitted) fail('BRIDGE_V2_RESULT_AUTHORITY_INVALID');
     return result as NeutralSimulationResultV2;
   }

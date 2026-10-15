@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import {bucklingCriticalLoads,assertBucklingSolverConverged,assertBucklingModeCount} from '../../simulation-bridge/linearBuckling.mts';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -62,7 +63,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
         multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'thermal_interface_conductance', 'rigid_connector', 'frictionless_contact', 'frictional_contact'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
         modal: { maximumModes: 24, frequencyBounds: true, massFormulations: ['consistent'], constrainedOnly: false, maximumFreeFreeDomains: 1 },
-        buckling: { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force'], constraintTypes: ['fixed'] },
+        buckling: { maximumModes: 12, maximumDomains: 1, preloadCaseRequired: true, loadTypes: ['surface_force','pressure'], constraintTypes: ['fixed','prescribed_displacement'] },
         nonlinearStatic: {
           maximumDomains: 1, maximumSteps: 8, maximumAmplitudePoints: 32, amplitudeModes: ['shared_shape_per_step'],
           loadTypes: ['surface_force', 'pressure', 'gravity'], constraintTypes: ['fixed'],
@@ -199,6 +200,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     run.stopResourceMonitor(); if (isStopped(run)) { await removeWorkingDirectory(run.directory); return; } clearTimeout(run.timeout);
     if (code !== 0) { await this.fail(run, 'SIMULATION_SOLVER_FAILED', `CalculiX exited with code ${String(code)}${signal ? ` (${signal})` : ''}. ${diagnostic.slice(-1500)}`); return; }
     try {
+      if (run.request.analysis.type === 'linear_buckling') assertBucklingSolverConverged(diagnostic);
       const contents = await readUtf8FileBounded(join(run.directory, 'tunacadv2.dat'));
       if (isStopped(run)) return;
       const thermalIterations = run.request.analysis.type === 'steady_thermal'
@@ -226,7 +228,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
         : run.request.analysis.type === 'modal'
         ? normalizeModal(run, parseCalculiXModalDatV2(contents), parseCalculiXModalFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
         : run.request.analysis.type === 'linear_buckling'
-          ? normalizeBuckling(run, parseCalculiXBucklingDatV2(contents), parseCalculiXBucklingFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), this.id, this.version, this.runtimeVersion)
+          ? normalizeBuckling(run, contents, await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd')), this.id, this.version, this.runtimeVersion,diagnostic)
           : run.request.analysis.type === 'static_contact'
             ? normalizeContact(run, parseCalculiXDatV2(contents, run.model, run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]), run.request.loads.some(load => load.type === 'gravity')),
               parseCalculiXContactFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), parseCalculiXContactStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta'))), this.id, this.version, this.runtimeVersion)
@@ -680,6 +682,7 @@ interface BucklingDatMode { modeNumber: number; eigenvalueLoadFactor: number }
  * factors are rejected by this first provider envelope because it qualifies a
  * compressive reference load in the declared direction, not reverse loading. */
 export function parseCalculiXBucklingDatV2(text: string): { modes: BucklingDatMode[] } {
+  assertBucklingSolverConverged(text);
   if (text.split(/\r?\n/).length > 2_000_000) throw new Error('CalculiX buckling result contains too many records.');
   const modes: BucklingDatMode[] = [];
   let reading = false;
@@ -691,11 +694,14 @@ export function parseCalculiXBucklingDatV2(text: string): { modes: BucklingDatMo
     if (heading === 'B U C K L I N G F A C T O R O U T P U T') { reading = true; continue; }
     if (!reading) continue;
     const match = row.exec(raw);
-    if (!match) continue;
+    if (!match) {
+      if (/^\s*\d+\s+/.test(raw)) throw Error('CalculiX returned a malformed or non-finite buckling factor.');
+      continue;
+    }
     const modeNumber = Number(match[1]);
     const eigenvalueLoadFactor = Number(match[2].replace(/[dD]/g, 'E'));
     if (modeNumber !== modes.length + 1 || !(eigenvalueLoadFactor > 0) || !Number.isFinite(eigenvalueLoadFactor) || modes.length >= 12) {
-      throw new Error('CalculiX returned an invalid or non-deterministic buckling-factor sequence.');
+      throw new Error('CalculiX buckling factor is negative, zero, invalid, or out of sequence; no positive critical load can be inferred.');
     }
     modes.push({ modeNumber, eigenvalueLoadFactor });
   }
@@ -703,32 +709,98 @@ export function parseCalculiXBucklingDatV2(text: string): { modes: BucklingDatMo
   return { modes };
 }
 
-/** CalculiX identifies buckling eigenvectors by positive 100CL load factors,
- * rather than the 1PMODE records used by frequency analyses. */
-export function parseCalculiXBucklingFrdV2(text: string): { shapes: Map<number, Map<number, NeutralVector3>>; factors: number[] } {
-  if (text.split(/\r?\n/).length > 4_000_000) throw new Error('CalculiX buckling field result contains too many records.');
+/** CalculiX 2.16 arpackbu.c writes one zero-time reference-load DISP field,
+ * then one field per DAT mode. Buckling has no 1PMODE records. Associate by
+ * the single-step output increment (reference=1, mode n=n+1), never by factor
+ * magnitude: repeated/degenerate eigenvalues are valid. DAT owns the factors;
+ * the FRD time slot is only an independent consistency check. */
+export function parseCalculiXBucklingFrdV2(text: string, modes: readonly BucklingDatMode[]): { shapes: Map<number, Map<number, NeutralVector3>> } {
+  if (text.split(/\r?\n/).length > 4_000_000) throw Error('CalculiX buckling field result contains too many records.');
+  if (!modes.length || modes.length > 12 || modes.some((mode, index) => mode.modeNumber !== index + 1
+    || !Number.isFinite(mode.eigenvalueLoadFactor) || mode.eigenvalueLoadFactor <= 0
+    || (index > 0 && mode.eigenvalueLoadFactor < modes[index - 1].eigenvalueLoadFactor)))
+    throw Error('Buckling FRD requires complete, positive, ordered DAT modes.');
   const shapes = new Map<number, Map<number, NeutralVector3>>();
-  const factors: number[] = [];
-  const float = '([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[EeDd][-+]?\\d+)?)';
-  const classRecord = new RegExp(`^\\s*100CL\\s+\\d+\\s+${float}`);
-  let currentFactor = 0; let activeMode: number | null = null; let reading = false;
+  const float = /^[-+]?(?:\d+\.?\d*|\.\d+)(?:[EeDd][-+]?\d+)?$/;
+  const integer = (field: string) => /^\d+$/.test(field.trim()) ? Number(field.trim()) : NaN;
+  const number = (field: string) => float.test(field.trim()) ? Number(field.trim().replace(/[dD]/g, 'E')) : NaN;
+  let expectedIncrement = 1; let nodeCount: number | null = null; let referenceSeen = false;
+  let stepSeen = false; let header: { mode: number; nodes: number } | null = null;
+  let vectors: Map<number, NeutralVector3> | null = null;
   for (const raw of text.split(/\r?\n/)) {
-    if (raw.length > 4096) throw new Error('CalculiX buckling field result contains an oversized record.');
-    const classMatch = classRecord.exec(raw);
-    if (classMatch) { currentFactor = Number(classMatch[1].replace(/[dD]/g, 'E')); reading = false; activeMode = null; continue; }
-    if (/^\s*-4\s+DISP\b/.test(raw)) {
-      reading = false; activeMode = null;
-      if (!(currentFactor > 0) || !Number.isFinite(currentFactor)) continue;
-      activeMode = factors.length + 1; factors.push(currentFactor); shapes.set(activeMode, new Map()); reading = true; continue;
+    if (raw.length > 4096) throw Error('CalculiX buckling field result contains an oversized record.');
+    if (/^\s*1PSTEP\b/.test(raw)) {
+      const match = /^\s*1PSTEP\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(raw);
+      if (stepSeen || header || vectors || !match || Number(match[1]) !== expectedIncrement || Number(match[2]) !== 1 || Number(match[3]) !== 1)
+        throw Error('Buckling FRD has missing, duplicate, interrupted or unsupported step records.');
+      stepSeen = true; continue;
     }
-    if (reading && /^\s*-3\b/.test(raw)) { reading = false; continue; }
-    if (!reading || activeMode === null || !/^\s*-1\b/.test(raw)) continue;
-    const values = numericFields(raw);
-    if (values.length !== 5 || values[0] !== -1 || !Number.isInteger(values[1]) || values[1] <= 0) throw new Error('CalculiX buckling FRD contains a malformed displacement record.');
-    shapes.get(activeMode)!.set(values[1] - 1, values.slice(2) as NeutralVector3);
+    if (/^\s*1PMODE\b/.test(raw)) throw Error('Frequency-mode records are not valid for this buckling procedure.');
+    if (/^\s*100CL\b/.test(raw)) {
+      const increment = integer(raw.slice(58, 63));
+      const value = number(raw.slice(12, 24)); const nodes = integer(raw.slice(24, 36));
+      if (!stepSeen || header || vectors || raw.length < 75 || raw.slice(0, 7).trim() !== '100CL'
+        || integer(raw.slice(7, 12)) !== 100 + expectedIncrement || increment !== expectedIncrement
+        || integer(raw.slice(48, 58)) !== 4 || ![1, 3].includes(integer(raw.slice(73, 75)))
+        || raw.slice(63, 73).trim() || raw.slice(75).trim() || !Number.isFinite(value)
+        || !Number.isSafeInteger(nodes) || nodes < 1 || nodes > 100000 || (nodeCount !== null && nodes !== nodeCount))
+        throw Error('Malformed or mismatched buckling FRD class record.');
+      const mode = increment - 1;
+      if (mode === 0 ? value !== 0 || referenceSeen : !modes[mode - 1] || value <= 0
+        || Math.abs(value - modes[mode - 1].eigenvalueLoadFactor) > Math.max(1e-8, Math.abs(modes[mode - 1].eigenvalueLoadFactor) * 1e-5))
+        throw Error('Buckling FRD reference field or DAT mode association is invalid.');
+      nodeCount = nodes; header = { mode, nodes }; continue;
+    }
+    if (/^\s*-4\b/.test(raw)) {
+      if (!header || vectors || !/^\s*-4\s+DISP\s+4\s+1\s*$/.test(raw)) throw Error('Missing or unsupported buckling DISP field header.');
+      vectors = new Map(); continue;
+    }
+    if (vectors && /^\s*-3\s*$/.test(raw)) {
+      if (!header || vectors.size !== header.nodes) throw Error('Incomplete buckling displacement field.');
+      if (header.mode === 0) referenceSeen = true;
+      else shapes.set(header.mode, vectors);
+      expectedIncrement++; vectors = null; header = null; stepSeen = false; continue;
+    }
+    if (!vectors) continue;
+    if (/^\s*-5\b/.test(raw)) continue; // Component descriptors, not nodal values.
+    if (!/^\s*-1\b/.test(raw)) {
+      if (raw.trim()) throw Error('Unexpected or truncated buckling displacement record.');
+      continue;
+    }
+    const node = integer(raw.slice(3, 13));
+    const vector = [number(raw.slice(13, 25)), number(raw.slice(25, 37)), number(raw.slice(37, 49))] as NeutralVector3;
+    if (raw.slice(0, 3).trim() !== '-1' || raw.length < 49 || raw.slice(49).trim()
+      || !Number.isSafeInteger(node) || node < 1 || node > 100000 || !vector.every(Number.isFinite) || vectors.has(node - 1))
+      throw Error('Invalid, malformed or duplicate buckling eigenvector node.');
+    vectors.set(node - 1, vector);
   }
-  if (!shapes.size || shapes.size !== factors.length || [...shapes.values()].some(shape => !shape.size)) throw new Error('CalculiX did not produce buckling displacement fields.');
-  return { shapes, factors };
+  if (vectors || header || stepSeen || !referenceSeen || shapes.size !== modes.length)
+    throw Error('CalculiX did not produce every complete buckling displacement field.');
+  return { shapes };
+}
+
+/** Pure normalization shared by the provider and solver-free regressions. */
+export function normalizeCalculiXBucklingModesV2(modes: readonly BucklingDatMode[], rawFields: ReturnType<typeof parseCalculiXBucklingFrdV2>, requestedModeCount: number, nodeCount: number) {
+  assertBucklingModeCount(requestedModeCount, modes.length, rawFields.shapes.size);
+  const shapes = new Map<number, Map<number, NeutralVector3>>();
+  for (const mode of modes) {
+    const raw = rawFields.shapes.get(mode.modeNumber);
+    if (!raw || raw.size !== nodeCount || Array.from({ length: nodeCount }, (_, node) => node).some(node => !raw.has(node)))
+      throw Error('CalculiX omitted or mismatched buckling field data for mode ' + mode.modeNumber + '.');
+    let anchorNode = -1; let maximum = -Infinity;
+    for (const [node, vector] of [...raw.entries()].sort(([a], [b]) => a - b)) {
+      if (vector.length !== 3 || !vector.every(Number.isFinite)) throw Error('Invalid buckling eigenvector.');
+      const magnitude = Math.hypot(...vector);
+      if (!Number.isFinite(magnitude)) throw Error('Invalid buckling eigenvector magnitude.');
+      if (magnitude > maximum) { maximum = magnitude; anchorNode = node; }
+    }
+    if (!(maximum > 0) || anchorNode < 0) throw Error('CalculiX buckling mode ' + mode.modeNumber + ' has a zero or invalid eigenvector.');
+    const anchor = raw.get(anchorNode)!;
+    const dominant = anchor.reduce((best, value, index) => Math.abs(value) > Math.abs(anchor[best]) ? index : best, 0);
+    const sign = anchor[dominant] < 0 ? -1 : 1;
+    shapes.set(mode.modeNumber, new Map([...raw].map(([node, vector]) => [node, vector.map(value => sign * value / maximum) as NeutralVector3])));
+  }
+  return shapes;
 }
 
 function normalizeHarmonic(
@@ -1317,29 +1389,11 @@ function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDa
   return { result, datasets };
 }
 
-function normalizeBuckling(run: Run, parsed: ReturnType<typeof parseCalculiXBucklingDatV2>, rawFields: ReturnType<typeof parseCalculiXBucklingFrdV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
+function normalizeBuckling(run: Run, dat: string, frd: string, adapterId: string, adapterVersion: string, runtimeVersion: string,diagnostic='') {
   if (run.request.analysis.type !== 'linear_buckling') throw new Error('Buckling normalization received a non-buckling request.');
-  if (parsed.modes.length > run.request.analysis.settings.requestedModeCount || parsed.modes.length !== rawFields.factors.length) {
-    throw new Error('CalculiX returned a buckling-mode count outside the requested range.');
-  }
-  const shapes = new Map<number, Map<number, NeutralVector3>>();
-  for (const mode of parsed.modes) {
-    const raw = rawFields.shapes.get(mode.modeNumber);
-    const fieldFactor = rawFields.factors[mode.modeNumber - 1];
-    if (!raw || run.model.nodes.some((_, node) => !raw.has(node))
-      || Math.abs(fieldFactor - mode.eigenvalueLoadFactor) > Math.max(1e-8, Math.abs(mode.eigenvalueLoadFactor) * 1e-5)) {
-      throw new Error(`CalculiX omitted or mismatched buckling field data for mode ${mode.modeNumber}.`);
-    }
-    let anchorNode = -1; let maximum = -Infinity;
-    for (const [node, vector] of [...raw.entries()].sort(([a], [b]) => a - b)) {
-      const magnitude = Math.hypot(...vector);
-      if (magnitude > maximum) { maximum = magnitude; anchorNode = node; }
-    }
-    if (!(maximum > 0) || anchorNode < 0) throw new Error(`CalculiX buckling mode ${mode.modeNumber} has a zero or invalid eigenvector.`);
-    const anchor = raw.get(anchorNode)!; const dominant = anchor.reduce((best, value, index) => Math.abs(value) > Math.abs(anchor[best]) ? index : best, 0);
-    const sign = anchor[dominant] < 0 ? -1 : 1;
-    shapes.set(mode.modeNumber, new Map([...raw].map(([node, vector]) => [node, vector.map(value => sign * value / maximum) as NeutralVector3])));
-  }
+  const parsed = parseCalculiXBucklingDatV2(dat);
+  const rawFields = parseCalculiXBucklingFrdV2(frd, parsed.modes);
+  const shapes = normalizeCalculiXBucklingModesV2(parsed.modes, rawFields, run.request.analysis.settings.requestedModeCount, run.model.nodes.length);
   const datasets = buildBucklingFieldDatasets(run, parsed.modes, shapes);
   const perDomain = run.model.domainRegions.map(domain => ({
     domainId: domain.domainId,
@@ -1347,7 +1401,7 @@ function normalizeBuckling(run: Run, parsed: ReturnType<typeof parseCalculiXBuck
     fieldDatasetIds: parsed.modes.map(mode => bucklingDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)),
   }));
   const completedAt = new Date().toISOString();
-  const modes = parsed.modes.map(mode => ({ ...mode, fieldDatasetIds: run.model.domainRegions.map(domain => bucklingDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)) }));
+  const modes = parsed.modes.map(mode => ({ ...mode, criticalLoads:bucklingCriticalLoads(run.request.loads,mode.eigenvalueLoadFactor), fieldDatasetIds: run.model.domainRegions.map(domain => bucklingDatasetId(run.providerRunId, domain.domainId, mode.modeNumber)) }));
   const result: NeutralSimulationResultV2 = {
     schema: 'tunacad-neutral-simulation-result/2.0', studyId: run.request.studyId, jobId: run.providerRunId,
     requestDigest: run.request.requestDigest, projectRevision: run.request.model.projectRevision, modelDigest: run.request.model.modelDigest,
@@ -1357,6 +1411,7 @@ function normalizeBuckling(run: Run, parsed: ReturnType<typeof parseCalculiXBuck
     warnings: [
       { code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-5 linear-buckling result; qualified-engineer review is mandatory.', severity: 'warning' },
       { code: 'SIMULATION_LINEAR_BUCKLING_LIMITATION', message: 'Eigenvalue load factors predict idealized linear bifurcation from the declared reference load. They do not predict nonlinear collapse, imperfections, plasticity, or contact changes.', severity: 'warning' },
+      ...(/\*\s*WARNING\b/i.test(diagnostic)?[{code:'SIMULATION_BUCKLING_SOLVER_WARNING',message:'CalculiX reported warnings. Review the local solver diagnostics before interpreting these factors.',severity:'warning' as const}]:[]),
     ],
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true },
     suggestedEngineeringIssues: ['Verify eigenvalue mesh convergence and evaluate geometric/material imperfections with nonlinear analysis before using a collapse load.'],

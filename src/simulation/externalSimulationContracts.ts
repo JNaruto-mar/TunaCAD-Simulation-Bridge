@@ -709,6 +709,10 @@ export interface NeutralBucklingModeV2 {
   modeNumber: number;
   eigenvalueLoadFactor: number;
   fieldDatasetIds: string[];
+  /** Derived from the signed reference pattern, never a nonlinear collapse load. */
+  criticalLoads?: Array<
+    {loadId:string;type:'surface_force';forceN:NeutralVector3;magnitudeN:number}
+    | {loadId:string;type:'pressure';pressureMPa:number}>;
 }
 
 export interface NeutralContactInterfaceResultV2 {
@@ -1036,8 +1040,8 @@ export interface SimulationProviderCapabilitiesV2 extends Omit<SimulationProvide
       maximumModes: number;
       maximumDomains: number;
       preloadCaseRequired: true;
-      loadTypes: readonly ['surface_force'];
-      constraintTypes: readonly ['fixed'];
+      loadTypes: ReadonlyArray<'surface_force' | 'pressure'>;
+      constraintTypes: ReadonlyArray<'fixed' | 'prescribed_displacement'>;
     };
     nonlinearStatic?: {
       maximumDomains: number;

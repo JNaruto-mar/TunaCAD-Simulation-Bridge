@@ -11,8 +11,8 @@ The SIM-5 path emits consistent-mass `*FREQUENCY` studies for homogeneously
 restrained models and single-domain free-free models. Free-free normalization
 classifies CalculiX's six solver-omitted singular modes, preserves the first
 elastic mode number (7), and never fabricates a rigid-mode field vector.
-It also emits `*BUCKLE` for a single-domain, fixed-support, surface-force
-preload envelope. Positive eigenvalue factors and bounded FRD eigenvectors are
+It also emits `*BUCKLE` for a single-domain, fixed/zero-displacement, reference-force/inward-pressure
+pattern with no independent prestress. Positive eigenvalue factors and bounded FRD eigenvectors are
 cross-checked and normalized for visualization. They predict idealized linear
 bifurcation only—not nonlinear collapse, imperfections, plasticity, or changing
 contact.
