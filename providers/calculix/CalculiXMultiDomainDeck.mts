@@ -1,3 +1,4 @@
+import {centrifugalStepCards,centrifugalNodalLoads} from './CalculiXCentrifugal.mts';
 import {bucklingStepCards} from '../../simulation-bridge/linearBuckling.mts';
 import type {
   NeutralFemMesh,
@@ -48,6 +49,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     validateStructuralStabilityV2(request, model);
   }
   const mesh = asV1Mesh(model);
+  for(const load of request.loads)if(load.type==='centrifugal')centrifugalNodalLoads(mesh,request.materials[0].densityKgM3!,load);
   const materials = [...request.materials].sort((a, b) => compareText(a.id, b.id));
   const materialNames = new Map(materials.map((material, index) => [material.id, `MATERIAL_${String(index + 1).padStart(3, '0')}`]));
   const domains = [...model.domainRegions].sort((a, b) => compareText(a.domainId, b.domainId));
@@ -96,7 +98,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   const nodalLoads = new Map<number, NeutralVector3>();
   const loads = [...request.loads as StructuralLoadV2[]].sort((a, b) => compareText(a.id, b.id));
   for (const load of loads) {
-    if (load.type === 'gravity' || load.type === 'remote_force') continue;
+    if (load.type === 'gravity' || load.type === 'centrifugal' || load.type === 'remote_force') continue;
     const regions = requireRegions(model, load.semanticReferenceIds);
     if (regions.some(region => constrainedRegions.has(region.regionId))) throw deckError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A SIM-4A region cannot be loaded and constrained simultaneously.');
     const facetIndices = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
@@ -241,6 +243,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   ] : request.analysis.type === 'nonlinear_static' ? nonlinearAnalysisCards : [
     '*STEP', '*STATIC', ...boundaryCards,
     ...concentratedLoadCards,
+    ...loads.flatMap(load=>load.type==='centrifugal'?centrifugalStepCards(load):[]),
     ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
     ...request.constraints.flatMap((constraint, index) => [
@@ -252,7 +255,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
       `*NODE PRINT, NSET=${nodeSetNames.get(domain.domainId)!}, GLOBAL=YES`, 'U',
       `*EL PRINT, ELSET=${domainSetNames.get(domain.domainId)!}`, 'S',
     ]),
-    ...(loads.some(load => load.type === 'gravity') ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
+    ...(loads.some(load => load.type === 'gravity'||load.type==='centrifugal') ? ['*EL PRINT, ELSET=EALL, TOTALS=ONLY', 'EVOL'] : []),
     '*END STEP',
   ];
   const lines = [
@@ -859,7 +862,7 @@ function nonlinearStepCards(
     const active = step.loadAmplitudes.map(entry => loads.get(entry.loadId)!);
     const nodalLoads = new Map<number, NeutralVector3>();
     for (const load of active) {
-      if (load.type === 'gravity' || load.type === 'remote_force') continue;
+      if (load.type === 'gravity' || load.type === 'centrifugal' || load.type === 'remote_force') continue;
       const regions = requireRegions(model, load.semanticReferenceIds);
       const facets = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
       addLoads(nodalLoads, load.type === 'surface_force'

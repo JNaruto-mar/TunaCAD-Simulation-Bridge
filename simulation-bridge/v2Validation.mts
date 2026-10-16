@@ -1,3 +1,4 @@
+import {isCentrifugalLoad,centrifugalStudyIssue,assertCentrifugalDomainAcceleration} from '../src/simulation/centrifugalStatic.ts';
 import * as z from 'zod/v4';
 import {isBucklingReferenceLoad,isBucklingRestraint,validBucklingCriticalLoads,bucklingForcesActInward} from './linearBuckling.mts';
 import type {
@@ -195,6 +196,7 @@ const requestSchema = z.object({
     z.object({ id: text, name: text, type: z.literal('pressure'), semanticReferenceIds: uniqueReferences, pressureMPa: finite.refine(value => value !== 0 && Math.abs(value) <= 1e6) }).strict(),
     z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: vector, coordinateSystem: z.literal('analysis') }).strict()
       .refine(value => Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) > 1e-9 && Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) <= 1e9),
+    z.object({id:text,name:text,type:z.literal('centrifugal'),speedRpm:positive.max(60000),axisPointMm:vector,axisDirection:vector,coordinateSystem:z.literal('analysis')}).strict().refine(isCentrifugalLoad),
     z.object({
       id: text, name: text, type: z.literal('remote_force'), connectorId: text,
       forceN: vector, momentNmm: vector, coordinateSystem: z.literal('analysis'),
@@ -502,6 +504,10 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   if ([...connectors.values()].some(connector => connector.semanticReferenceIds.some(id => directReferenceIds.has(id)))) fail('BRIDGE_V2_CONNECTOR_INVALID');
   const entryIds = [...request.loads, ...request.constraints, ...request.interactions].map(entry => entry.id);
   if (!unique(entryIds)) fail('BRIDGE_V2_REQUEST_INVALID');
+  if(centrifugalStudyIssue(request.analysis.type,domains.length,request.materials,request.loads,request.constraints,request.interactions.length))fail('BRIDGE_V2_CENTRIFUGAL_INVALID');
+  const centrifugal=request.loads.find(l=>l.type==='centrifugal');
+  if(centrifugal&&(request.mesh.maximumNodes>100000||request.mesh.maximumElements>50000))fail('BRIDGE_V2_MESH_BUDGET_INVALID');
+  if(centrifugal)assertCentrifugalDomainAcceleration(centrifugal,domains);
   const hasThermalEntries = request.loads.some(load => load.type === 'surface_heat_flux' || load.type === 'surface_heat_power' || load.type === 'surface_convection')
     || request.constraints.some(constraint => constraint.type === 'prescribed_temperature');
   if ((request.analysis.type !== 'transient_thermal' && request.materials.some(material => material.specificHeatJPerKgK !== undefined))

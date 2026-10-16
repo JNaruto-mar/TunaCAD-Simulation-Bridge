@@ -1,3 +1,4 @@
+import {centrifugalNodalLoads} from './CalculiXCentrifugal.mts';
 import type { ChildProcess } from 'node:child_process';
 import {bucklingCriticalLoads,assertBucklingSolverConverged,assertBucklingModeCount} from '../../simulation-bridge/linearBuckling.mts';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -58,7 +59,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       fieldResults: { paginated: true, maximumPageTriangles: 128, components: ['displacement_magnitude', 'von_mises_stress', 'mode_shape_magnitude', 'buckling_mode_shape_magnitude', 'contact_pressure', 'normal_gap', 'tangential_slip', 'contact_shear', 'equivalent_plastic_strain', 'strain_energy_density', 'temperature', 'heat_flux_magnitude'], topology: 'triangle_soup' },
       study: {
         maximumParts: maximumDomains, maximumBodies: maximumDomains, maximumMaterials: maximumDomains, maximumReferenceBindings: 512,
-        materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'remote_force', 'surface_heat_flux', 'surface_heat_power', 'surface_convection'], maximumLoads: 64,
+        materialModels: ['isotropic_linear_elastic', 'isotropic_elastic_plastic'], loadTypes: ['surface_force', 'pressure', 'gravity', 'centrifugal', 'remote_force', 'surface_heat_flux', 'surface_heat_power', 'surface_convection'], maximumLoads: 64,
         maximumReferencesPerLoad: 32, constraintTypes: ['fixed', 'prescribed_displacement', 'remote_displacement', 'prescribed_temperature'], maximumConstraints: 64,
         maximumReferencesPerConstraint: 32, contactModes: ['none'], maximumDomains, maximumOccurrences: maximumDomains,
         multiDomain: true, perDomainMaterials: true, rigidOccurrenceTransforms: true, interactionTypes: ['bonded_tie', 'shared_topology', 'thermal_interface_conductance', 'rigid_connector', 'frictionless_contact', 'frictional_contact'], maximumInteractions: 32, maximumReferencesPerInteractionSide: 32,
@@ -104,7 +105,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
       qualification: {
         status: 'internally_validated', engineeringUsePermitted: false,
         statement: 'Internally validated but experimental SIM-4B linear-static, SIM-5 modal/buckling, SIM-6 contact, and SIM-7 geometric/material-nonlinear static CalculiX solver.',
-        limitations: ['Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-9 single-frequency harmonic modal superposition is proof-of-concept with bounded browser/MCP authoring and dual human approval; no sweeps, damping, multi-domain analysis, or harmonic contour pages', 'SIM-9 implicit dynamics is proof-of-concept and provider-only: one undamped linear-elastic domain, one step-force FACE, one separate fixed FACE, zero initial conditions, 2–16 U/RF/ELKE/ELSE frames; no browser/MCP authoring', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'SIM-9 transient thermal is proof-of-concept and provider-only: one constant-property domain, step flux, fixed-temperature FACE, bounded NT/HFL/RFL frames, and no transient field pages or browser/MCP preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
+        limitations: ['Centrifugal Preview: one constant-RPM elastic solid with density and fixed FACEs; 5/3/2 mm radial-bar global displacement/reaction validated, but local clamped-root peak stress is not mesh-converged; no spin-up, gyroscopic dynamics or nonlinear stress stiffening', 'Windows x64 / Node 24 / CalculiX 2.16 evidence only', 'SIM-9 single-frequency harmonic modal superposition is proof-of-concept with bounded browser/MCP authoring and dual human approval; no sweeps, damping, multi-domain analysis, or harmonic contour pages', 'SIM-9 implicit dynamics is proof-of-concept and provider-only: one undamped linear-elastic domain, one step-force FACE, one separate fixed FACE, zero initial conditions, 2–16 U/RF/ELKE/ELSE frames; no browser/MCP authoring', 'SIM-8 steady thermal is proof-of-concept: one-domain flux, total inward FACE power, or convection, or two constant-conductivity domains with one shared-topology or bounded nonconformal planar conductance interface and one inward flux; one prescribed-temperature group is required; total FACE power is uniformly mapped by quadratic area, not volumetric generation; convection section-FLUX/RFL disagreement is reported', 'SIM-8 tabulated conductivity is one-domain, inward-flux or total-power only, strictly increasing with temperature, bounded to the declared range, and not exposed in browser/MCP study preparation', 'SIM-9 transient thermal is proof-of-concept and provider-only: one constant-property domain, step flux, fixed-temperature FACE, bounded NT/HFL/RFL frames, and no transient field pages or browser/MCP preparation', 'Geometric/material-nonlinear static analysis is single-domain and fixed-support public beta; SIM-7B coupon, convergence, lifecycle, and single-load plastic-hinge path evidence exist, but reordered multi-axis/non-proportional loading and formal qualification are not claimed', 'Modal analysis is limited to undamped, linear-elastic modes with consistent mass; free-free admission is currently single-domain only', 'Linear buckling is single-domain, fixed-support, surface-force preload only and predicts idealized eigenvalue bifurcation rather than nonlinear collapse', 'Contact is limited to two-domain node-to-surface penalty behavior; finite sliding enables geometric nonlinearity but the constitutive material remains isotropic linear elastic', 'Initial adjustment is explicitly bounded and verified against the composed surface mesh; Coulomb friction uses an explicit penalty stick slope', 'Explicit bonded ties, shared topology, and rigid connectors are experimental', 'Each constraint entry must target one domain', 'Direct FACE constraints have no normalized moment resultant; force and moment resultants are both normalized for remote supports'],
         evidence: { schema: 'tunacad-simulation-qualification-matrix/1.0', matrixId: 'sim7a-windows-x64-gmsh-4.15.2-calculix-2.16', pendingLaneIds: ['independent-engineering-review'] },
       },
       execution: {
@@ -230,7 +231,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
         : run.request.analysis.type === 'linear_buckling'
           ? normalizeBuckling(run, contents, await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd')), this.id, this.version, this.runtimeVersion,diagnostic)
           : run.request.analysis.type === 'static_contact'
-            ? normalizeContact(run, parseCalculiXDatV2(contents, run.model, run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]), run.request.loads.some(load => load.type === 'gravity')),
+            ? normalizeContact(run, parseCalculiXDatV2(contents, run.model, run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]), run.request.loads.some(load => load.type === 'gravity'||load.type==='centrifugal')),
               parseCalculiXContactFrdV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.frd'))), parseCalculiXContactStaV2(await readUtf8FileBounded(join(run.directory, 'tunacadv2.sta'))), this.id, this.version, this.runtimeVersion)
             : run.request.analysis.type === 'nonlinear_static'
               ? normalizeNonlinear(run,
@@ -239,7 +240,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
                 this.id, this.version, this.runtimeVersion)
           : (() => {
           const reactionSets = run.request.constraints.flatMap((constraint, index) => [reactionName(index), ...(constraint.type === 'remote_displacement' ? [reactionMomentName(index)] : [])]);
-          return normalize(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity')), this.id, this.version, this.runtimeVersion);
+          return normalizeLinearStaticResult(run, parseCalculiXDatV2(contents, run.model, reactionSets, run.request.loads.some(load => load.type === 'gravity'||load.type==='centrifugal')), this.id, this.version, this.runtimeVersion);
         })();
       if (run.stressHistorySelection) {
         if (run.request.analysis.type !== 'nonlinear_static' || normalized.result.analysisType !== 'nonlinear_static') {
@@ -1500,7 +1501,7 @@ function normalizeNonlinear(
     loads: finalLoads,
     requestedResults: ['von_mises_stress', 'displacement', 'reaction_force'] as Array<'von_mises_stress' | 'displacement' | 'reaction_force'>,
   } as NeutralSimulationRequestV2;
-  const base = normalize({ ...run, request: effectiveRequest }, frames.at(-1)!, adapterId, adapterVersion, runtimeVersion);
+  const base = normalizeLinearStaticResult({ ...run, request: effectiveRequest }, frames.at(-1)!, adapterId, adapterVersion, runtimeVersion);
   const finalTotalTime = statusSteps.at(-1)!.increments.at(-1)!.totalTime;
   for (const [datasetId, dataset] of base.datasets) base.datasets.set(datasetId, {
     ...dataset,
@@ -1657,7 +1658,7 @@ function normalizeContact(
   if ([...contactNodes.values()].some(output => output.pressureMPa < -maximumTensionRegularizerMPa * 1.01 - 1e-12)) {
     throw new Error('CalculiX contact pressure exceeded the declared tensile regularization bound.');
   }
-  const base = normalize(run, parsed, adapterId, adapterVersion, runtimeVersion);
+  const base = normalizeLinearStaticResult(run, parsed, adapterId, adapterVersion, runtimeVersion);
   const contact = buildContactFieldDatasets(run, parsed, contactNodes, contactForceResultants(run, base.result.reactions));
   for (const [datasetId, dataset] of base.datasets) base.datasets.set(datasetId, {
     ...dataset,
@@ -1923,11 +1924,17 @@ function orientedTriangleAreaNormal(points: [NeutralVector3, NeutralVector3, Neu
   return { area: magnitude / 2, normal };
 }
 
-function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
+export function normalizeLinearStaticResult(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
   const mesh = asV1Mesh(run.model);
   const directConstraints = run.request.constraints.filter(constraint => constraint.type !== 'remote_displacement');
   const directSets = buildConstraintSets(directConstraints as NeutralSimulationConstraint[], mesh);
   const directSetById = new Map(directSets.map(set => [set.constraint.id, set]));
+  if(run.request.loads.some(l=>l.type==='centrifugal')){
+    if(parsed.displacements.size!==run.model.nodes.length||parsed.vonMisesByElement.size!==run.model.volumeElements.connectivity.length
+      ||parsed.totalVolumeMm3===null||Math.abs(parsed.totalVolumeMm3-run.model.quality.meshVolumeMm3)>Math.max(1e-6,run.model.quality.meshVolumeMm3*1e-4))
+      throw Error('Centrifugal result lacks complete node/element output or has inconsistent EVOL volume.');
+    if(directSets.some(set=>set.nodes.some(n=>Math.hypot(...parsed.displacements.get(n)!)>1e-8)))throw Error('Centrifugal fixed FACE is not stationary.');
+  }
   const referenceDomains = new Map(run.request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId])); const applied = combinedLoads(run.request, run.model, mesh);
   const connectors = new Map(run.request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction]));
   const reactions = run.request.constraints.map((constraint, index) => {
@@ -1971,7 +1978,7 @@ function normalize(run: Run, parsed: ReturnType<typeof parseCalculiXDatV2>, adap
   const factors = perDomain.map(domain => domain.metrics.minimumFactorOfSafety).filter((value): value is number => value !== null); const completedAt = new Date().toISOString();
   const result: NeutralSimulationResultV2 = { schema: 'tunacad-neutral-simulation-result/2.0', studyId: run.request.studyId, jobId: run.providerRunId, requestDigest: run.request.requestDigest, projectRevision: run.request.model.projectRevision, modelDigest: run.request.model.modelDigest,
     analysisType: 'linear_static', status: 'succeeded', authority: 'engineering', metrics: { maximumVonMisesStressMPa: Math.max(...perDomain.map(domain => domain.metrics.maximumVonMisesStressMPa)), maximumDisplacementMm: Math.max(...perDomain.map(domain => domain.metrics.maximumDisplacementMm)), minimumFactorOfSafety: factors.length ? Math.min(...factors) : null },
-    perDomain, reactions, criticalRegions, failedConstraints: [], warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-4B result; qualified-engineer review is mandatory.', severity: 'warning' }],
+    perDomain, reactions, criticalRegions, failedConstraints: [], warnings: [{ code: 'SIMULATION_PROVIDER_POC', message: 'Experimental SIM-4B result; qualified-engineer review is mandatory.', severity: 'warning' },...(run.request.loads.some(l=>l.type==='centrifugal')?[{code:'SIMULATION_CENTRIFUGAL_PREVIEW',message:'Constant-speed centrifugal linear static; local fully fixed-root peak von Mises stress is mesh-sensitive and not qualified. No spin-up, Coriolis, gyroscopic effects, rotor modes, nonlinear stress stiffening or engineering qualification.',severity:'warning' as const}]:[])],
     convergence: { status: 'converged', iterations: null, residual: null, providerDeclared: true }, suggestedEngineeringIssues: ['Verify every domain assignment and independently constrained disconnected domain.'],
     provenance: { providerInterfaceVersion: '2.0', adapterId, adapterVersion, providerRunId: run.providerRunId, submittedAt: run.submittedAt, completedAt, normalizedAt: completedAt },
     review: { engineerReviewRequired: true, engineeringUsePermitted: false, disclaimer: `CalculiX ${runtimeVersion} experimental SIM-4A result. Not certified.` }, mutation: { occurred: false, projectRevisionBefore: run.request.model.projectRevision, projectRevisionAfter: run.request.model.projectRevision } };
@@ -2054,6 +2061,7 @@ function combinedLoads(request: NeutralSimulationRequestV2, model: NeutralFemMod
   for (const load of request.loads) if (load.type === 'gravity') {
     for (const domain of model.domainRegions) { const assignment = request.materialAssignments.find(item => item.domainId === domain.domainId)!; const material = request.materials.find(item => item.id === assignment.materialId)!;
       addMap(result, gravityNodalLoads({ ...mesh, volumeElements: { connectivity: domain.elementIndices.map(index => mesh.volumeElements.connectivity[index]), regionIds: domain.elementIndices.map(() => domain.volumeRegionId) } }, material.densityKgM3!, load.accelerationMmPerS2)); }
+  } else if(load.type==='centrifugal'){addMap(result,centrifugalNodalLoads(mesh,request.materials[0].densityKgM3!,load));
   } else if (load.type !== 'remote_force') { const regions = load.semanticReferenceIds.map(id => model.boundaryRegions.find(region => region.semanticReferenceIds.includes(id))!); const facets = [...new Set(regions.flatMap(region => region.facetIndices))]; addMap(result, load.type === 'surface_force' ? consistentSurfaceLoads(mesh, facets, load.forceN) : pressureSurfaceLoads(mesh, facets, load.pressureMPa)); }
   return result;
 }
