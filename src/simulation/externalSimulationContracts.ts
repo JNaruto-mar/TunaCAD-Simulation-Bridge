@@ -301,6 +301,8 @@ export type NeutralSimulationLoadV2 =
   | { id: string; name: string; type: 'surface_force'; semanticReferenceIds: string[]; forceN: NeutralVector3; coordinateSystem: 'analysis' }
   | { id: string; name: string; type: 'pressure'; semanticReferenceIds: string[]; pressureMPa: number }
   | { id: string; name: string; type: 'gravity'; accelerationMmPerS2: NeutralVector3; coordinateSystem: 'analysis' }
+  /** Uniform whole-solid thermal strain; no thermal solve or field transfer. */
+  | { id: string; name: string; type: 'uniform_temperature_change'; referenceTemperatureC: number; finalTemperatureC: number }
   /** Experimental steady centrifugal body load; RPM and axis are frozen into source-bound request identity. */
   | { id: string; name: string; type: 'centrifugal'; speedRpm: number; axisPointMm: NeutralVector3; axisDirection: NeutralVector3; coordinateSystem: 'analysis' }
   | { id: string; name: string; type: 'remote_force'; connectorId: string; forceN: NeutralVector3; momentNmm: NeutralVector3; coordinateSystem: 'analysis' }

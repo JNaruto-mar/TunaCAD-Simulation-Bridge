@@ -97,8 +97,9 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   }
   const nodalLoads = new Map<number, NeutralVector3>();
   const loads = [...request.loads as StructuralLoadV2[]].sort((a, b) => compareText(a.id, b.id));
+  const thermoelastic = loads.find(load => load.type === 'uniform_temperature_change');
   for (const load of loads) {
-    if (load.type === 'gravity' || load.type === 'centrifugal' || load.type === 'remote_force') continue;
+    if (load.type === 'gravity' || load.type === 'centrifugal' || load.type === 'remote_force' || load.type === 'uniform_temperature_change') continue;
     const regions = requireRegions(model, load.semanticReferenceIds);
     if (regions.some(region => constrainedRegions.has(region.regionId))) throw deckError('SIMULATION_FACE_MAPPING_AMBIGUOUS', 'A SIM-4A region cannot be loaded and constrained simultaneously.');
     const facetIndices = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
@@ -243,6 +244,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
   ] : request.analysis.type === 'nonlinear_static' ? nonlinearAnalysisCards : [
     '*STEP', '*STATIC', ...boundaryCards,
     ...concentratedLoadCards,
+    ...(thermoelastic ? ['*TEMPERATURE', 'NALL,' + solverNumber(thermoelastic.finalTemperatureC)] : []),
     ...loads.flatMap(load=>load.type==='centrifugal'?centrifugalStepCards(load):[]),
     ...(gravityMagnitude > 1e-9 ? ['*DLOAD', `EALL,GRAV,${solverNumber(gravityMagnitude)},${gravity.map(value => solverNumber(value / gravityMagnitude)).join(',')}`] : []),
     '*NODE PRINT, NSET=NALL, GLOBAL=YES', 'U',
@@ -294,6 +296,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
     ...materials.flatMap(material => [
       `*MATERIAL, NAME=${materialNames.get(material.id)!}`,
       '*ELASTIC', `${solverNumber(material.youngsModulusMPa)},${solverNumber(material.poissonRatio)}`,
+      ...(thermoelastic ? ['*EXPANSION, ZERO=' + solverNumber(thermoelastic.referenceTemperatureC), solverNumber(material.thermalExpansionPerK!)] : []),
       ...(material.model === 'isotropic_elastic_plastic' ? [
         '*PLASTIC, HARDENING=ISOTROPIC',
         ...material.plasticity!.curve.map(point => `${solverNumber(point.trueStressMPa)},${solverNumber(point.plasticStrain)}`),
@@ -301,6 +304,7 @@ export function createCalculiXInputDeckV2(request: NeutralSimulationRequestV2, m
       ...(material.densityKgM3 !== undefined ? ['*DENSITY', solverNumber(material.densityKgM3 * 1e-12)] : []),
     ]),
     ...domains.map(domain => `*SOLID SECTION, ELSET=${domainSetNames.get(domain.domainId)!}, MATERIAL=${materialNames.get(domain.materialId)!}`),
+    ...(thermoelastic ? ['*INITIAL CONDITIONS, TYPE=TEMPERATURE', 'NALL,' + solverNumber(thermoelastic.referenceTemperatureC)] : []),
     ...tieCards,
     ...contactCards,
     ...analysisCards,
@@ -862,7 +866,7 @@ function nonlinearStepCards(
     const active = step.loadAmplitudes.map(entry => loads.get(entry.loadId)!);
     const nodalLoads = new Map<number, NeutralVector3>();
     for (const load of active) {
-      if (load.type === 'gravity' || load.type === 'centrifugal' || load.type === 'remote_force') continue;
+      if (load.type === 'gravity' || load.type === 'centrifugal' || load.type === 'remote_force' || load.type === 'uniform_temperature_change') continue;
       const regions = requireRegions(model, load.semanticReferenceIds);
       const facets = [...new Set(regions.flatMap(region => region.facetIndices))].sort((a, b) => a - b);
       addLoads(nodalLoads, load.type === 'surface_force'

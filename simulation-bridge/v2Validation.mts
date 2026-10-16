@@ -1,3 +1,4 @@
+import { uniformThermoelasticIssue } from '../src/simulation/uniformThermoelastic.ts';
 import {isCentrifugalLoad,centrifugalStudyIssue,assertCentrifugalDomainAcceleration} from '../src/simulation/centrifugalStatic.ts';
 import * as z from 'zod/v4';
 import {isBucklingReferenceLoad,isBucklingRestraint,validBucklingCriticalLoads,bucklingForcesActInward} from './linearBuckling.mts';
@@ -197,6 +198,8 @@ const requestSchema = z.object({
     z.object({ id: text, name: text, type: z.literal('gravity'), accelerationMmPerS2: vector, coordinateSystem: z.literal('analysis') }).strict()
       .refine(value => Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) > 1e-9 && Math.hypot(...(value.accelerationMmPerS2 as [number, number, number])) <= 1e9),
     z.object({id:text,name:text,type:z.literal('centrifugal'),speedRpm:positive.max(60000),axisPointMm:vector,axisDirection:vector,coordinateSystem:z.literal('analysis')}).strict().refine(isCentrifugalLoad),
+    z.object({id:text,name:text,type:z.literal('uniform_temperature_change'),referenceTemperatureC:finite.min(-273.15).max(1000),
+      finalTemperatureC:finite.min(-273.15).max(1000)}).strict(),
     z.object({
       id: text, name: text, type: z.literal('remote_force'), connectorId: text,
       forceN: vector, momentNmm: vector, coordinateSystem: z.literal('analysis'),
@@ -508,6 +511,8 @@ export function validateNeutralSimulationRequestV2(value: unknown, now = Date.no
   const centrifugal=request.loads.find(l=>l.type==='centrifugal');
   if(centrifugal&&(request.mesh.maximumNodes>100000||request.mesh.maximumElements>50000))fail('BRIDGE_V2_MESH_BUDGET_INVALID');
   if(centrifugal)assertCentrifugalDomainAcceleration(centrifugal,domains);
+  const thermoelasticIssue = uniformThermoelasticIssue(request.analysis.type, domains.length, request.materials, request.loads, request.constraints, request.interactions.length);
+  if (thermoelasticIssue || request.loads.some(load => load.type === 'uniform_temperature_change') && (request.mesh.maximumNodes > 100000 || request.mesh.maximumElements > 50000 || request.units.temperature !== 'degC')) fail('BRIDGE_V2_THERMOELASTIC_INVALID');
   const hasThermalEntries = request.loads.some(load => load.type === 'surface_heat_flux' || load.type === 'surface_heat_power' || load.type === 'surface_convection')
     || request.constraints.some(constraint => constraint.type === 'prescribed_temperature');
   if ((request.analysis.type !== 'transient_thermal' && request.materials.some(material => material.specificHeatJPerKgK !== undefined))
