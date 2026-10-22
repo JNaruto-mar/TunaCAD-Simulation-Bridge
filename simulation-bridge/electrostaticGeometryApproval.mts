@@ -5,6 +5,7 @@ import { ElectrostaticLiveSourceReader, electrostaticBrowserDigest,
 import { electrostaticStepGeometryDigest } from './electrostaticStepIdentity.mts';
 
 export interface ElectrostaticApprovalSummary {
+  resultDelivery?:'project_archive';
   analysisType: 'electrostatic'; studyId: string; projectRevision: string;
   canonicalSourceDigest: string; requestDigest: string;
   domainId: string; partId: string; bodyId: string;
@@ -211,6 +212,7 @@ export class ElectrostaticGeometryApproval {
   private summary(request: ElectrostaticFoundation): ElectrostaticApprovalSummary {
     const domain = request.model.domains[0];
     return structuredClone({ analysisType: 'electrostatic', studyId: request.studyId,
+      ...(request.resultDelivery?{resultDelivery:request.resultDelivery}:{}),
       projectRevision: request.model.projectRevision, canonicalSourceDigest: domain.geometryDigest,
       requestDigest: request.requestDigest, domainId: domain.domainId, partId: domain.partId,
       bodyId: domain.bodyId, material: request.material, electrodes: request.prescribedPotentials,

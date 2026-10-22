@@ -57,6 +57,7 @@ export async function launchPrivateExplicitOperatorBridge(options:{
       async approve(binding,signal) {
         if(options.geometryExportOnly)return false; // no solve authority in this launcher mode
         if(binding.schema!=='tunacad-private-simulation-solve-approval/0.1')return false;
+        if(binding.request.resultDelivery==='project_archive')console.log('Completed FACE-node results are included in Save Project. The project is readable/shareable; raw protected evidence and execution authority are excluded.');
         if(options.terminalConfirmation)return options.terminalConfirmation(binding,signal);
         console.log('Separate Bridge approval required for protected study '+JSON.stringify(binding.studyId)+'.');
         console.log('In this Bridge terminal review the exact study/export/mesh/provider binding below. Geometry confirmation is not solver approval. Type approve only for this study; do not launch OpenRadioss. This single-use authorization ends at a Bridge-ready request, not solver dispatch.');

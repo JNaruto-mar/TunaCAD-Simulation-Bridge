@@ -94,6 +94,23 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
     }
     return structuredClone(electricalFieldPage(field, cursor, limit));
   }
+  async captureNewPortableFields(id:string,signal:AbortSignal){
+    signal.throwIfAborted();const before=await this.getResult(id),run=this.require(id);
+    if(!before||run.revoked||!run.fields)throw Error('PORTABLE_EXPORT_COMPLETION_REQUIRED');
+    const datasets=[];let bytes=16384,triangles=0;
+    for(const descriptor of before.fieldDatasets){
+      signal.throwIfAborted();const field=run.fields.get(descriptor.datasetId);
+      if(!field||digest(field.descriptor)!==digest(descriptor))throw Error('PORTABLE_EXPORT_ELECTRICAL_FIELDS_MISMATCH');
+      bytes+=Buffer.byteLength(JSON.stringify(field));triangles+=field.triangles.length;
+      if(bytes>32*1024*1024||triangles>100000)throw Error('PORTABLE_EXPORT_ELECTRICAL_FIELD_BUDGET');
+      datasets.push(structuredClone(field));
+    }
+    // Immutable in-memory collection avoids hundreds of repeated ACL helpers;
+    // BOTH boundary checks still freshly re-open the protected pins/runtime.
+    const after=await this.getResult(id);signal.throwIfAborted();
+    if(!after||run.revoked||after.dispatchDigest!==before.dispatchDigest)throw Error('PORTABLE_EXPORT_COMPLETION_CHANGED');
+    return {result:after,datasets};
+  }
   async cancel(id: string) {
     const run = this.require(id);
     if (!run.cancellation) {

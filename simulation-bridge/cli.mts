@@ -22,6 +22,7 @@ const bridge = await startSimulationBridge({ ...pipeline,
   browseProviderExecutable: browseExternalProviderExecutable,
   async approve(request, signal) {
     if(request.schema==='tunacad-private-simulation-solve-approval/0.1') {
+      if(request.request.resultDelivery==='project_archive')console.log('This new study includes completed FACE-node results in Save Project. The project is readable/shareable; raw protected evidence and execution authority are excluded.');
       console.log('Private explicit-dynamics solver authorization: '+JSON.stringify(request));
       console.log('This is the separate Bridge terminal approval for the displayed protected study and exact exported geometry/mesh. Geometry-transfer confirmation alone is insufficient. This increment does not launch a solver.');
       try {return (await terminal.question('Type approve for this exact private solve binding only: ',{signal})).trim()==='approve';}
@@ -31,6 +32,7 @@ const bridge = await startSimulationBridge({ ...pipeline,
       return approveTwoLayerInTerminal(request,signal,terminal);
     }
     if (request.schema === 'tunacad-electrostatic-foundation/0.1') {
+      if(request.resultDelivery==='project_archive')console.log('This new study includes completed numerical fields in Save Project. The project is readable/shareable; raw protected evidence and execution authority are excluded.');
       console.log('Electrostatic approval: ' + JSON.stringify({ study: request.studyId,
         domain: request.model.domains[0], material: request.material,
         electrodes: request.prescribedPotentials, electricalUnits: request.output.units,

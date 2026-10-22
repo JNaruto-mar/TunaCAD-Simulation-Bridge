@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import {NEW_PROJECT_RESULT_CAPTURE_ENABLED} from '../src/simulation/projectResultDeliveryPolicy.ts';
+import {createProjectCompletionSnapshot} from '../src/simulation/authorizedPortableResults.ts';
+import {readNewElectricalCompletion,assertNewElectricalCompletionCurrent,type NewElectricalDocumentBinding} from './newPortableCompletionReaders.mts';
 import { randomBytes, timingSafeEqual, createHmac } from 'node:crypto';
 import * as z from 'zod/v4';
 import type {
@@ -35,7 +38,8 @@ type BridgeRequest = NeutralSimulationRequest | NeutralSimulationRequestV2 | Ele
 type AnyProvider = ExternalSimulationProvider | ExternalSimulationProviderV2 | ElectrostaticDispatchProvider;
 type Approval = { id: string; request: BridgeRequest | TwoLayerApproval; expiresAt: number; state: 'pending' | 'approved' | 'denied' | 'used';
   preparationId?: string; sessionKey?: string; revoked?: boolean; submission?: SimulationProviderSubmission; provider?: AnyProvider };
-type BridgeJob = { submission: SimulationProviderSubmission; provider: AnyProvider };
+type BridgeJob = { submission: SimulationProviderSubmission; provider: AnyProvider;
+  newElectricalSource?:{document:NewElectricalDocumentBinding;request:ElectrostaticFoundation;ownerSession:string} };
 const isV2Request = (request: BridgeRequest): request is NeutralSimulationRequestV2 => request.schema === 'tunacad-neutral-simulation-request/2.0';
 const isElectrical = (request: BridgeRequest | TwoLayerApproval): request is ElectrostaticFoundation => request.schema === 'tunacad-electrostatic-foundation/0.1';
 const isTwoLayerApproval = (request: BridgeRequest | TwoLayerApproval): request is TwoLayerApproval =>
@@ -73,6 +77,7 @@ export async function startSimulationBridge(options: {
   let pairingAttempts = 0;
   let session: { key: string; expiresAt: number } | null = null;
   let privateApprovalPending=false;
+  let projectDeliveryPending=false;
   // One native opaque identity for both source binding and approval ownership.
   // The pairing key remains private to HMAC/authentication, not a source ID.
   const privateSessionIdentity=()=>session&&session.expiresAt>now()?digest({pairedSession:session.key}):null;
@@ -142,6 +147,22 @@ export async function startSimulationBridge(options: {
       }
       if (!session || session.expiresAt <= now() || !secretEquals(String(req.headers.authorization ?? ''), `Bearer ${session.key}`)) return reply(res, 401, { error: 'BRIDGE_SESSION_REQUIRED' });
       const authenticatedSession = session;
+      const projectMatch=/^\/v1\/jobs\/([A-Za-z0-9_.:-]{1,160})\/project-result$/.exec(req.url??'');
+      if(req.method==='GET'&&projectMatch){
+        if(!NEW_PROJECT_RESULT_CAPTURE_ENABLED)return reply(res,403,{error:'BRIDGE_PROJECT_RESULT_CAPTURE_DISABLED'});
+        const job=jobs.get(projectMatch[1]),source=job?.newElectricalSource;
+        const eligible=()=>!stopping&&job&&source&&source.request.resultDelivery==='project_archive'&&job.provider===providerElectrical&&
+          jobs.get(job.submission.providerRunId)===job&&source.ownerSession===privateSessionIdentity()&&now()-Date.parse(job.submission.acceptedAt)<=20*60_000;
+        if(!eligible())return reply(res,403,{error:'BRIDGE_PROJECT_RESULT_NEW_APPROVED_JOB_REQUIRED'});
+        if(projectDeliveryPending)return reply(res,409,{error:'BRIDGE_PROJECT_RESULT_BUSY'});
+        const current=()=>{if(!eligible())throw Error('BRIDGE_PROJECT_RESULT_NEW_APPROVED_JOB_REQUIRED');};
+        const cancelled=new AbortController(),abort=()=>cancelled.abort(Error('PROJECT_RESULT_REQUEST_CLOSED'));
+        req.once('aborted',abort);res.once('close',abort);const signal=AbortSignal.any([cancelled.signal,AbortSignal.timeout(30000)]);projectDeliveryPending=true;
+        try{const completion=await readNewElectricalCompletion(job!.provider as ElectrostaticDispatchProvider,job!.submission.providerRunId,source!.request,source!.document,signal);
+          current();await assertNewElectricalCompletionCurrent(job!.provider as ElectrostaticDispatchProvider,job!.submission.providerRunId,source!.request,source!.document,completion,signal);
+          const result=await createProjectCompletionSnapshot(completion,source!.request);signal.throwIfAborted();current();return reply(res,200,result);
+        }finally{projectDeliveryPending=false;req.removeListener('aborted',abort);res.removeListener('close',abort);}
+      }
       // One human terminal question at a time; default-private-disabled public
       // behavior is unchanged. DELETE/session still revokes the pending gate.
       if(privateApprovalPending&&req.method==='POST')return reply(res,409,{error:'BRIDGE_BUSY'});
@@ -300,11 +321,14 @@ export async function startSimulationBridge(options: {
           const rawBody = await readJson(req, Math.ceil(MAX_TOTAL_STEP / 3) * 4 + 16 * 1024);
           let selectedProvider: AnyProvider;
           let submission: SimulationProviderSubmission;
+          let newElectricalDocument:NewElectricalDocumentBinding|undefined;
           if (isElectrical(permitted.request)) {
             if (!providerElectrical || !permitted.preparationId) throw new Error('BRIDGE_PROVIDERS_UNAVAILABLE');
             const body = z.object({ authorizationId: z.literal(permitted.id),
               stepBase64: z.string().max(Math.ceil(MAX_STEP / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+              sourceDocument:z.object({documentId:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),revision:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),bodyId:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/)}).strict().optional(),
             }).strict().parse(rawBody);
+            if(body.sourceDocument){if(body.sourceDocument.revision!==permitted.request.model.projectRevision||body.sourceDocument.bodyId!==permitted.request.model.domains[0].bodyId)throw Error('BRIDGE_ELECTROSTATIC_SOURCE_MISMATCH');newElectricalDocument=body.sourceDocument;}
             const bytes = decodeStep(body.stepBase64);
             if (await electrostaticStepGeometryDigest(bytes) !== permitted.request.model.domains[0].geometryDigest) {
               throw new Error('BRIDGE_ELECTROSTATIC_SOURCE_MISMATCH');
@@ -363,7 +387,8 @@ export async function startSimulationBridge(options: {
           submissions++;
           permitted.submission = submission; permitted.provider = selectedProvider;
           if (permitted.revoked || !session || session.expiresAt <= now() || stopping) { await selectedProvider.cancel(submission.providerRunId); throw new Error('BRIDGE_SESSION_REQUIRED'); }
-          jobs.set(submission.providerRunId, { submission, provider: selectedProvider });
+          jobs.set(submission.providerRunId, { submission, provider: selectedProvider,
+            ...(isElectrical(permitted.request)&&newElectricalDocument?{newElectricalSource:{document:newElectricalDocument,request:structuredClone(permitted.request),ownerSession:privateSessionIdentity()!}}:{}) });
           return reply(res, 202, submission);
         } finally { busy = false; }
       }

@@ -1,7 +1,7 @@
 import type { ElectrostaticFoundation } from './electrostaticContract.mts';
 import type { ElectrostaticRuntimeIdentity, CompletedElectrostaticResult } from './electrostaticAdmission.mts';
 import type { SimulationProviderStatus, SimulationProviderSubmission } from '../src/simulation/externalSimulationContracts.ts';
-import type { ElectricalDataset, ElectricalPage } from './electrostaticFields.mts';
+import type { ElectricalDataset, ElectricalPage, ElectricalTriangle } from './electrostaticFields.mts';
 
 export interface ElectrostaticDispatchCapabilities {
   id: string; version: '0.1.0'; runtime: ElectrostaticRuntimeIdentity;
@@ -21,6 +21,9 @@ export interface ElectrostaticDispatchProvider {
   getStatus(id: string): Promise<SimulationProviderStatus>;
   getResult(id: string): Promise<ElectrostaticDispatchResult | null>;
   getFieldDataset(id: string, datasetId: string, cursor?: string, limit?: number): Promise<ElectricalPage>;
+  /** Owner-local immutable capture, fresh protected checks before AND after.
+   * Never registered as a public field/export endpoint or a historical reader. */
+  captureNewPortableFields?(id:string,signal:AbortSignal):Promise<{result:ElectrostaticDispatchResult;datasets:Array<{descriptor:ElectricalDataset;triangles:ElectricalTriangle[]}>}>;
   cancel(id: string): Promise<SimulationProviderStatus>;
 }
 export interface ElectrostaticDispatchResult {

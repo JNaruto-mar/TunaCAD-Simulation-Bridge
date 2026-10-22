@@ -21,6 +21,7 @@ const electrode = z.object({
 export const electrostaticFoundationDraftSchema = z.object({
   schema: z.literal('tunacad-electrostatic-foundation/0.1'),
   studyId: id,
+  resultDelivery:z.literal('project_archive').optional(),
   analysis: z.object({
     type: z.literal('electrostatic'),
     assumptions: z.tuple([

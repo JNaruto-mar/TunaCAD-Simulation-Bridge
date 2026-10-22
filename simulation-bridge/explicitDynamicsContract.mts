@@ -19,6 +19,8 @@ const cadFace=z.object({centroidPartLocalMm:vector,areaMm2:positive,
 export const explicitDynamicsDraftSchema = z.object({
   schema: z.literal('tunacad-explicit-dynamics-foundation/0.1'),
   studyId: id,
+  // Omitted on legacy requests: protected/view-only semantics remain unchanged.
+  resultDelivery:z.literal('project_archive').optional(),
   analysis: z.object({
     type: z.literal('explicit_structural_dynamics'),
     assumptions: z.tuple([
