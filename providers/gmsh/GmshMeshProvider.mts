@@ -139,7 +139,7 @@ export class GmshMeshProvider implements ExternalMeshProvider {
       request, meshRunId, directory, process: child, mesh: null,
       status: { meshRunId, status: 'running', progress: null, phase: 'gmsh_step_import_and_meshing', updatedAt: acceptedAt },
       timeout: undefined as unknown as NodeJS.Timeout,
-      stopResourceMonitor: () => undefined,
+      stopResourceMonitor: ():void => undefined,
     } satisfies MeshRun;
     run.timeout = setTimeout(() => { void this.failRun(run, 'SIMULATION_MESH_TIMEOUT', 'Gmsh exceeded its declared execution timeout.'); }, this.capabilities.execution.executionTimeoutMs);
     run.timeout.unref();

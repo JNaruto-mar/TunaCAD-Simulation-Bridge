@@ -40,7 +40,7 @@ export interface HarmonicModalCoverage {
 
 export function validateHarmonicModalCoverage(
   frequencyHz: number, frequenciesHz: readonly number[], expectedModes: number,
-  minimumUpperFrequencyRatio = HARMONIC_MODE_POLICY.minimumUpperFrequencyRatio,
+  minimumUpperFrequencyRatio:number = HARMONIC_MODE_POLICY.minimumUpperFrequencyRatio,
 ): HarmonicModalCoverage {
   if (!Number.isInteger(expectedModes) || expectedModes < 1
     || expectedModes > HARMONIC_MODE_POLICY.highFrequencyModes

@@ -152,7 +152,7 @@ export class CalculiXMultiDomainSolverProvider implements ExternalSolverProvider
     const run = { request, model, providerRunId, submittedAt, directory, process: child, result: null, datasets: new Map(),
       stressHistorySelection, stressHistories: new Map<string, StructuralStressHistory>(),
       status: { providerRunId, status: 'running', progress: null, phase: 'external_solver_v2', updatedAt: submittedAt },
-      timeout: undefined as unknown as NodeJS.Timeout, stopResourceMonitor: () => undefined } satisfies Run;
+      timeout: undefined as unknown as NodeJS.Timeout, stopResourceMonitor: ():void => undefined } satisfies Run;
     let diagnostic = ''; const collect = (chunk: unknown) => { diagnostic = `${diagnostic}${String(chunk)}`.slice(-LOCAL_PROVIDER_RESOURCE_LIMITS.maximumDiagnosticCharacters); };
     child.stdout?.on('data', collect); child.stderr?.on('data', collect);
     run.timeout = setTimeout(() => void this.fail(run, 'SIMULATION_TIMEOUT',
@@ -1332,8 +1332,9 @@ function boundedThermalSamples(
 
 function normalizeModal(run: Run, parsed: ReturnType<typeof parseCalculiXModalDatV2>, rawShapes: Map<number, Map<number, NeutralVector3>>, adapterId: string, adapterVersion: string, runtimeVersion: string) {
   if (run.request.analysis.type !== 'modal') throw new Error('Modal normalization received a non-modal request.');
-  if (parsed.modes.length > run.request.analysis.settings.requestedModeCount
-    || parsed.modes.some(mode => mode.modeNumber > run.request.analysis.settings.requestedModeCount)) throw new Error('CalculiX returned a mode outside the requested range.');
+  const requestedModeCount=run.request.analysis.settings.requestedModeCount;
+  if (parsed.modes.length > requestedModeCount
+    || parsed.modes.some(mode => mode.modeNumber > requestedModeCount)) throw new Error('CalculiX returned a mode outside the requested range.');
   const shapes = new Map<number, Map<number, NeutralVector3>>();
   for (const mode of parsed.modes) {
     const raw = rawShapes.get(mode.modeNumber);
@@ -2069,7 +2070,7 @@ function combinedLoads(request: NeutralSimulationRequestV2, model: NeutralFemMod
     for (const domain of model.domainRegions) { const assignment = request.materialAssignments.find(item => item.domainId === domain.domainId)!; const material = request.materials.find(item => item.id === assignment.materialId)!;
       addMap(result, gravityNodalLoads({ ...mesh, volumeElements: { connectivity: domain.elementIndices.map(index => mesh.volumeElements.connectivity[index]), regionIds: domain.elementIndices.map(() => domain.volumeRegionId) } }, material.densityKgM3!, load.accelerationMmPerS2)); }
   } else if(load.type==='centrifugal'){addMap(result,centrifugalNodalLoads(mesh,request.materials[0].densityKgM3!,load));
-  } else if (load.type !== 'remote_force' && load.type !== 'uniform_temperature_change') { const regions = load.semanticReferenceIds.map(id => model.boundaryRegions.find(region => region.semanticReferenceIds.includes(id))!); const facets = [...new Set(regions.flatMap(region => region.facetIndices))]; addMap(result, load.type === 'surface_force' ? consistentSurfaceLoads(mesh, facets, load.forceN) : pressureSurfaceLoads(mesh, facets, load.pressureMPa)); }
+  } else if (load.type === 'surface_force' || load.type === 'pressure') { const regions = load.semanticReferenceIds.map(id => model.boundaryRegions.find(region => region.semanticReferenceIds.includes(id))!); const facets = [...new Set(regions.flatMap(region => region.facetIndices))]; addMap(result, load.type === 'surface_force' ? consistentSurfaceLoads(mesh, facets, load.forceN) : pressureSurfaceLoads(mesh, facets, load.pressureMPa)); }
   return result;
 }
 function requireSingleDomainConstraints(request: NeutralSimulationRequestV2) { const owners = new Map(request.model.references.map(reference => [reference.semanticReferenceId, reference.domainId])); const connectors = new Map(request.interactions.filter(interaction => interaction.type === 'rigid_connector').map(interaction => [interaction.id, interaction])); for (const constraint of request.constraints) { const ids = constraint.type === 'remote_displacement' ? connectors.get(constraint.connectorId)?.semanticReferenceIds ?? [] : constraint.semanticReferenceIds; if (new Set(ids.map(id => owners.get(id))).size !== 1) throw error('SIMULATION_PROVIDER_CAPABILITY_MISMATCH', `Constraint "${constraint.id}" spans multiple domains.`); } }

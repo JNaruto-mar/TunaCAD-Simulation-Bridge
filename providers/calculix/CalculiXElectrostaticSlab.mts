@@ -4,11 +4,8 @@ import { validateElectrostaticFoundation, type ElectrostaticFoundation } from '.
 import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { neutralToCalculiXC3D10 } from './CalculiXMultiDomainDeck.mts';
 
-export const ELECTROSTATIC_SLAB_LIMITS = Object.freeze({
-  maximumNodes: 8000, maximumElements: 4000, maximumOutputBytes: 8 * 1024 * 1024,
-  maximumPotentialErrorV: 0.002, fieldRelativeTolerance: 1e-4,
-  chargeRelativeTolerance: 1e-4, energyRelativeTolerance: 1e-4,
-});
+import {ELECTROSTATIC_SLAB_LIMITS} from '../../simulation-bridge/electrostaticSlabLimits.mjs';
+export {ELECTROSTATIC_SLAB_LIMITS};
 const reactionNames = ['ELECTRODE_LEFT', 'ELECTRODE_RIGHT'] as const;
 const faceKeys = ['xMin', 'xMax', 'yMin', 'yMax', 'zMin', 'zMax'] as const;
 const edges = [[0, 1], [1, 2], [2, 0], [0, 3], [2, 3], [1, 3]];

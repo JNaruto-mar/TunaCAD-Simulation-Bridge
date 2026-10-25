@@ -17,7 +17,7 @@ const fingerprintSchema = z.object({ path: z.string(), sha256: z.string().regex(
 const recordSchema = z.object({ schema: z.literal('tunacad-provider-settings/1'),
   paths: providerPathsSchema, fingerprints: z.object({
     gmsh: fingerprintSchema.nullable(), calculix: fingerprintSchema.nullable(),
-  }).strict() }).strict();
+  }).strict(), electrostaticStorageParent:z.string().max(1000).refine(value=>isAbsolute(value)&&!/[\x00-\x1f\x7f]/.test(value)).optional() }).strict();
 const empty = (): ExternalProviderPaths => ({ gmshExecutable: '', calculixExecutable: '' });
 
 /** Fingerprints only the explicitly configured file. Never searches or executes. */
@@ -56,7 +56,7 @@ async function checkAncestry(directory: string) {
  * Local configuration is mutable, not a trusted simulation completion record. */
 export function createProviderSettingsStore(filePath: string) {
   if (!isAbsolute(filePath)) throw new Error('PROVIDER_SETTINGS_ABSOLUTE_STORAGE_REQUIRED');
-  async function readVerified() {
+  async function readStored(verifyExecutables:boolean):Promise<Omit<z.infer<typeof recordSchema>,'schema'>> {
     let info;
     try { info = await lstat(filePath); }
     catch (error: any) { if (error.code === 'ENOENT') return { paths: empty(), fingerprints: { gmsh: null, calculix: null } }; throw error; }
@@ -71,7 +71,7 @@ export function createProviderSettingsStore(filePath: string) {
       const after = await file.stat();
       if (after.size !== info.size || after.mtimeMs !== info.mtimeMs) throw new Error('PROVIDER_SETTINGS_CHANGED');
     } finally { await file.close(); }
-    for (const [name, key] of [['gmsh', 'gmshExecutable'], ['calculix', 'calculixExecutable']] as const) {
+    if(verifyExecutables)for (const [name, key] of [['gmsh', 'gmshExecutable'], ['calculix', 'calculixExecutable']] as const) {
       const path = record.paths[key], expected = record.fingerprints[name];
       if (!path) { if (expected) throw new Error('PROVIDER_SETTINGS_FINGERPRINT_MISMATCH'); continue; }
       const actual = await fingerprintConfiguredExecutable(path);
@@ -81,15 +81,17 @@ export function createProviderSettingsStore(filePath: string) {
     // The verified pins are returned from THIS fresh read. Consumers need not
     // immediately hash the same executable again; independent reopened readers
     // still repeat every content and race check. No cross-read cache.
-    return { paths: record.paths, fingerprints: record.fingerprints };
+    return { paths: record.paths, fingerprints: record.fingerprints,
+      ...(record.electrostaticStorageParent?{electrostaticStorageParent:record.electrostaticStorageParent}:{}) };
   }
+  async function readVerified(){return readStored(true);}
   async function read() { return (await readVerified()).paths; }
-  async function save(value: ExternalProviderPaths) {
+  async function writeConfiguration(value: ExternalProviderPaths, electrostaticStorageParent?:string) {
     const paths = providerPathsSchema.parse(value);
     const record = { schema: 'tunacad-provider-settings/1', paths, fingerprints: {
       gmsh: paths.gmshExecutable ? await fingerprintConfiguredExecutable(paths.gmshExecutable) : null,
       calculix: paths.calculixExecutable ? await fingerprintConfiguredExecutable(paths.calculixExecutable) : null,
-    } };
+    },...(electrostaticStorageParent?{electrostaticStorageParent}:{}) };
     await checkAncestry(dirname(filePath));
     try { const info = await lstat(filePath); if (!info.isFile() || info.isSymbolicLink()) throw new Error('PROVIDER_SETTINGS_UNSAFE_STORAGE'); }
     catch (error: any) { if (error.code !== 'ENOENT') throw error; }
@@ -101,7 +103,21 @@ export function createProviderSettingsStore(filePath: string) {
       return await read();
     } finally { await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
-  return Object.freeze({ filePath, read, readVerified, save });
+  async function save(value:ExternalProviderPaths){
+    // Browser executable-path saves cannot replace the host-only storage choice.
+    const current=await readStored(false);return writeConfiguration(value,current.electrostaticStorageParent);
+  }
+  async function saveElectrostaticStorageParent(value:string|null){
+    const current=await readVerified();
+    if(value!==null){
+      recordSchema.shape.electrostaticStorageParent.unwrap().parse(value);
+      // Existing directory only. No mkdir, ACL changes, result reads or store
+      // provisioning. Normal protected job admission still owns those checks.
+      await checkAncestry(value);
+    }
+    await writeConfiguration(current.paths,value??undefined);
+  }
+  return Object.freeze({ filePath, read, readVerified, save,saveElectrostaticStorageParent });
 }
 
 /** Same OS known-folder policy as native simulation storage, but separate from
@@ -111,6 +127,7 @@ export async function openNativeProviderSettings() {
   const directory = join(location.base, 'TunaCAD', 'Simulation');
   const store = createProviderSettingsStore(join(directory, 'provider-settings.json'));
   return Object.freeze({ filePath: store.filePath, read: store.read, readVerified: store.readVerified,
+    saveElectrostaticStorageParent:store.saveElectrostaticStorageParent,
     async save(paths: ExternalProviderPaths) {
       // Only explicit save provisions the fixed per-user namespace.
       await checkAncestry(location.base);
@@ -130,4 +147,10 @@ export function resolveConfiguredProviderPaths(saved: ExternalProviderPaths, env
     gmshExecutable: environment.TUNACAD_GMSH_EXECUTABLE || saved.gmshExecutable,
     calculixExecutable: environment.TUNACAD_CALCULIX_EXECUTABLE || saved.calculixExecutable,
   });
+}
+
+/** Host configuration only. Never merge browser-supplied provider paths here. */
+export function resolveElectrostaticStorageParent(saved:{electrostaticStorageParent?:string},environment:NodeJS.ProcessEnv){
+  const value=environment.TUNACAD_ELECTROSTATIC_STORAGE_PARENT||saved.electrostaticStorageParent;
+  return value===undefined?undefined:recordSchema.shape.electrostaticStorageParent.unwrap().parse(value);
 }

@@ -99,7 +99,7 @@ export class CalculiXElectrostaticExecution implements ElectrostaticExecutionDri
     const base = { jobId: input.jobId, sourceDigest: input.source.identity.sourceDigest, runtime: input.source.identity.runtime };
     let directory: string | null = null;
     let child: ReturnType<typeof spawnProviderProcess> | null = null;
-    let stopMonitor = () => undefined; let timer: NodeJS.Timeout | null = null;
+    let stopMonitor:()=>void = () => undefined; let timer: NodeJS.Timeout | null = null;
     let exceeded = false; let cleanupConfirmed = true;
     let state: 'completed_converged' | 'failed' | 'cancelled' = 'failed';
     let output = ''; let failureCode = 'ELECTROSTATIC_NATIVE_FAILED';

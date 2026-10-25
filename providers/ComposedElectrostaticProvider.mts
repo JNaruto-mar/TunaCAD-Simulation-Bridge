@@ -1,12 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { lstat } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
 import type { ExternalMeshProvider, NeutralFemMesh, SimulationProviderStatus } from '../src/simulation/externalSimulationContracts.ts';
 import { ElectrostaticAdmissionLifecycle, type TrustedElectrostaticSourceReader,
   type ElectrostaticExecutionDriver, type ElectrostaticRuntimeIdentity } from '../simulation-bridge/electrostaticAdmission.mts';
-import { ElectrostaticHostStorage, readElectrostaticHostJson, writeElectrostaticHostOnce } from '../simulation-bridge/electrostaticHostStorage.mts';
 import { digest } from '../simulation-bridge/stableDigest.mts';
-import { FileElectrostaticHostRecords, ProtectedElectrostaticLedger } from '../simulation-bridge/electrostaticHostRecords.mts';
 import { validateElectrostaticFoundation, type ElectrostaticFoundation } from '../simulation-bridge/electrostaticFoundation.mts';
 import { electrostaticStepGeometryDigest } from '../simulation-bridge/electrostaticStepIdentity.mts';
 import { electrostaticSlabMeshInputs } from './calculix/CalculiXElectrostaticSlab.mts';
@@ -17,15 +13,17 @@ interface Run {
   id: string; request: ElectrostaticFoundation; step: Uint8Array | null;
   controller: AbortController; status: SimulationProviderStatus; done: Promise<void>;
   meshRunId?: string; lifecycle?: ElectrostaticAdmissionLifecycle; electricalId?: string;
-  ledger?: ProtectedElectrostaticLedger; revoked: boolean; archiveRoot?: string;
+  revoked: boolean; mesh?:NeutralFemMesh; meshFingerprint?:string; completionDigest?:string;
   approval: { preparationId: string; authorizationId: string };
-  storage?: ElectrostaticHostStorage; dispatchDigest?: string;
+  dispatchDigest?: string;
   cancellation?: Promise<SimulationProviderStatus>;
-  records?: FileElectrostaticHostRecords;
+  executionFailure?:unknown;
+  cleanupFailure?:unknown;
+  archived?:boolean;
   fields?: ReturnType<typeof buildElectricalFields>;
   fieldResultDigest?: string;
 }
-/** Reuses the validated mesher, electrical lifecycle and protected ledger.
+/** Reuses the validated mesher/electrical lifecycle and their per-job scratch.
  * Host records describe approved immutable transferred geometry, NOT current
  * browser CAD. Live CAD checks bracket browser transfer/result publication. */
 export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvider {
@@ -34,7 +32,7 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
     private readonly mesher: ExternalMeshProvider & { confirmCleanup(id: string): Promise<boolean> },
     private readonly driver: ElectrostaticExecutionDriver,
     private readonly currentRuntime: () => Promise<ElectrostaticRuntimeIdentity>,
-    private readonly storageParent: string) {}
+    _legacyStorageParent?: string) {} // Compatibility argument only; never opened or modified.
 
   async submit(value: ElectrostaticFoundation, step: Uint8Array, approval: Run['approval']) {
     const request = validateElectrostaticFoundation(value);
@@ -42,9 +40,8 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
       || await electrostaticStepGeometryDigest(step) !== request.model.domains[0].geometryDigest) {
       throw new Error('BRIDGE_ELECTROSTATIC_SOURCE_MISMATCH');
     }
-    if (!isAbsolute(this.storageParent) || !(await lstat(this.storageParent)).isDirectory()) {
-      throw new Error('BRIDGE_ELECTROSTATIC_STORAGE_UNAVAILABLE');
-    }
+    // Eviction requires a verified durable project save and confirmed cleanup.
+    if(this.runs.size>=4)for(const [id,old] of this.runs){if(old.archived&&old.status.status==='succeeded'&&!old.cleanupFailure){this.runs.delete(id);break;}}
     if (this.runs.size >= 4 || [...this.runs.values()].some(run =>
       ['running', 'queued'].includes(run.status.status))) throw new Error('BRIDGE_BUSY');
     const id = 'electrical_' + randomUUID(), acceptedAt = new Date().toISOString();
@@ -60,25 +57,21 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
   async getStatus(id: string) { return structuredClone(this.require(id).status); }
   async getResult(id: string) {
     const run = this.require(id);
-    if (run.revoked || run.status.status !== 'succeeded' || !run.ledger || !run.electricalId) return null;
-    const result = await run.ledger.getResult(run.electricalId);
+    if (run.revoked || run.status.status !== 'succeeded' || !run.lifecycle || !run.electricalId) return null;
+    const result = await run.lifecycle.getResult(run.electricalId);
     if (run.revoked || run.status.status !== 'succeeded') return null;
     if (!result) { this.fail(run, 'ELECTROSTATIC_DURABLE_RESULT_QUARANTINED'); return null; }
     try {
-      if (!run.storage || !run.dispatchDigest) throw new Error('missing dispatch pin');
-      await run.storage.assertReady();
-      const pin = await readElectrostaticHostJson(join(run.storage.paths['source-catalog'], 'dispatch.pin.json'), 4096);
+      if (!run.dispatchDigest || !run.mesh || result.resultDigest!==run.completionDigest) throw new Error('completion identity mismatch');
       const expected = { schema: 'tunacad-electrostatic-approved-dispatch/0.1', ...run.approval,
         providerRunId: run.id, electricalJobId: result.jobId, requestDigest: run.request.requestDigest,
         canonicalSourceDigest: run.request.model.domains[0].geometryDigest, resultDigest: result.resultDigest };
-      if (digest(pin) !== run.dispatchDigest || digest(expected) !== run.dispatchDigest) throw new Error('dispatch pin mismatch');
-      if (!run.records) throw new Error('missing trusted mesh records');
-      const mesh = await run.records.readValidatedMesh(run.request.studyId);
+      if (digest(expected) !== run.dispatchDigest || digest(run.mesh)!==run.meshFingerprint) throw new Error('dispatch/mesh mismatch');
+      const mesh=run.mesh;
       if (!run.fields || run.fieldResultDigest !== result.resultDigest) {
         run.fields = buildElectricalFields(run.id, result, mesh);
         run.fieldResultDigest = result.resultDigest;
       }
-      await run.storage.assertReady();
       if (run.revoked) return null;
       const output = { schema: 'tunacad-electrostatic-dispatch-result/0.1' as const,
         ...run.approval, providerRunId: run.id, completion: result,
@@ -106,26 +99,54 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
       datasets.push(structuredClone(field));
     }
     // Immutable in-memory collection avoids hundreds of repeated ACL helpers;
-    // BOTH boundary checks still freshly re-open the protected pins/runtime.
+    // BOTH boundary checks freshly verify completion/source/runtime bindings.
     const after=await this.getResult(id);signal.throwIfAborted();
     if(!after||run.revoked||after.dispatchDigest!==before.dispatchDigest)throw Error('PORTABLE_EXPORT_COMPLETION_CHANGED');
     return {result:after,datasets};
   }
   async cancel(id: string) {
     const run = this.require(id);
+    if(run.status.status==='succeeded'&&!run.revoked){
+      await run.done;
+      const clean=(!run.meshRunId||await this.mesher.confirmCleanup(run.meshRunId).catch(()=>false))
+        &&(!run.lifecycle||!run.electricalId||run.lifecycle.getStatus(run.electricalId).cleanupConfirmed);
+      if(run.status.status==='succeeded'&&clean&&!run.cleanupFailure)return structuredClone(run.status);
+    }
     if (!run.cancellation) {
       run.revoked = true; run.controller.abort();
       run.cancellation = (async () => {
-        if (run.meshRunId) await this.mesher.cancel(run.meshRunId);
-        if (run.lifecycle && run.electricalId) await run.lifecycle.cancel(run.electricalId);
-        await run.done;
-        // Trigger sticky ledger quarantine against the revoked trusted source.
-        if (run.ledger && run.electricalId) await run.ledger.getResult(run.electricalId);
-        run.status = { ...run.status, status: 'cancelled', progress: null };
+        const failures:unknown[]=[];
+        // One failing cleanup must not prevent the other native stage draining.
+        try{if(run.meshRunId)await this.mesher.cancel(run.meshRunId);}catch(error){failures.push(error);}
+        try{if(run.lifecycle&&run.electricalId)await run.lifecycle.cancel(run.electricalId);}catch(error){failures.push(error);}
+        try{await run.done;}catch(error){failures.push(error);}
+        const cleaned=(!run.meshRunId||await this.mesher.confirmCleanup(run.meshRunId).catch(()=>false))
+          &&(!run.lifecycle||!run.electricalId||run.lifecycle.getStatus(run.electricalId).cleanupConfirmed);
+        if(run.cleanupFailure)failures.push(run.cleanupFailure);
+        if(!cleaned)failures.push(Error('ELECTROSTATIC_CLEANUP_PENDING'));
+        if(failures.length){
+          run.status={...run.status,status:'cancelled',phase:'cancelled_cleanup_pending',progress:null};
+          throw new AggregateError(failures,'ELECTROSTATIC_CLEANUP_PENDING',{cause:run.executionFailure??failures[0]});
+        }
+        // The revoked source reader cannot produce another completed result.
+        run.status = { ...run.status, status: 'cancelled', phase:'cancelled_cleaned', progress: null };
         return structuredClone(run.status);
       })();
     }
     return structuredClone(await run.cancellation);
+  }
+  async acknowledgeSavedProject(id:string){
+    const run=this.require(id);if(run.status.status!=='succeeded'||run.cleanupFailure)throw Error('BRIDGE_PROVIDER_CLEANUP_UNCONFIRMED');
+    const status=await this.releaseResources(id);if(status.status!=='succeeded')throw Error('BRIDGE_PROVIDER_CLEANUP_UNCONFIRMED');run.archived=true;
+  }
+  async releaseResources(id:string){
+    const run=this.require(id),before=structuredClone(run.status);
+    if(!['succeeded','failed','cancelled'].includes(before.status))throw Error('BRIDGE_JOB_NOT_TERMINAL');
+    const after=await this.cancel(id);
+    if(after.status==='succeeded')return after; // Retain the verified numerical reader.
+    const status=before.status==='failed'?{...after,status:'failed' as const,phase:'failed_cleaned',failure:before.failure??after.failure}:after;
+    this.runs.delete(id); // Runtime handle only; immutable evidence is untouched.
+    return status;
   }
   private require(id: string) { const run = this.runs.get(id); if (!run) throw new Error('BRIDGE_NOT_FOUND'); return run; }
   private fail(run: Run, code: string) {
@@ -173,24 +194,7 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
         async readValidatedMesh() { await readApproved(); return structuredClone(mesh!); },
         readCurrentRuntimeIdentity: this.currentRuntime,
       };
-      run.archiveRoot = join(this.storageParent, run.id);
-      const storage = await ElectrostaticHostStorage.provisionNew(run.archiveRoot);
-      run.storage = storage;
-      active();
-      const records = new FileElectrostaticHostRecords(storage, this.currentRuntime, reader);
-      run.records = records;
-      await records.publishStudy(run.request.studyId);
-      const durableReader: TrustedElectrostaticSourceReader = {
-        async readCurrentProjectRevision() { return (await readApproved()).model.projectRevision; },
-        async readSealedRequest(id) {
-          const current = await readApproved(), stored = await records.readSealedRequest(id);
-          if (stored.requestDigest !== current.requestDigest) throw new Error('ELECTROSTATIC_DURABLE_SOURCE_MISMATCH');
-          return stored;
-        },
-        async readValidatedMesh(id) { await readApproved(); return records.readValidatedMesh(id); },
-        readCurrentRuntimeIdentity: this.currentRuntime,
-      };
-      run.lifecycle = new ElectrostaticAdmissionLifecycle(durableReader, this.driver);
+      run.lifecycle = new ElectrostaticAdmissionLifecycle(reader, this.driver);
       active();
       run.electricalId = run.lifecycle.submit(run.request.studyId).jobId;
       run.status = { ...run.status, phase: 'electrical_provider_lifecycle' };
@@ -204,32 +208,36 @@ export class ComposedElectrostaticProvider implements ElectrostaticDispatchProvi
       }
       if (!await run.lifecycle.getResult(run.electricalId)) throw new Error('ELECTROSTATIC_COMPLETION_MISSING');
       active();
-      run.status = { ...run.status, phase: 'persisting_validated_completion' };
-      run.ledger = new ProtectedElectrostaticLedger(storage, durableReader, run.lifecycle);
-      await run.ledger.save(run.electricalId);
-      active();
-      if (!await run.ledger.getResult(run.electricalId)) throw new Error('ELECTROSTATIC_DURABLE_REPLAY_FAILED');
-      active();
-      const completed = await run.ledger.getResult(run.electricalId);
-      if (!completed) throw new Error('ELECTROSTATIC_DURABLE_REPLAY_FAILED');
+      const completed=await run.lifecycle.getResult(run.electricalId);
+      if(!completed||!run.lifecycle.getStatus(run.electricalId).cleanupConfirmed)throw Error('ELECTROSTATIC_COMPLETION_OR_CLEANUP_INVALID');
+      run.mesh=structuredClone(mesh);run.meshFingerprint=digest(run.mesh);run.completionDigest=completed.resultDigest;
       const dispatch = { schema: 'tunacad-electrostatic-approved-dispatch/0.1', ...run.approval,
         providerRunId: run.id, electricalJobId: completed.jobId, requestDigest: run.request.requestDigest,
         canonicalSourceDigest: run.request.model.domains[0].geometryDigest, resultDigest: completed.resultDigest };
-      await writeElectrostaticHostOnce(join(storage.paths['source-catalog'], 'dispatch.pin.json'), dispatch, 4096);
       run.dispatchDigest = digest(dispatch);
       active();
-      run.status = { ...run.status, status: 'succeeded', phase: 'succeeded_cleaned_persisted',
+      run.status = { ...run.status, status: 'succeeded', phase: 'succeeded_cleaned',
         progress: 1, updatedAt: new Date().toISOString() };
     } catch (error) {
-      if (run.meshRunId) await this.mesher.cancel(run.meshRunId);
-      if (run.lifecycle && run.electricalId) await run.lifecycle.cancel(run.electricalId);
+      run.executionFailure??=error;
       this.fail(run, error instanceof Error ? error.message : 'ELECTROSTATIC_DISPATCH_FAILED');
+      // Contain cleanup errors in the terminal job state; never let run.done
+      // reject unobserved and crash the owner before it can release resources.
+      const cleanup=await Promise.allSettled([
+        Promise.resolve().then(()=>run.meshRunId?this.mesher.cancel(run.meshRunId):undefined),
+        Promise.resolve().then(()=>run.lifecycle&&run.electricalId?run.lifecycle.cancel(run.electricalId):undefined),
+      ]);
+      const failures=cleanup.flatMap(r=>r.status==='rejected'?[r.reason]:[]);
+      if(failures.length)run.cleanupFailure=new AggregateError(failures,'ELECTROSTATIC_CLEANUP_PENDING',{cause:error});
     } finally {
       const cleaned = (!run.meshRunId || await this.mesher.confirmCleanup(run.meshRunId).catch(() => false))
         && (!run.lifecycle || !run.electricalId || run.lifecycle.getStatus(run.electricalId).cleanupConfirmed);
-      if (!cleaned) this.fail(run, 'ELECTROSTATIC_CLEANUP_PENDING');
+      if (!cleaned||run.cleanupFailure){
+        if(!run.status.failure)this.fail(run,'ELECTROSTATIC_CLEANUP_PENDING');
+        run.status={...run.status,phase:'cleanup_pending'};
+      }
       if (run.revoked) run.status = { ...run.status, status: 'cancelled',
-        phase: cleaned ? 'cancelled_cleaned' : 'cancelled_cleanup_pending' };
+        phase: cleaned&&!run.cleanupFailure ? 'cancelled_cleaned' : 'cancelled_cleanup_pending' };
     }
   }
 }

@@ -2,11 +2,12 @@ import * as z from 'zod/v4';
 import { createHash } from 'node:crypto';
 import { lstat, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ElectrostaticHostStorage, readElectrostaticHostJson, writeElectrostaticHostOnce } from './electrostaticHostStorage.mts';
+import {type SimulationRecordStorage,openSimulationRecordStorage,jobWorkspaceForPath,readSimulationJson,writeSimulationJsonOnce} from './simulationJobWorkspace.mts';
 import { privateExplicitExportSchema, privateExplicitSourceSchema } from './privateExplicitPreparationContract.mts';
 import { explicitDynamicsSchema } from './explicitDynamicsContract.mts';
 import { electrostaticStepGeometryDigest } from './electrostaticStepIdentity.mts';
 import { digest } from './stableDigest.mts';
+import {withProtectedCapacityPublication} from './protectedCapacityPublication.mts';
 
 const sha=z.string().regex(/^sha256:[a-f0-9]{64}$/),id=z.string().min(1).max(160);
 const exportId=z.string().regex(/^export-[a-f0-9-]{36}$/);
@@ -52,6 +53,7 @@ async function verifyBinding(r:PrivateApprovedExportInput,bytes:Uint8Array){
 }
 
 async function readBytes(path:string){
+  const job=jobWorkspaceForPath(path);if(job)return job.read(path,maxBytes);
   const before=await lstat(path);
   if(!before.isFile()||before.isSymbolicLink()||before.size<128||before.size>maxBytes)invalid('STEP shape/budget');
   const handle=await open(path,'r');
@@ -65,12 +67,15 @@ async function readBytes(path:string){
   }finally{await handle.close();}
 }
 async function writeBytesOnce(path:string,bytes:Uint8Array){
+  const job=jobWorkspaceForPath(path);if(job)return job.write(path,bytes,maxBytes);
+  return withProtectedCapacityPublication(path,bytes.byteLength,async()=>{
   let handle;
   try{handle=await open(path,'wx',0o600);}
   catch(error:any){if(error.code!=='EEXIST')throw error;
     const existing=await readBytes(path);
     if(existing.length!==bytes.length||hashBytes(existing)!==hashBytes(bytes))invalid('immutable export collision');return;}
   try{await handle.writeFile(bytes);await handle.sync();}finally{await handle.close();}
+  });
 }
 
 /** Trusted Node owner only. No arbitrary filename, browser upload or public
@@ -83,14 +88,14 @@ export async function openPrivateExplicitExportStore(root:string,testConfigurati
     ||testConfiguration.purpose!=='private_operator_approval_fixture'
     ||Object.keys(testConfiguration).sort().join(',')!=='mode,purpose'))invalid('test configuration');
   const approvalSource=testConfiguration?'controlled_test_fixture':'human';
-  const storage=await ElectrostaticHostStorage.open(root);
+  const storage=await openSimulationRecordStorage(root);
   // A fixture root is permanently labelled; live readers/writers cannot open it
   // or reseal its approvals. No environment variable selects this test mode.
   const fixturePin=join(storage.paths['source-catalog'],'private-operator-fixture.pin.json');
-  if(testConfiguration)await writeElectrostaticHostOnce(fixturePin,{
+  if(testConfiguration)await writeSimulationJsonOnce(fixturePin,{
     schema:'tunacad-private-operator-fixture-storage/0.1',approvalSource,storageIdentity:storage.configurationDigest},4096);
   async function verifyStorageMode(){
-    if(testConfiguration){const pin=await readElectrostaticHostJson(fixturePin,4096);
+    if(testConfiguration){const pin=await readSimulationJson(fixturePin,4096);
       if(digest(pin)!==digest({schema:'tunacad-private-operator-fixture-storage/0.1',approvalSource,
         storageIdentity:storage.configurationDigest}))invalid('fixture storage label changed');}
     else {try {await lstat(fixturePin);invalid('controlled fixture storage forbidden in live mode');}
@@ -107,15 +112,15 @@ export async function openPrivateExplicitExportStore(root:string,testConfigurati
     await verifyStorageMode();
     await storage.assertReady();const p=paths(value);
     const pin=z.object({schema:z.literal('tunacad-private-approved-step-export-pin/0.1'),
-      exportId,receiptDigest:sha,storageIdentity:sha}).strict().parse(await readElectrostaticHostJson(p.pin,4096));
-    const receipt=receiptSchema.parse(await readElectrostaticHostJson(p.receipt,128*1024));
+      exportId,receiptDigest:sha,storageIdentity:sha}).strict().parse(await readSimulationJson(p.pin,4096));
+    const receipt=receiptSchema.parse(await readSimulationJson(p.receipt,128*1024));
     verifyApprovalSource(receipt);
     const receiptDigest=digest(receipt);
     if(pin.exportId!==value||receipt.geometry.exportId!==value||pin.receiptDigest!==receiptDigest
       ||expectedDigest&&receiptDigest!==expectedDigest||pin.storageIdentity!==storage.configurationDigest
       ||receipt.storageIdentity!==storage.configurationDigest)invalid('protected receipt/pin mismatch');
     const bytes=await readBytes(p.step);await verifyBinding(receipt,bytes);await storage.assertReady();
-    if(digest(await readElectrostaticHostJson(p.pin,4096))!==digest(pin))invalid('pin changed during read');
+    if(digest(await readSimulationJson(p.pin,4096))!==digest(pin))invalid('pin changed during read');
     return {receipt,bytes,status:{schema:receipt.schema,exportId:value,receiptDigest,storageIdentity:receipt.storageIdentity,
       byteDigest:receipt.geometry.byteDigest,byteLength:bytes.length,verified:true as const}};
   }
@@ -131,10 +136,10 @@ export async function openPrivateExplicitExportStore(root:string,testConfigurati
     const receipt=receiptSchema.parse({...r,schema:'tunacad-private-approved-step-export/0.1',
       storageIdentity:storage.configurationDigest,approvalScope:'geometry_export_only',unitSystem:'mm-N-s-MPa-kg',createdAt:new Date().toISOString()});
     // An ID is never republished with another receipt, even when bytes coincide.
-    await writeElectrostaticHostOnce(p.receipt,receipt,128*1024);
-    if(digest(await readElectrostaticHostJson(p.receipt,128*1024))!==digest(receipt))invalid('receipt write integrity');
+    await writeSimulationJsonOnce(p.receipt,receipt,128*1024);
+    if(digest(await readSimulationJson(p.receipt,128*1024))!==digest(receipt))invalid('receipt write integrity');
     await storage.assertReady();await verifyCurrent();
-    await writeElectrostaticHostOnce(p.pin,{schema:'tunacad-private-approved-step-export-pin/0.1',
+    await writeSimulationJsonOnce(p.pin,{schema:'tunacad-private-approved-step-export-pin/0.1',
       exportId:r.geometry.exportId,receiptDigest:digest(receipt),storageIdentity:storage.configurationDigest},4096);
     // Independent instance and handles, not in-memory bytes or writer state.
     return (await (await openPrivateExplicitExportStore(root,testConfiguration)).read(r.geometry.exportId,digest(receipt))).status;

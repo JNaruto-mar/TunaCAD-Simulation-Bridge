@@ -1,0 +1,1 @@
+export const ELECTROSTATIC_SLAB_LIMITS:Readonly<{maximumNodes:number;maximumElements:number;maximumOutputBytes:number;maximumPotentialErrorV:number;fieldRelativeTolerance:number;chargeRelativeTolerance:number;energyRelativeTolerance:number}>;

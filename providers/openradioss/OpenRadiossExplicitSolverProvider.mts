@@ -47,7 +47,7 @@ type Run={id:string;prepared:PreparedOpenRadioss;binding:ApprovedExplicitBinding
   installation:Awaited<ReturnType<typeof inspectOpenRadiossInstallation>>;status:ExplicitProviderStatus;
   directory:string|null;active:OpenRadiossProcessTask|null;cancelled:boolean;treeSafe:boolean;
   result:ExplicitDynamicsResult|null;quarantined:boolean;records:Array<Record<string,unknown>>;
-  finished:Promise<void>;failure:string|null;durable:OpenRadiossDurableCapture|null;
+  finished:Promise<void>;failure:string|null;secondaryFailures:string[];durable:OpenRadiossDurableCapture|null;
   budget:ReturnType<typeof createExecutionBudget>;headroom:ExecutionHeadroomLedger};
 /** Provider-private only. Deliberately absent from providers.mts, Companion,
  * browser/MCP selection and production capability metadata. No benchmark oracle. */
@@ -103,7 +103,7 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
     if(this.usedAuthorizations.has(binding.authorizationId)) throw new Error('Explicit authorization already consumed');
     this.usedAuthorizations.add(binding.authorizationId);
     const run:Run={id,prepared,binding:structuredClone(binding),installation,directory:null,active:null,cancelled:false,treeSafe:true,
-      result:null,quarantined:false,records:[],finished:Promise.resolve(),failure:null,
+      result:null,quarantined:false,records:[],finished:Promise.resolve(),failure:null,secondaryFailures:[],
       durable:this.host.durableEvidence?new OpenRadiossDurableCapture(this.host.durableEvidence):null,
       budget,headroom,
       status:{providerRunId:id,status:'queued',progress:null,phase:'queued',updatedAt:new Date().toISOString()}};
@@ -113,6 +113,25 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
     return {providerRunId:id,acceptedAt:new Date().toISOString()};
   }
   async getStatus(id:string) {return structuredClone(this.get(id).status);}
+  /** Terminal failure and scratch retention are not active writers. Conversely,
+   * a watchdog return is NOT proof that an outstanding write/process stopped. */
+  async settled(id:string,signal:AbortSignal){
+    const run=this.get(id);signal.throwIfAborted();let abort!:()=>void;
+    const cancelled=new Promise<never>((_,reject)=>{abort=()=>reject(signal.reason??Error('EXPLICIT_SHUTDOWN_CANCELLED'));signal.addEventListener('abort',abort,{once:true});});
+    try{await Promise.race([run.finished,cancelled]);await run.budget.settled(signal);this.confirmQuiescent(id);}
+    finally{signal.removeEventListener('abort',abort);}
+  }
+  confirmQuiescent(id?:string){
+    if(id===undefined){
+      // A rejected local submit may have created no run. Prove that from this
+      // provider's actual ownership map and budget, never from missing PIDs.
+      if(this.runs.size)throw Error('EXPLICIT_PROCESS_CLEANUP_UNCONFIRMED');
+      this.host.executionBudget?.assertSettled();return;
+    }
+    const run=this.get(id);run.budget.assertSettled();
+    if(!['succeeded','failed','cancelled'].includes(run.status.status)||run.active||!run.treeSafe)
+      throw Error('EXPLICIT_PROCESS_CLEANUP_UNCONFIRMED');
+  }
   async getResult(id:string):Promise<ExplicitDynamicsResult|null> {
     const run=this.get(id);
     if(run.status.status!=='succeeded'||run.cancelled||run.quarantined||!run.result) return null;
@@ -130,16 +149,20 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
   }
   async cancel(id:string) {
     const run=this.get(id);
-    if(['succeeded','failed','cancelled'].includes(run.status.status)) return this.getStatus(id);
+    if(['succeeded','failed','cancelled'].includes(run.status.status)){await run.finished;return this.getStatus(id);}
     run.cancelled=true;run.result=null;run.quarantined=true;
     if(run.active) {
       try {run.treeSafe=await run.active.terminateTree();} catch {run.treeSafe=false;}
-      if(!run.treeSafe) run.failure='process-tree termination not confirmed';
+      if(!run.treeSafe) this.fail(run,'process-tree termination not confirmed');
     }
     await run.finished;
     return this.getStatus(id);
   }
   private get(id:string) {const r=this.runs.get(id);if(!r) throw new Error('Unknown explicit run');return r;}
+  private fail(run:Run,reason:string){
+    if(!run.failure)run.failure=reason;
+    else if(reason!==run.failure&&!(run.secondaryFailures??=[]).includes(reason)&&run.secondaryFailures.length<8)run.secondaryFailures.push(reason);
+  }
   private state(run:Run,status:ExplicitProviderStatus['status'],phase:string,failure?:string) {
     run.status={providerRunId:run.id,status,progress:null,phase,updatedAt:new Date().toISOString(),
       ...(failure?{failure:{code:'EXPLICIT_PROVIDER_QUARANTINED',message:failure.slice(0,12000)}}:{})};
@@ -184,7 +207,7 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
       requestDigest:run.prepared.request.requestDigest,meshDigest:run.prepared.meshDigest,phase,previousReceiptDigest:run.records.at(-1)?.receiptDigest??null,
       verificationTiming:run.budget.diagnostics(),...data};
     const receipt={...unsigned,receiptDigest:digest(unsigned)};
-    try{await run.budget.run('storage',()=>this.host.retainEvidence(structuredClone(receipt)),true);}
+    try{await run.budget.run('storage',()=>this.host.retainEvidence(structuredClone(receipt)),true,'receipt_'+phase);}
     catch(error){run.durable?.markFailed();throw error;}
     run.records.push(receipt);
   }
@@ -217,7 +240,7 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
     const path=join(run.directory!,name),s=await lstat(path);
     if(!s.isFile()||s.isSymbolicLink()||s.size<1||s.size>maximum) throw new Error('Missing/ambiguous/oversized provider artifact');
     const bytes=await readFile(path);if(bytes.length!==s.size) throw new Error('Artifact mutated while reading');return bytes;
-    },true);
+    },true,'artifact_read');
   }
   private async pin(run:Run,names:string[]) {
     const artifacts:Record<string,{sha256:string;bytes:number}>={};
@@ -257,10 +280,16 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
       telemetry:{launchId,stage,executableSha256:stage==='starter'?this.config.starterSha256:this.config.engineSha256,
         inputDigest:digest(inputPin),retain:async event=>{await this.record(run,stage+'_launcher_event',{launchId,event});}}});
     run.active=task;run.treeSafe=false;
-    let timer:ReturnType<typeof setTimeout>|undefined;
+    // Completion owns its cleanup evidence even if the caller's watchdog wins.
+    // Never clear a second watchdog and leave its raced promise permanently
+    // pending in the execution ledger.
+    void task.completion.then(result=>{if(run.active===task){run.treeSafe=result.treeTerminated;run.active=null;}},()=>{});
     try {
-      const result=await run.budget.run(stage,()=>Promise.race([task.completion,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Provider stage watchdog')),65000);})]));
+      const result=await run.budget.run(stage,()=>task.completion,false,'native_'+stage);
       run.treeSafe=result.treeTerminated;run.active=null;
+      // Preserve the launcher's original error before any fallible diagnostic
+      // retention. Missing output/audit failures must never replace it.
+      if(result.error)this.fail(run,stage+' failure: '+result.error);
       if(result.stdout.length+result.stderr.length>8*1024*1024) throw new Error('Process output resource bound');
       const names=stage==='starter'?[`${RUN_NAME}_0000.out`,`${RUN_NAME}_0000_0001.rst`,`${RUN_NAME}_0001.rad`,`${RUN_NAME}_0000.rad`]:
         [`${RUN_NAME}_0001.out`,`${RUN_NAME}T01`,`${RUN_NAME}_0000_0001.rst`,`${RUN_NAME}_0001.rad`];
@@ -303,7 +332,14 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
       if(result.exitCode!==0||result.error||!result.treeTerminated||!result.launcherEvidence?.provenanceComplete||
         !result.launcherEvidence.ownedTreeComplete||captureFailure) throw new Error(stage+' failure: '+(result.error??captureFailure??'incomplete launcher/tree evidence'));
       return {pin,stdout:result.stdout.toString('utf8'),stderr:result.stderr.toString('utf8')};
-    } finally {if(timer) clearTimeout(timer);}
+    } catch(error) {
+      this.fail(run,String(error));
+      // Keep the original failure before fallible diagnostic I/O. This is
+      // bounded startup evidence, never a successful result or cleanup proof.
+      try{await this.record(run,stage+'_interrupted',{error:String(error).slice(0,12000),process:task.diagnostics?.()??null});}
+      catch(retentionError){this.fail(run,'Interrupted-stage evidence failed: '+String(retentionError));}
+      throw error;
+    }
   }
   private async execute(run:Run) {
     let candidate:ReturnType<typeof recoverOpenRadiossResult>|null=null;
@@ -365,31 +401,36 @@ export class OpenRadiossExplicitSolverProvider implements PrivateExplicitSolverP
         actualCycles:candidate.actualCycles,timestepRangeS:candidate.timestepRangeS,actualMassScaling:false,
         t01UnchangedAfterParsing:true,t01Sha256:final[`${RUN_NAME}T01`].sha256});
       await this.completeRecordedStage(run,'durable','result_validated');
-    } catch(error) {run.headroom.invalidateAll();run.failure=String(error);run.quarantined=true;candidate=null;
+    } catch(error) {run.headroom.invalidateAll();this.fail(run,String(error));run.quarantined=true;candidate=null;
       if(/durable/i.test(String(error)))run.durable?.markFailed();}
     finally {
       if(run.active) {
-        try {run.treeSafe=await run.active.terminateTree();} catch {run.treeSafe=false;}
-        if(!run.treeSafe) run.failure='Process-tree termination not confirmed';
+        try {await run.budget.run('finalization',async()=>{
+          const task=run.active!;run.treeSafe=await task.terminateTree();
+          if(run.treeSafe){const exited=await task.completion;run.treeSafe=exited.treeTerminated;if(run.treeSafe)run.active=null;}
+        },true,'process_tree_drain');} catch {run.treeSafe=false;}
+        if(!run.treeSafe) this.fail(run,'Process-tree termination not confirmed');
       }
+      let drained=false;
+      try{await run.budget.drain();drained=true;}catch(error){this.fail(run,'Pending operation drain failed: '+String(error));}
       let cleaned=!run.directory;
-      try {if(run.directory&&run.treeSafe&&run.durable?.cleanupAllowed!==false)
-        cleaned=await run.budget.run('finalization',()=>this.cleanup(run.directory!),true);} catch {cleaned=false;}
-      if(!cleaned) {run.failure=run.durable?.cleanupAllowed===false?'Durable evidence retention failed; bounded scratch preserved':'Cleanup/process-tree failure';run.quarantined=true;candidate=null;}
+      try {if(drained&&run.directory&&run.treeSafe&&run.durable?.cleanupAllowed!==false)
+        cleaned=await run.budget.run('finalization',()=>this.cleanup(run.directory!),true,'scratch_cleanup');} catch {cleaned=false;}
+      if(!cleaned) {this.fail(run,run.durable?.cleanupAllowed===false?'Durable evidence retention failed; bounded scratch preserved':'Cleanup/process-tree failure');run.quarantined=true;candidate=null;}
       const unsigned=candidate&&cleaned&&!run.cancelled&&!run.quarantined?
         {...candidate,executionStatus:'succeeded' as const,cleanupConfirmed:true as const}:null;
       let completed=unsigned?{...unsigned,resultDigest:digest(unsigned)}:null;
       const cancelledAtFinalReceipt=run.cancelled;
       try {
         await this.record(run,'finalized',{cleaned,treeTerminated:run.treeSafe,cancelled:run.cancelled,
-          quarantined:run.quarantined||run.cancelled,failure:run.failure,resultDigest:completed?.resultDigest??null});
+          quarantined:run.quarantined||run.cancelled,failure:run.failure,secondaryFailures:run.secondaryFailures,resultDigest:completed?.resultDigest??null});
         if(run.cancelled&&!cancelledAtFinalReceipt) await this.record(run,'late_cancellation_quarantined',
           {cancelled:true,quarantined:true,resultDigest:null,cleaned});
         if(completed&&!run.cancelled&&!run.quarantined)await this.completeRecordedStage(run,'finalization','finalized');
       }
-      catch(error) {run.failure='Protected evidence retention failed: '+String(error);candidate=null;completed=null;run.quarantined=true;
+      catch(error) {this.fail(run,'Protected evidence retention failed: '+String(error));candidate=null;completed=null;run.quarantined=true;
         // A final admission failure cannot leave a replayable success receipt.
-        try{await this.record(run,'retrieval_quarantined',{reason:run.failure});}catch{} }
+        try{await this.record(run,'retrieval_quarantined',{reason:run.failure,secondaryFailures:run.secondaryFailures});}catch{} }
       const terminal=classifyFinalReceipt({phase:'finalized',cleaned,treeTerminated:run.treeSafe,
         cancelled:run.cancelled,quarantined:run.quarantined,failure:run.failure,resultDigest:completed?.resultDigest??null});
       if(terminal==='cancelled')

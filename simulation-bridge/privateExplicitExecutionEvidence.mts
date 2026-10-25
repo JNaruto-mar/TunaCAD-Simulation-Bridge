@@ -4,17 +4,18 @@ import { open,readFile,lstat,readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { digest } from './stableDigest.mts';
 import { sha256 } from '../providers/openradioss/OpenRadiossInstallation.mts';
-import { ElectrostaticHostStorage,writeElectrostaticHostOnce,readElectrostaticHostJson } from './electrostaticHostStorage.mts';
+import {type SimulationRecordStorage,openSimulationRecordStorage,jobWorkspaceForPath,readSimulationJson,writeSimulationJsonOnce} from './simulationJobWorkspace.mts';
 import type { OpenRadiossDurableSink } from '../providers/openradioss/OpenRadiossDurableCapture.mts';
 import { validatePrivateExplicitSolve } from './privateExplicitPreparationContract.mts';
 import { artifactByteLimit,validateArtifactPins,EXPLICIT_ARTIFACT_POLICY_DIGEST,classifyFinalReceipt }
   from '../providers/openradioss/OpenRadiossExecutionReadiness.mts';
 import { verifyExecutionTerminalChain } from './privateExplicitExecutionReadiness.mts';
+import {withProtectedCapacityPublication} from './protectedCapacityPublication.mts';
 
 /** Use a NEW per-execution protected storage root, not an existing completion.
  * Caller is the trusted native owner (fixtures isolate theirs), never HTTP data.
  * Provisioning stays explicit; opening never repairs permissions. */
-export async function openProtectedExecutionEvidence(storage:ElectrostaticHostStorage,ticket:any,input:any,bridgeReady:any,expectedApprovalSource:'human'|'controlled_test_fixture'='controlled_test_fixture'){
+export async function openProtectedExecutionEvidence(storage:SimulationRecordStorage,ticket:any,input:any,bridgeReady:any,expectedApprovalSource:'human'|'controlled_test_fixture'='controlled_test_fixture'){
   await storage.assertReady();assert.equal(digest(input),ticket.inputDigest);
   assert.equal(ticket.approvalSource,expectedApprovalSource);
   assert.equal(digest(bridgeReady),ticket.bridgeReadyDigest);
@@ -23,7 +24,7 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
   assert.equal(bridgeReady.solveApproval.authorizationId,ticket.bridgeApprovalId);
   assert.equal(bridgeReady.solveApproval.approvalSource,expectedApprovalSource);
   assert.equal(bridgeReady.solveApproval.bindingDigest,digest(binding));
-  await writeElectrostaticHostOnce(join(storage.paths.studies,'execution-package.json'),{
+  await writeSimulationJsonOnce(join(storage.paths.studies,'execution-package.json'),{
     schema:'tunacad-current-lineage-execution-evidence/1',authority:ticket,input,bridgeReady,
     evidenceOnly:true,replayableAuthority:false,engineeringUsePermitted:false},2*1024*1024);
   let runId:string|null=null,previous:string|null=null,receipts=0,candidateDigest:string|null=null;
@@ -35,8 +36,8 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
   };
   async function saveJson(role:'results'|'completion-catalog',name:string,record:any){
     await storage.assertReady();const path=join(storage.paths[role],name);
-    await writeElectrostaticHostOnce(path,record,2*1024*1024);
-    assert.equal(digest(await readElectrostaticHostJson(path,2*1024*1024)),digest(record));
+    await writeSimulationJsonOnce(path,record,2*1024*1024);
+    assert.equal(digest(await readSimulationJson(path,2*1024*1024)),digest(record));
     await storage.assertReady();
   }
   const durableEvidence:OpenRadiossDurableSink={
@@ -49,7 +50,10 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
         assert.match(name,/^[A-Za-z0-9_.-]+$/);const raw=bytes[name];
         assert.ok(raw&&raw.length===pin.bytes&&raw.length<=artifactByteLimit(name));assert.equal(sha256(Buffer.from(raw)),pin.sha256);
         await storage.assertReady();const path=join(storage.paths.results,record.phase+'-'+name);
-        const handle=await open(path,'wx',0o600);try{await handle.writeFile(new Uint8Array(raw));await handle.sync();}finally{await handle.close();}
+        const job=jobWorkspaceForPath(path);if(job)await job.write(path,raw,artifactByteLimit(name));
+        else await withProtectedCapacityPublication(path,raw.byteLength,async()=>{
+          const handle=await open(path,'wx',0o600);try{await handle.writeFile(new Uint8Array(raw));await handle.sync();}finally{await handle.close();}
+        });
         const stat=await lstat(path);assert.ok(stat.isFile()&&!stat.isSymbolicLink());
         const reopened=await readFile(path);assert.equal(reopened.length,pin.bytes);assert.equal(sha256(reopened),pin.sha256);
       }
@@ -63,7 +67,7 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
   };
   return {durableEvidence,async verifyStorageReadiness(){
     await storage.assertReady();
-    const saved=await readElectrostaticHostJson(join(storage.paths.studies,'execution-package.json'),2*1024*1024);
+    const saved=await readSimulationJson(join(storage.paths.studies,'execution-package.json'),2*1024*1024);
     assert.equal(digest(saved.authority),digest(ticket));assert.equal(digest(saved.input),ticket.inputDigest);
     assert.equal(digest(saved.bridgeReady),ticket.bridgeReadyDigest);await storage.assertReady();
     return {authorityId:ticket.authorityId,inputDigest:ticket.inputDigest,bridgeReadyDigest:ticket.bridgeReadyDigest,
@@ -76,7 +80,7 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
     if(r.phase==='prepared'){
       assert.equal(r.binding.authorizationId,ticket.authorityId);assert.equal(r.runtimeDigest,input.provider.runtimeDigest);
     }
-    if(r.phase==='result_validated')assert.equal(r.candidateDigest,digest((await readElectrostaticHostJson(
+    if(r.phase==='result_validated')assert.equal(r.candidateDigest,digest((await readSimulationJson(
       join(storage.paths.results,'validated-candidate.json'),2*1024*1024)).candidate));
     // finalized is the authenticated publication/cleanup receipt; candidate is
     // explicitly NOT a retrievable result before this boundary.
@@ -88,7 +92,7 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
       const latch=join(storage.paths['source-catalog'],'execution-quarantine.json');
       // First failure is immutable; later failures cannot clear/reseal it.
       let exists=true;try{await lstat(latch);}catch(e:any){if(e.code==='ENOENT')exists=false;else throw e;}
-      if(!exists)await writeElectrostaticHostOnce(latch,{schema:'tunacad-current-execution-quarantine/1',
+      if(!exists)await writeSimulationJsonOnce(latch,{schema:'tunacad-current-execution-quarantine/1',
         authorityId:ticket.authorityId,providerRunId:runId,receiptDigest:r.receiptDigest},4096);
     }
     receipts++;previous=receiptDigest;
@@ -97,14 +101,14 @@ export async function openProtectedExecutionEvidence(storage:ElectrostaticHostSt
 
 /** Fresh native reader, never recreates execution authority from disk. */
 export async function reopenProtectedExecutionEvidence(root:string,readFreshInput:()=>Promise<unknown>){
-  const storage=await ElectrostaticHostStorage.open(root);
-  const pkg=await readElectrostaticHostJson(join(storage.paths.studies,'execution-package.json'),2*1024*1024);
+  const storage=await openSimulationRecordStorage(root);
+  const pkg=await readSimulationJson(join(storage.paths.studies,'execution-package.json'),2*1024*1024);
   await validatePrivateExplicitSolve(pkg.bridgeReady.binding);
   assert.equal(digest(await readFreshInput()),pkg.authority.inputDigest,'fresh source/artifacts/runtime changed');
   const names=(await readdir(storage.paths['completion-catalog'])).sort();
   if(names.some((n,i)=>!n.startsWith(String(i).padStart(2,'0')+'-')||!n.endsWith('.json')))throw new Error('Terminal catalog gap/ambiguity');
-  const captures=[];for(const n of names)captures.push(await readElectrostaticHostJson(join(storage.paths['completion-catalog'],n),2*1024*1024));
-  async function optional(path:string){try{return await readElectrostaticHostJson(path,2*1024*1024);}catch(e:any){if(e.code==='ENOENT')return null;throw e;}}
+  const captures=[];for(const n of names)captures.push(await readSimulationJson(join(storage.paths['completion-catalog'],n),2*1024*1024));
+  async function optional(path:string){try{return await readSimulationJson(path,2*1024*1024);}catch(e:any){if(e.code==='ENOENT')return null;throw e;}}
   const latch=await optional(join(storage.paths['source-catalog'],'execution-quarantine.json'));
   const manifests=[];
   for(const phase of ['starter_output_pin','engine_output_pin']){

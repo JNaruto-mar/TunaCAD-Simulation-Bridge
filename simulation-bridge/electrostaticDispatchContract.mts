@@ -25,6 +25,10 @@ export interface ElectrostaticDispatchProvider {
    * Never registered as a public field/export endpoint or a historical reader. */
   captureNewPortableFields?(id:string,signal:AbortSignal):Promise<{result:ElectrostaticDispatchResult;datasets:Array<{descriptor:ElectricalDataset;triangles:ElectricalTriangle[]}>}>;
   cancel(id: string): Promise<SimulationProviderStatus>;
+  /** Owner-local cleanup acknowledgement. Keeps successful unarchived results;
+   * never deletes protected evidence or creates execution authority. */
+  acknowledgeSavedProject?(id:string):Promise<void>;
+  releaseResources?(id:string):Promise<SimulationProviderStatus>;
 }
 export interface ElectrostaticDispatchResult {
   schema: 'tunacad-electrostatic-dispatch-result/0.1';

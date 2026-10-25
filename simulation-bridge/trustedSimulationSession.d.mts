@@ -1,0 +1,7 @@
+export interface SimulationSessionScope {workspaceId:string;clients:readonly string[];capabilities:readonly string[];maximumJobs:number;maximumMeshes:number;maximumSolverProcesses:number;maximumNodes:number;maximumElements:number}
+export interface SimulationSessionContext {deviceId:string;origin:string;workspaceId:string;clientId:string}
+export interface TrustedSimulationSession {id:string;scope:SimulationSessionScope;deviceId:string;origin:string;signal:AbortSignal;verifyContext(context:SimulationSessionContext):Promise<string>;check(context:SimulationSessionContext,request:unknown):Promise<true>;admit(context:SimulationSessionContext,request:unknown):Promise<unknown>;authorizeScope(scope:SimulationSessionScope):Promise<unknown>;status():{id:string;workspaceId:string;clients:string[];capabilities:string[];revoked:boolean;used:{jobs:number;meshes:number;solverProcesses:number};limits:SimulationSessionScope;engineeringUsePermitted:false};revoke():Promise<void>}
+export const TRUSTED_SIMULATION_CAPABILITIES:readonly string[];
+export function validateSimulationSessionScope(value:unknown):SimulationSessionScope;
+export function simulationRequestCost(value:unknown):{capability:string;requestDigest:string;jobs:number;meshes:number;solverProcesses:number;nodes:number;elements:number};
+export function authorizeSimulationSession(options:{scope:unknown;deviceId:string;origin:string;approve(review:unknown):Promise<boolean>;resolveClient(id:string):Promise<string>|string;id?:string;onRevoke?:()=>Promise<unknown>}):Promise<TrustedSimulationSession>;

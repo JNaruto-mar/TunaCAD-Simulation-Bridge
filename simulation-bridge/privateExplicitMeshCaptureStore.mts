@@ -2,7 +2,7 @@ import { lstat,open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { digest } from './stableDigest.mts';
-import { ElectrostaticHostStorage,readElectrostaticHostJson,writeElectrostaticHostOnce } from './electrostaticHostStorage.mts';
+import {type SimulationRecordStorage,openSimulationRecordStorage,jobWorkspaceForPath,readSimulationJson,writeSimulationJsonOnce} from './simulationJobWorkspace.mts';
 import { privateCapturedMeshRecordSchema,type PrivateExplicitMeshRecord } from './privateExplicitMeshRecord.mts';
 import { openPrivateExplicitExportStore } from './privateExplicitExportStore.mts';
 import { admitExplicitLinearMesh,parseExplicitMsh22,explicitMeshConfigurationDigest,verifyExplicitMeshPreflightBinding }
@@ -10,19 +10,21 @@ import { admitExplicitLinearMesh,parseExplicitMsh22,explicitMeshConfigurationDig
 import {parseExplicitStepTopology} from '../providers/gmsh/ExplicitStepTopology.mts';
 import {explicitHistorySampling} from './explicitHistorySampling.mts';
 import {admitExplicitHistoryResources} from '../providers/openradioss/OpenRadiossHistoryResource.mts';
+import {withProtectedCapacityPublication} from './protectedCapacityPublication.mts';
 type TestConfiguration={mode:'controlled_test_fixture';purpose:'private_operator_approval_fixture'};
 export const rawDigest=(bytes:Uint8Array|string)=>'sha256:'+createHash('sha256').update(bytes).digest('hex');
-export async function verifyPrivateMeshStorageMode(storage:ElectrostaticHostStorage,test?:TestConfiguration){
+export async function verifyPrivateMeshStorageMode(storage:SimulationRecordStorage,test?:TestConfiguration){
   if(test&&(test.mode!=='controlled_test_fixture'||test.purpose!=='private_operator_approval_fixture'
     ||Object.keys(test).sort().join(',')!=='mode,purpose'))throw new Error('PRIVATE_MESH_TEST_CONFIGURATION_INVALID');
   const path=join(storage.paths['source-catalog'],'private-operator-fixture.pin.json');
-  if(test){const pin=await readElectrostaticHostJson(path,4096);
+  if(test){const pin=await readSimulationJson(path,4096);
     if(digest(pin)!==digest({schema:'tunacad-private-operator-fixture-storage/0.1',approvalSource:'controlled_test_fixture',
       storageIdentity:storage.configurationDigest}))throw new Error('PRIVATE_MESH_FIXTURE_LABEL_INVALID');
   }else{try{await lstat(path);throw new Error('PRIVATE_MESH_FIXTURE_STORAGE_FORBIDDEN');}
     catch(error:any){if(error.code!=='ENOENT')throw error;}}
 }
 export async function readProtectedMeshBytes(path:string){
+  const job=jobWorkspaceForPath(path);if(job)return job.read(path,16*1024*1024);
   const before=await lstat(path);
   if(!before.isFile()||before.isSymbolicLink()||before.size<1||before.size>16*1024*1024)throw new Error('PRIVATE_MESH_BYTES_INVALID');
   const file=await open(path,'r');try{const info=await file.stat();
@@ -33,11 +35,14 @@ export async function readProtectedMeshBytes(path:string){
 }
 export async function writeProtectedMeshBytesOnce(path:string,bytes:Uint8Array){
   if(bytes.length>16*1024*1024)throw new Error('PRIVATE_MESH_BYTES_BUDGET');
+  const job=jobWorkspaceForPath(path);if(job)return job.write(path,bytes,16*1024*1024);
+  return withProtectedCapacityPublication(path,bytes.byteLength,async()=>{
   let file;try{file=await open(path,'wx',0o600);}catch(error:any){if(error.code!=='EEXIST')throw error;
     if(rawDigest(await readProtectedMeshBytes(path))!==rawDigest(bytes))throw new Error('PRIVATE_MESH_IMMUTABLE_COLLISION');return;}
   try{await file.writeFile(bytes);await file.sync();}finally{await file.close();}
+  });
 }
-async function makeArtifact(storage:ElectrostaticHostStorage,receipt:any,text:string,execution:any){
+async function makeArtifact(storage:SimulationRecordStorage,receipt:any,text:string,execution:any){
   const exact=receipt.request.model.cad?.mappingMethod==='exact-step-boundary-v1';
   const mesh=parseExplicitMsh22(text,receipt.source.canonicalSourceDigest,receipt.request.model.kind==='single_solid_cad',exact);
   if(exact){
@@ -58,7 +63,7 @@ async function makeArtifact(storage:ElectrostaticHostStorage,receipt:any,text:st
     geometryDigest:receipt.source.canonicalSourceDigest,domainId:receipt.source.domainId,requestDigest:receipt.request.requestDigest,
     mesh,admission};
 }
-export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStorage,record:PrivateExplicitMeshRecord,
+export async function verifyCapturedMeshArtifacts(storage:SimulationRecordStorage,record:PrivateExplicitMeshRecord,
   artifact:any,test?:TestConfiguration){
   if(record.schema!=='tunacad-private-explicit-protected-mesh/0.2')throw new Error('PRIVATE_MESH_CAPTURE_REQUIRED');
   const c=record.capture;
@@ -68,7 +73,7 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
     throw new Error('PRIVATE_MESH_EXPORT_REQUEST_MISMATCH');
   const raw=await readProtectedMeshBytes(join(storage.paths.results,'explicit-raw-'+c.rawMeshDigest.slice(7)+'.msh'));
   if(rawDigest(raw)!==c.rawMeshDigest||raw.length!==c.rawMeshByteLength)throw new Error('PRIVATE_MESH_RAW_TAMPERED');
-  const execution=await readElectrostaticHostJson(join(storage.paths.results,'explicit-execution-'+c.executionReceiptDigest.slice(7)+'.json'),128*1024);
+  const execution=await readSimulationJson(join(storage.paths.results,'explicit-execution-'+c.executionReceiptDigest.slice(7)+'.json'),128*1024);
   const expected=await makeArtifact(storage,exported.receipt,new TextDecoder('utf-8',{fatal:true}).decode(raw),execution);
   if(digest(expected)!==record.mesh.meshDigest||digest(artifact)!==digest(expected)
     ||expected.mesh.nodes.length!==record.mesh.nodeCount||expected.mesh.elements.length!==record.mesh.elementCount
@@ -76,8 +81,8 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
     ||JSON.stringify(expected.admission.faceMappings.monitoring?.map(f=>({referenceId:f.referenceId,nodeIds:f.nodeIds})))!==JSON.stringify(record.mesh.monitoringFaces))
     throw new Error('PRIVATE_MESH_REVALIDATION_MISMATCH');
   if(!/^[a-f0-9-]{36}$/.test(execution.runId))throw new Error('PRIVATE_MESH_EXECUTION_ID_INVALID');
-  const before=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-before.json'),32768);
-  const cleanup=await readElectrostaticHostJson(join(storage.paths.results,'gmsh-'+execution.runId+'-cleanup.json'),4096);
+  const before=await readSimulationJson(join(storage.paths.results,'gmsh-'+execution.runId+'-before.json'),32768);
+  const cleanup=await readSimulationJson(join(storage.paths.results,'gmsh-'+execution.runId+'-cleanup.json'),4096);
   // Old captures have neither an explicit size nor a preflight receipt. Keep
   // their exact replay valid; new sized captures require the bound preflight.
   verifyExplicitMeshPreflightBinding(record.request,before.meshResourcePreflight);
@@ -100,7 +105,7 @@ export async function verifyCapturedMeshArtifacts(storage:ElectrostaticHostStora
 
 /** Protected host owner: admits authentic raw output, writes immutable artifacts
  * and pin LAST. No caller mesh, configuration digest or conformity claim. */
-export async function capturePrivateExplicitMesh(storage:ElectrostaticHostStorage,exportId:string,
+export async function capturePrivateExplicitMesh(storage:SimulationRecordStorage,exportId:string,
   execution:any,text:string,verifyCurrent:()=>Promise<void>,test?:TestConfiguration){
   await storage.assertReady();await verifyPrivateMeshStorageMode(storage,test);
   const exported=await (await openPrivateExplicitExportStore(storage.root,test)).read(exportId);
@@ -117,13 +122,13 @@ export async function capturePrivateExplicitMesh(storage:ElectrostaticHostStorag
       executionReceiptDigest:eDigest,rawMeshDigest:rawDigest(text),rawMeshByteLength:Buffer.byteLength(text),
       gmshExecutableDigest:execution.executableDigest,providerSettingsIdentity:execution.settingsIdentity,configurationDigest:explicitMeshConfigurationDigest(r.request)}});
   await writeProtectedMeshBytesOnce(join(storage.paths.results,'explicit-raw-'+record.capture.rawMeshDigest.slice(7)+'.msh'),new TextEncoder().encode(text));
-  await writeElectrostaticHostOnce(join(storage.paths.results,'explicit-execution-'+eDigest.slice(7)+'.json'),execution,128*1024);
+  await writeSimulationJsonOnce(join(storage.paths.results,'explicit-execution-'+eDigest.slice(7)+'.json'),execution,128*1024);
   await verifyCapturedMeshArtifacts(storage,record,artifact,test);await verifyCurrent();
-  await writeElectrostaticHostOnce(join(storage.paths.results,'explicit-mesh-'+meshDigest.slice(7)+'.json'),artifact);
+  await writeSimulationJsonOnce(join(storage.paths.results,'explicit-mesh-'+meshDigest.slice(7)+'.json'),artifact);
   const recordDigest=digest(record),lookupDigest=digest({studyId:r.studyId,geometry:r.geometry,source:r.source});
-  await writeElectrostaticHostOnce(join(storage.paths.studies,'explicit-mesh-'+recordDigest.slice(7)+'.json'),record,65536);
+  await writeSimulationJsonOnce(join(storage.paths.studies,'explicit-mesh-'+recordDigest.slice(7)+'.json'),record,65536);
   await storage.assertReady();await verifyCurrent();
-  await writeElectrostaticHostOnce(join(storage.paths['source-catalog'],'explicit-mesh-'+lookupDigest.slice(7)+'.pin.json'),{
+  await writeSimulationJsonOnce(join(storage.paths['source-catalog'],'explicit-mesh-'+lookupDigest.slice(7)+'.pin.json'),{
     schema:'tunacad-private-explicit-mesh-pin/0.1',lookupDigest,recordDigest,storageIdentity:storage.configurationDigest},4096);
   return record;
 }

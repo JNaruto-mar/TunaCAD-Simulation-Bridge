@@ -1,5 +1,6 @@
 import { digest } from '../../simulation-bridge/stableDigest.mts';
 import { release } from 'node:os';
+import {withNativeStorageVerificationAccounting} from '../../simulation-bridge/nativeStoragePreflightDiagnostic.mts';
 
 // Frozen planning reserves and execution-work ceilings, not observations.
 // Fresh verification is accounted separately and remains subject to absolute
@@ -74,6 +75,14 @@ export function createExecutionBudget(expiresAt:number,now:()=>number=Date.now){
   const spent=Object.fromEntries(Object.keys(EXECUTION_STAGE_BUDGET_MS).map(k=>[k,0])) as Record<keyof typeof EXECUTION_STAGE_BUDGET_MS,number>;
   const executionSpent={...spent},verificationSpent={...spent};
   const operations:Array<Readonly<Record<string,unknown>>>=[];let verifying=false,dropped=0;
+  // A watchdog rejects admission, but cannot cancel an already issued fsync or
+  // helper. Keep the actual promise owned until it settles; shutdown must drain
+  // it before publishing a release. A late result can never become a success.
+  const pending=new Set<Promise<unknown>>();
+  const own=<T,>(work:()=>Promise<T>):Promise<T>=>{
+    const promise=Promise.resolve().then(work);pending.add(promise);
+    void promise.then(()=>pending.delete(promise),()=>pending.delete(promise));return promise;
+  };
   const perform=async<T,>(stage:ExecutionStage,work:()=>Promise<T>,retention:boolean,operation:string,kind:'verification'|'execution'):Promise<T>=>{
     if(!Object.hasOwn(EXECUTION_STAGE_BUDGET_MS,stage)||!Number.isFinite(expiresAt)||!/^[a-zA-Z0-9_:-]{1,80}$/.test(operation))
       throw new Error('EXECUTION_BUDGET_OPERATION_INVALID');
@@ -83,21 +92,36 @@ export function createExecutionBudget(expiresAt:number,now:()=>number=Date.now){
     // Its I/O/schema/size bounds and absolute authority expiry remain enforced.
     // Actual execution, recovery, retention and cleanup keep their watchdogs.
     const timeout=kind==='verification'?expiresAt-start:Math.min(remaining,retention?Infinity:expiresAt-start);
-    let timer:ReturnType<typeof setTimeout>|undefined,passed=false;
+    let timer:ReturnType<typeof setTimeout>|undefined,passed=false,active=true,paused=false,pauseStart=0,readinessMs=0;
     const fail=(reason:string)=>new Error(reason+': '+stage+'; operation='+operation);
     try{
       if(timeout<=0)throw fail(kind==='verification'?'EXECUTION_AUTHORITY_EXPIRED':'EXECUTION_STAGE_BUDGET_EXHAUSTED');
-      const value=await Promise.race([work(),new Promise<never>((_,reject)=>{
-        timer=setTimeout(()=>reject(fail(kind==='verification'?'EXECUTION_AUTHORITY_EXPIRED':'EXECUTION_STAGE_BUDGET_EXCEEDED')),timeout);
-      })]);
+      let rejectDeadline!:(error:Error)=>void;
+      const deadline=new Promise<never>((_,reject)=>{rejectDeadline=reject;});
+      const elapsed=()=>Math.max(0,now()-start-readinessMs);
+      const arm=()=>{
+        if(timer)clearTimeout(timer);
+        const left=kind==='verification'?expiresAt-now():Math.min(remaining-elapsed(),retention?Infinity:expiresAt-now());
+        timer=setTimeout(()=>rejectDeadline(fail(kind==='verification'?'EXECUTION_AUTHORITY_EXPIRED':'EXECUTION_STAGE_BUDGET_EXCEEDED')),Math.max(0,left));
+      };
+      const account=async<V,>(name:string,read:()=>Promise<V>):Promise<V>=>{
+        if(!active||paused||verifying)throw Error('VERIFICATION_OWNER_NESTING_REJECTED');
+        paused=true;pauseStart=now();if(timer)clearTimeout(timer);verifying=true;
+        try{return await perform('storage',read,false,name,'verification');}
+        finally{readinessMs+=Math.max(0,now()-pauseStart);paused=false;verifying=false;if(active)arm();}
+      };
+      arm();
+      const value=await Promise.race([own(()=>kind==='execution'&&(stage==='storage'||stage==='durable')
+        ?withNativeStorageVerificationAccounting(account,work):work()),deadline]);
       if(!retention&&now()>=expiresAt)throw fail('EXECUTION_AUTHORITY_EXPIRED');
-      if(now()-start>timeout)throw fail('EXECUTION_STAGE_BUDGET_EXCEEDED');
+      if((kind==='verification'?now()-start:elapsed())>(kind==='verification'?timeout:remaining))throw fail('EXECUTION_STAGE_BUDGET_EXCEEDED');
       passed=true;return value;
     }finally{
-      const end=now(),elapsed=Math.max(0,end-start);spent[stage]+=elapsed;
+      active=false;
+      const end=now(),wallElapsedMs=Math.max(0,end-start),elapsed=Math.max(0,wallElapsedMs-readinessMs-(paused?Math.max(0,end-pauseStart):0));spent[stage]+=elapsed;
       (kind==='verification'?verificationSpent:executionSpent)[stage]+=elapsed;
       if(timer)clearTimeout(timer);
-      operations.push(Object.freeze({stage,operation,workClass:kind,startMs:start,endMs:end,elapsedMs:elapsed,passed,
+      operations.push(Object.freeze({stage,operation,workClass:kind,startMs:start,endMs:end,elapsedMs:elapsed,wallElapsedMs,readinessMs,passed,
         spentMs:spent[stage],executionSpentMs:executionSpent[stage],verificationSpentMs:verificationSpent[stage],
         remainingMs:Math.max(0,EXECUTION_STAGE_BUDGET_MS[stage]-executionSpent[stage])}));
       if(operations.length>64){operations.shift();dropped++;}
@@ -107,7 +131,18 @@ export function createExecutionBudget(expiresAt:number,now:()=>number=Date.now){
     stages:Object.fromEntries(Object.entries(spent).map(([stage,value])=>[stage,{ceilingMs:EXECUTION_STAGE_BUDGET_MS[stage as ExecutionStage],
       spentMs:value,executionSpentMs:executionSpent[stage as ExecutionStage],verificationSpentMs:verificationSpent[stage as ExecutionStage],
       remainingMs:Math.max(0,EXECUTION_STAGE_BUDGET_MS[stage as ExecutionStage]-executionSpent[stage as ExecutionStage])}])),
-    operations:[...operations],dropped}),
+    operations:[...operations],dropped,pendingOperations:pending.size}),
+    assertSettled(){if(pending.size)throw Error('EXECUTION_OPERATIONS_PENDING');},
+    async settled(signal:AbortSignal){
+      signal.throwIfAborted();let abort!:()=>void;
+      const cancelled=new Promise<never>((_,reject)=>{abort=()=>reject(signal.reason??Error('EXECUTION_DRAIN_CANCELLED'));signal.addEventListener('abort',abort,{once:true});});
+      try{while(pending.size){await Promise.race([Promise.allSettled([...pending]),cancelled]);signal.throwIfAborted();}}
+      finally{signal.removeEventListener('abort',abort);}
+    },
+    async drain(){
+      const outstanding=[...pending];
+      await perform('finalization',async()=>{await Promise.allSettled(outstanding);},true,'pending_operation_drain','execution');
+    },
     async verify<T>(stage:'source'|'storage'|'runtime',operation:string,work:()=>Promise<T>):Promise<T>{
       if(verifying)throw new Error('VERIFICATION_OWNER_NESTING_REJECTED');
       verifying=true;try{return await perform(stage,work,false,operation,'verification');}finally{verifying=false;}

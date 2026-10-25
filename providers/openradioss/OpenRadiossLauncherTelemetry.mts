@@ -75,15 +75,17 @@ export async function createPrivateLauncherChannel(stage:'starter'|'engine',exec
   const drain=new Promise<void>(yes=>{resolveDrained=yes;});
   const validator=createLauncherEventValidator(context,()=>wrapperPid);
   const server=createServer(client=>{
-    if(socket){client.destroy();problem=new Error('LAUNCHER_DUPLICATE_CONNECTION');return;}socket=client;
-    client.on('error',e=>{problem=e;});
+    if(socket){client.destroy();problem??=new Error('LAUNCHER_DUPLICATE_CONNECTION');return;}socket=client;
+    client.on('error',e=>{problem??=e;});
     client.on('end',()=>{drained=true;resolveDrained();});
     client.on('close',()=>{resolveDrained();});
     client.on('data',b=>{total+=b.length;pending+=b.toString('utf8');
-      if(total>96*1024||Buffer.byteLength(pending)>16384){problem=new Error('LAUNCHER_CHANNEL_BOUND');client.destroy();return;}
+      if(total>96*1024||Buffer.byteLength(pending)>16384){problem??=new Error('LAUNCHER_CHANNEL_BOUND');client.destroy();return;}
       const lines=pending.split('\n');pending=lines.pop()!;
-      for(const line of lines)chain=chain.then(async()=>{const event=validator.accept(authenticateLauncherEnvelope(line,key));await retain(event);})
-        .catch(e=>{problem=e;client.destroy();});
+      for(const line of lines)chain=chain.then(async()=>{
+        if(problem)return; // A failed publication is terminal, not a retry slot.
+        const event=validator.accept(authenticateLauncherEnvelope(line,key));await retain(event);
+      }).catch(e=>{problem??=e instanceof Error?e:new Error(String(e));client.destroy();});
     });
   });
   await new Promise<void>((yes,no)=>{server.once('error',no);server.listen(path,yes);});

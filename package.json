@@ -12,6 +12,7 @@
     "providers/**/*.cs",
     "providers/**/LICENSE_REPORT.md",
     "simulation-bridge/**/*.mts",
+    "simulation-bridge/**/*.mjs",
     "src/simulation/**/*.ts"
   ],
   "engines": {

@@ -1,3 +1,4 @@
+import type {ExplicitDispatchCapabilities} from '../../simulation-bridge/explicitDispatchContract.mts';
 import type { SimulationProviderCapabilities, SimulationProviderCapabilitiesV2 } from './externalSimulationContracts.ts';
 import type { ElectrostaticDispatchCapabilities } from '../../simulation-bridge/electrostaticDispatchContract.mts';
 
@@ -8,9 +9,10 @@ export interface SimulationBridgeReadiness {
   ready: boolean;
   provider: { id: string; version: string; capabilities: SimulationProviderCapabilities } | null;
   providerV2?: { id: string; version: string; capabilities: SimulationProviderCapabilitiesV2 } | null;
+  explicit?:ExplicitDispatchCapabilities|null;
   electrostatic?: ElectrostaticDispatchCapabilities | null;
   meshing: { ready: boolean; adapterVersion: string; runtimeVersion: string | null; geometryFormats: string[]; elementFamilies: string[] };
   solving: { ready: boolean; adapterVersion: string; runtimeVersion: string | null; analysisTypes: string[] };
-  configuration?: { gmshExecutable: string; calculixExecutable: string; discoveryUsed: boolean };
+  configuration?: { gmshExecutable: string; calculixExecutable: string; discoveryUsed: boolean;electrostaticStorageConfigured?:boolean };
   limits: { maximumStepBytes: number; maximumTotalStepBytes: number; maximumDomains: number; maximumJobs: number; sessionLifetimeMs: number };
 }

@@ -82,6 +82,24 @@ export async function createProjectCompletionSnapshot(completion:Pick<Authorized
   return validateProjectCompletionSnapshot({...snapshot,schema:'tunacad-project-completed-result/1',delivery:'approved_new_simulation',
     trust:'project_copy_integrity_only',payloadDigest:await webCryptoDigest({...snapshot,engineeringUsePermitted:false}),engineeringUsePermitted:false});
 }
+/** Shared read-only delivery sequence for already-authorized NEW completions.
+ * This is NOT an approval/session/job factory. The caller must enforce its
+ * actual owner or isolated-development eligibility in assertCurrent, and run
+ * its existing capability-specific completion/source checks in readCompletion.
+ * No default eligibility, imported job restoration or execution route exists. */
+export async function collectCurrentProjectCompletion(
+  request:{requestDigest:string;resultDelivery?:'project_archive'},
+  boundary:{signal:AbortSignal;assertCurrent():void|Promise<void>;readCompletion():Promise<ProjectResultCompletion>},
+):Promise<ProjectCompletionSnapshot>{
+  if(request.resultDelivery!=='project_archive')throw Error('PROJECT_RESULTS_NOT_INCLUDED_IN_APPROVED_REQUEST');
+  const current=async()=>{boundary.signal.throwIfAborted();await boundary.assertCurrent();boundary.signal.throwIfAborted();};
+  await current();
+  const completion=await boundary.readCompletion();
+  await current();
+  const result=await createProjectCompletionSnapshot(completion,request);
+  await current();
+  return result;
+}
 async function validateNumericalPayload(value:PortableNumericalResult){
   const data=value.data;
   if(value.schema==='tunacad-authorized-portable-result/2'||value.schema==='tunacad-project-completed-result/1'){

@@ -344,7 +344,7 @@ function requireMeshRegions(mesh: NeutralFemMesh, semanticReferenceIds: string[]
 
 /** Neutral quadratic tetrahedra end with edges (2-3), (1-3); CalculiX C3D10
  * expects (1-3), (2-3). Vertex order and the first four edge nodes are equal. */
-function neutralToCalculiXC3D10(cell: number[]): number[] {
+export function neutralToCalculiXC3D10(cell: number[]): number[] {
   if (cell.length !== 10) throw providerError('SIMULATION_MESH_ELEMENT_UNSUPPORTED', 'CalculiX C3D10 translation requires ten neutral nodes.');
   return [...cell.slice(0, 8), cell[9], cell[8]];
 }
