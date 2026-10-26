@@ -31,7 +31,7 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
   // New electrical jobs use provider-owned temporary scratch and bounded result
   // memory. Historical protected storage is neither opened nor migrated.
   let providerElectrical: ComposedElectrostaticProvider | null = null;
-  let electrostaticInitialization:{stage:string;code:string|null;retryable:boolean;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean}}={stage:'runtime_versions',code:'ELECTROSTATIC_RUNTIME_VERSIONS_UNSUPPORTED',retryable:false};
+  let electrostaticInitialization:{stage:string;code:string|null;retryable:boolean;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean;phase?:string;launcherMs?:number;nativeMs?:number}}={stage:'runtime_versions',code:'ELECTROSTATIC_RUNTIME_VERSIONS_UNSUPPORTED',retryable:false};
   if (mesh && gmshVersion === '4.15.2' && calculixVersion === '2.16') {
     try {
       const driver = new CalculiXElectrostaticExecution(paths.calculixExecutable);
@@ -49,10 +49,12 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
       // Keep unrelated structural providers, but never discard the actual
       // startup reason or expose executable paths/raw process diagnostics.
       const e=(error&&typeof error==='object'?error:{}) as {code?:string;message?:string;details?:any},candidate=e.code??e.message??'';
-      const allowed=/^ELECTROSTATIC_(?:HOST_UNSUPPORTED|EXECUTABLE_(?:INVALID|LIMIT|CHANGED)|RUNTIME_(?:VERSION_INVALID|PROBE_(?:CLEANUP_UNCONFIRMED|TIMEOUT|OUTPUT_LIMIT|FAILED)))$/;
+      const allowed=/^ELECTROSTATIC_(?:HOST_UNSUPPORTED|EXECUTABLE_(?:INVALID|LIMIT|CHANGED)|RUNTIME_(?:VERSION_INVALID|PROBE_(?:CLEANUP_UNCONFIRMED|TIMEOUT|LAUNCHER_TIMEOUT|DRAIN_TIMEOUT|OUTPUT_LIMIT|FAILED)))$/;
       const code=allowed.test(candidate)?candidate:'ELECTROSTATIC_PROVIDER_INITIALIZATION_FAILED',p=e.details;
       electrostaticInitialization={stage:'runtime_identity',code,retryable:p?.cleanupConfirmed===true&&['ELECTROSTATIC_RUNTIME_PROBE_TIMEOUT','ELECTROSTATIC_RUNTIME_PROBE_FAILED'].includes(code),
-        ...(p&&Number.isFinite(p.elapsedMs)&&typeof p.cleanupConfirmed==='boolean'?{probe:{elapsedMs:Math.max(0,p.elapsedMs),exitCode:Number.isInteger(p.exitCode)?p.exitCode:null,timedOut:p.timedOut===true,cleanupConfirmed:p.cleanupConfirmed}}:{})};
+        ...(p&&Number.isFinite(p.elapsedMs)&&typeof p.cleanupConfirmed==='boolean'?{probe:{elapsedMs:Math.max(0,p.elapsedMs),exitCode:Number.isInteger(p.exitCode)?p.exitCode:null,timedOut:p.timedOut===true,cleanupConfirmed:p.cleanupConfirmed,
+          ...(['launcher_bootstrap','native_execution','output_drain','complete'].includes(p.phase)?{phase:p.phase}:{}),
+          ...(Number.isFinite(p.launcherMs)&&p.launcherMs>=0?{launcherMs:p.launcherMs}:{}),...(Number.isFinite(p.nativeMs)&&p.nativeMs>=0?{nativeMs:p.nativeMs}:{})}}:{})};
     }
   }
   return {

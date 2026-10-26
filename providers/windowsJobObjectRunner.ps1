@@ -5,7 +5,8 @@ param(
   [Parameter(Mandatory = $true)][long]$MemoryLimitBytes,
   [Parameter(Mandatory = $true)][string]$ArgumentListBase64,
   [switch]$LauncherTelemetry,
-  [switch]$StartSuspended
+  [switch]$StartSuspended,
+  [ValidateRange(0,5000)][int]$IdentityProbeWallMs = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -130,6 +131,7 @@ $argumentJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Arg
 $decodedArguments = $argumentJson | ConvertFrom-Json
 $providerArguments = New-Object 'System.Collections.Generic.List[string]'
 foreach ($argument in $decodedArguments) { [void]$providerArguments.Add([string]$argument) }
+if ($IdentityProbeWallMs -gt 0 -and (-not $StartSuspended -or $LauncherTelemetry -or $providerArguments.Count -ne 1 -or $providerArguments[0] -cne '-v')) { throw 'Identity probe requires fixed -v and suspended quota admission.' }
 $job = [TunaCadJobObject]::Create($CpuTimeLimitMs, $MemoryLimitBytes)
 $process = New-Object Diagnostics.Process
 $process.StartInfo = New-Object Diagnostics.ProcessStartInfo
@@ -215,12 +217,24 @@ try {
     $assigned=$true
     $accounting=[TunaCadJobObject]::Accounting($job)
     Write-LauncherEvent 'job_assigned'
+    # Metadata-only control lines contain no paths, credentials or native output.
+    # Bootstrap remains bounded by Node; the native deadline is enforced HERE,
+    # independently of the Companion event loop and PowerShell Add-Type startup.
+    if ($IdentityProbeWallMs -gt 0) { [Console]::Error.WriteLine('TUNACAD_IDENTITY_READY'); $identityClock=[Diagnostics.Stopwatch]::StartNew() }
     $nativeChild.Resume()
     $childResumedAt=[DateTime]::UtcNow.ToString('o')
     Write-LauncherEvent 'child_resumed'
     $stdoutTask=$nativeChild.StandardOutput.CopyToAsync([Console]::OpenStandardOutput())
     $stderrTask=$nativeChild.StandardError.CopyToAsync([Console]::OpenStandardError())
-    $nativeChild.WaitForExit()
+    if ($IdentityProbeWallMs -gt 0) {
+      $remaining=[Math]::Max(1,$IdentityProbeWallMs-[int]$identityClock.ElapsedMilliseconds)
+      if (-not $nativeChild.WaitForExit($remaining)) {
+        [Console]::Error.WriteLine('TUNACAD_IDENTITY_TIMEOUT '+$identityClock.ElapsedMilliseconds)
+        [TunaCadSuspendedChild]::StopJob($job)
+        exit 124
+      }
+      [Console]::Error.WriteLine('TUNACAD_IDENTITY_EXIT '+$identityClock.ElapsedMilliseconds)
+    } else { $nativeChild.WaitForExit() }
     $childExitAt=[DateTime]::UtcNow.ToString('o');$childExitCode=$nativeChild.ExitCode
     $accounting=[TunaCadJobObject]::Accounting($job)
     Write-LauncherEvent 'child_exited'

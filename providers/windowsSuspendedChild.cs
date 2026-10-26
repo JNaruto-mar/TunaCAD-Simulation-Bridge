@@ -80,7 +80,8 @@ public sealed class TunaCadSuspendedChild : IDisposable {
         resumed=true;Close(ref thread);
     }
     public bool HasExited {get {uint result=WaitForSingleObject(process,0);if(result==0xFFFFFFFF)Check(false);return result==0;}}
-    public void WaitForExit() {uint result=WaitForSingleObject(process,60000);if(result!=0)throw new InvalidOperationException("Bounded child wait failed: "+result);}
+    public bool WaitForExit(int milliseconds) {if(milliseconds<1)throw new ArgumentOutOfRangeException("milliseconds");uint result=WaitForSingleObject(process,checked((uint)milliseconds));if(result==0xFFFFFFFF)Check(false);if(result!=0&&result!=258)throw new InvalidOperationException("Bounded child wait failed: "+result);return result==0;}
+    public void WaitForExit() {if(!WaitForExit(60000))throw new InvalidOperationException("Bounded child wait failed: 258");}
     public int ExitCode {get {if(!HasExited)throw new InvalidOperationException("Child still active");uint code;Check(GetExitCodeProcess(process,out code));return unchecked((int)code);}}
     public static TunaCadJobObject.BASIC_ACCOUNTING WaitForEmpty(IntPtr job) {
         var deadline=DateTime.UtcNow.AddSeconds(2);

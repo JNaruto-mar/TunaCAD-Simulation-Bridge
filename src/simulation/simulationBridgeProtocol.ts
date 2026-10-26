@@ -11,7 +11,7 @@ export interface SimulationBridgeReadiness {
   providerV2?: { id: string; version: string; capabilities: SimulationProviderCapabilitiesV2 } | null;
   explicit?:ExplicitDispatchCapabilities|null;
   electrostatic?: ElectrostaticDispatchCapabilities | null;
-  electrostaticInitialization?:{stage:string;code:string|null;retryable:boolean;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean};previousFailure?:{stage:string;code:string;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean}}};
+  electrostaticInitialization?:{stage:string;code:string|null;retryable:boolean;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean;phase?:string;launcherMs?:number;nativeMs?:number};previousFailure?:{stage:string;code:string;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean;phase?:string;launcherMs?:number;nativeMs?:number}}};
   meshing: { ready: boolean; adapterVersion: string; runtimeVersion: string | null; geometryFormats: string[]; elementFamilies: string[] };
   solving: { ready: boolean; adapterVersion: string; runtimeVersion: string | null; analysisTypes: string[] };
   configuration?: { gmshExecutable: string; calculixExecutable: string; discoveryUsed: boolean;electrostaticStorageConfigured?:boolean };
