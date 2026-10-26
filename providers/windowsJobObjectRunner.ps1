@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory = $true)][long]$CpuTimeLimitMs,
   [Parameter(Mandatory = $true)][long]$MemoryLimitBytes,
   [Parameter(Mandatory = $true)][string]$ArgumentListBase64,
-  [switch]$LauncherTelemetry
+  [switch]$LauncherTelemetry,
+  [switch]$StartSuspended
 )
 
 $ErrorActionPreference = 'Stop'
@@ -203,6 +204,8 @@ try {
     $telemetryWriter = New-Object IO.StreamWriter($telemetryPipe, (New-Object Text.UTF8Encoding($false)))
     $telemetryWriter.AutoFlush=$true
     if ([TunaCadSuspendedChild]::HandleInheritable($job)) { throw 'Job handle must not be inheritable.' }
+  }
+  if ($LauncherTelemetry -or $StartSuspended) {
     Write-LauncherEvent 'launcher_started'
     $nativeChild=[TunaCadSuspendedChild]::Create($Executable,$providerArguments.ToArray(),$WorkingDirectory,$job)
     $started=$true

@@ -428,18 +428,21 @@ export async function startSimulationBridge(options: {
           return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
         }
         const saveOnly = req.url === '/v1/providers/settings';
-        if (submissions > 0 || (saveOnly ? !options.saveProviderSettings : !options.configureProviders))
+        if (busy || privateApprovalPending || submissions > 0 || (saveOnly ? !options.saveProviderSettings : !options.configureProviders))
           return reply(res, 409, { error: 'BRIDGE_PROVIDER_CONFIGURATION_LOCKED' });
         const paths = providerPathsSchema.parse(await readJson(req, 3_000));
         // Saving is authenticated local configuration only, never a readiness
         // claim, approval, mesh operation or executable/version probe.
-        if (saveOnly) return reply(res, 200, { saved: true, paths: await options.saveProviderSettings!(paths) });
-        const configured = await options.configureProviders!(paths);
-        provider = configured.provider;
-        providerV2 = configured.providerV2 ?? null;
-        providerElectrical = configured.providerElectrical ?? null;
-        readiness = { ...configured.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION, limits: readiness.limits };
-        return reply(res, 200, readiness);
+        busy=true;
+        try{
+          if (saveOnly) return reply(res, 200, { saved: true, paths: await options.saveProviderSettings!(paths) });
+          const configured = await options.configureProviders!(paths);
+          provider = configured.provider;
+          providerV2 = configured.providerV2 ?? null;
+          providerElectrical = configured.providerElectrical ?? null;
+          readiness = { ...configured.readiness, protocolVersion: SIMULATION_BRIDGE_VERSION, limits: readiness.limits };
+          return reply(res, 200, readiness);
+        }finally{busy=false;}
       }
       if (req.method === 'POST' && req.url === '/v1/two-layer/authorizations') {
         if(options.trustedSimulationSession)return reply(res,403,{error:'SIMULATION_SESSION_UNSUPPORTED_CAPABILITY'});

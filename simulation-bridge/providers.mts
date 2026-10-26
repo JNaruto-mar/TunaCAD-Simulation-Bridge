@@ -31,6 +31,7 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
   // New electrical jobs use provider-owned temporary scratch and bounded result
   // memory. Historical protected storage is neither opened nor migrated.
   let providerElectrical: ComposedElectrostaticProvider | null = null;
+  let electrostaticInitialization:{stage:string;code:string|null;retryable:boolean;probe?:{elapsedMs:number;exitCode:number|null;timedOut:boolean;cleanupConfirmed:boolean}}={stage:'runtime_versions',code:'ELECTROSTATIC_RUNTIME_VERSIONS_UNSUPPORTED',retryable:false};
   if (mesh && gmshVersion === '4.15.2' && calculixVersion === '2.16') {
     try {
       const driver = new CalculiXElectrostaticExecution(paths.calculixExecutable);
@@ -43,7 +44,16 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
         cpuTimeLimitMs: 30000, memoryLimitBytes: 512 * 1024 * 1024,
         sourceIdentity: 'tunacad-electrostatic-native-step-identity/0.1',
       }, mesh, driver, () => driver.readCurrentRuntimeIdentity());
-    } catch { /* Fail closed; unrelated structural providers remain usable. */ }
+      electrostaticInitialization={stage:'ready',code:null,retryable:false};
+    } catch(error) {
+      // Keep unrelated structural providers, but never discard the actual
+      // startup reason or expose executable paths/raw process diagnostics.
+      const e=(error&&typeof error==='object'?error:{}) as {code?:string;message?:string;details?:any},candidate=e.code??e.message??'';
+      const allowed=/^ELECTROSTATIC_(?:HOST_UNSUPPORTED|EXECUTABLE_(?:INVALID|LIMIT|CHANGED)|RUNTIME_(?:VERSION_INVALID|PROBE_(?:CLEANUP_UNCONFIRMED|TIMEOUT|OUTPUT_LIMIT|FAILED)))$/;
+      const code=allowed.test(candidate)?candidate:'ELECTROSTATIC_PROVIDER_INITIALIZATION_FAILED',p=e.details;
+      electrostaticInitialization={stage:'runtime_identity',code,retryable:p?.cleanupConfirmed===true&&['ELECTROSTATIC_RUNTIME_PROBE_TIMEOUT','ELECTROSTATIC_RUNTIME_PROBE_FAILED'].includes(code),
+        ...(p&&Number.isFinite(p.elapsedMs)&&typeof p.cleanupConfirmed==='boolean'?{probe:{elapsedMs:Math.max(0,p.elapsedMs),exitCode:Number.isInteger(p.exitCode)?p.exitCode:null,timedOut:p.timedOut===true,cleanupConfirmed:p.cleanupConfirmed}}:{})};
+    }
   }
   return {
     provider, providerV2, providerElectrical,
@@ -53,6 +63,7 @@ export async function loadExternalPipeline(gmshExecutable?: string, calculixExec
       provider: provider ? { id: provider.id, version: provider.version, capabilities: provider.capabilities } : null,
       providerV2: providerV2 ? { id: providerV2.id, version: providerV2.version, capabilities: providerV2.capabilities } : null,
       electrostatic: providerElectrical?.capabilities ?? null,
+      electrostaticInitialization,
       meshing: { ready: !!mesh, adapterVersion: mesh?.version ?? 'unavailable', runtimeVersion: gmshVersion, geometryFormats: mesh ? ['step'] : [], elementFamilies: mesh ? ['tetrahedral'] : [] },
       solving: { ready: !!solver, adapterVersion: solver?.version ?? 'unavailable', runtimeVersion: calculixVersion, analysisTypes: solverV2 ? [...solverV2.capabilities.analysisTypes] : solver ? ['linear_static'] : [] },
       configuration: { ...paths, discoveryUsed: (!gmshExecutable && !!paths.gmshExecutable) || (!calculixExecutable && !!paths.calculixExecutable),

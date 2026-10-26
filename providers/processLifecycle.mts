@@ -22,7 +22,7 @@ export function spawnProviderProcess(
   executable: string,
   args: string[],
   options: SpawnOptions,
-  quotas: { cpuTimeLimitMs: number | null; memoryLimitBytes: number | null } = LOCAL_PROVIDER_RESOURCE_LIMITS,
+  quotas: { cpuTimeLimitMs: number | null; memoryLimitBytes: number | null; startSuspended?:boolean } = LOCAL_PROVIDER_RESOURCE_LIMITS,
   telemetry?: { bootstrap:string },
 ): ChildProcess {
   if (!hasEnforcedProviderProcessQuotas() || quotas.cpuTimeLimitMs === null || quotas.memoryLimitBytes === null) {
@@ -39,6 +39,7 @@ export function spawnProviderProcess(
     '-CpuTimeLimitMs', String(quotas.cpuTimeLimitMs),
     '-MemoryLimitBytes', String(quotas.memoryLimitBytes),
     '-ArgumentListBase64', encodedArguments,
+    ...(quotas.startSuspended?['-StartSuspended']:[]),
     ...(telemetry?['-LauncherTelemetry']:[]),
   ], options);
   if(telemetry){if(!child.stdin)throw new Error('Private launcher stdin unavailable');child.stdin.end(telemetry.bootstrap);}

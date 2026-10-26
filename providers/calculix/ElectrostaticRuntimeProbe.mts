@@ -27,7 +27,7 @@ export async function probeElectrostaticRuntime(executable:string,executableDige
   const child=spawnProviderProcess(executable,['-v'],{
     cwd:dirname(executable),windowsHide:true,stdio:['ignore','pipe','pipe'],
     env:{...process.env,PATH:dirname(executable)+';'+(process.env.PATH??'')},
-  },{cpuTimeLimitMs:ELECTROSTATIC_RUNTIME_PROBE_LIMITS.cpuMs,memoryLimitBytes:ELECTROSTATIC_RUNTIME_PROBE_LIMITS.memoryBytes});
+  },{cpuTimeLimitMs:ELECTROSTATIC_RUNTIME_PROBE_LIMITS.cpuMs,memoryLimitBytes:ELECTROSTATIC_RUNTIME_PROBE_LIMITS.memoryBytes,startSuspended:true});
   let diagnostic='',timedOut=false,outputExceeded=false,spawnError:string|null=null;
   const collect=(chunk:unknown)=>{
     const bytes=Buffer.from(String(chunk));
